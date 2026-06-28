@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"c:\\\\xampp\\\\php\\\\php.exe\" \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\db_check.php\")",
+      "PowerShell(php -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\public\\\\course.php\")",
+      "PowerShell(php -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\bootstrap.php\")",
+      "PowerShell(php -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\db_init.php\")",
+      "PowerShell(& \"C:\\\\xampp\\\\php\\\\php.exe\" -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\public\\\\course.php\")",
+      "PowerShell(& \"C:\\\\xampp\\\\php\\\\php.exe\" -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\bootstrap.php\")",
+      "PowerShell(& \"C:\\\\xampp\\\\php\\\\php.exe\" -l \"c:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\public\\\\download.php\")",
+      "Bash(xargs grep *)",
+      "Bash(php -l public/course.php)",
+      "PowerShell(& \"C:\\\\xampp\\\\php\\\\php.exe\" -l \"C:\\\\xampp\\\\htdocs\\\\schoolwebsite\\\\public\\\\course.php\" 2>&1)"
+    ]
+  }
+}
