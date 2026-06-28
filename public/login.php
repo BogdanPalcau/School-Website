@@ -20,12 +20,17 @@ $loggedOut = isset($_GET['logged_out']) && $_GET['logged_out'] === '1';
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $identifier = trim((string) ($_POST['identifier'] ?? ''));
     $password = (string) ($_POST['password'] ?? '');
+    $clientIp = portal_client_ip();
 
-    if ($identifier === '' || $password === '') {
+    if (portal_login_is_locked($clientIp)) {
+        $error = 'Too many failed sign-in attempts. Please wait about 15 minutes and try again.';
+    } elseif ($identifier === '' || $password === '') {
         $error = 'Enter your username or email and your password.';
     } elseif (!portal_attempt_login($identifier, $password)) {
+        portal_login_record_failure($clientIp);
         $error = 'That username or password does not look right.';
     } else {
+        portal_login_clear_attempts($clientIp);
         portal_redirect(portal_consume_intended_path());
     }
 }

@@ -209,11 +209,32 @@ $_pdo->exec("
 ");
 
 // ── Seed: Bogdan (owner) ─────────────────────────────────────────────────────
-$_bogdanHash = '$2y$10$Te3hTOhtGb4C3VMHGxUvu.a9UUXYwMvTrKv8uiWb2NhDjuSpMOpDa';
+// No credentials are committed to source control. The initial owner password is
+// read from the PORTAL_OWNER_PASSWORD environment variable; if that is not set a
+// strong random password is generated and written once to
+// database/INITIAL_OWNER_PASSWORD.txt for the administrator to retrieve and then
+// delete. The owner should change this password on first login.
+$_ownerPassword = trim((string) getenv('PORTAL_OWNER_PASSWORD'));
+$_ownerGenerated = false;
+if ($_ownerPassword === '') {
+    $_ownerPassword  = bin2hex(random_bytes(9)); // 18-character random password
+    $_ownerGenerated = true;
+}
+$_bogdanHash = password_hash($_ownerPassword, PASSWORD_DEFAULT);
 $_pdo->prepare("
     INSERT OR IGNORE INTO users (username, email, password_hash, name, year, programme, initials, role)
     VALUES (?,?,?,?,?,?,?,?)
 ")->execute(['bogdan', 'bogdan@rieo.edu', $_bogdanHash, 'Bogdan', 'Year 11', 'STEM pathway', 'BG', 'owner']);
+
+if ($_ownerGenerated) {
+    @file_put_contents(
+        $_db_dir . DIRECTORY_SEPARATOR . 'INITIAL_OWNER_PASSWORD.txt',
+        "RIEO portal — initial owner credentials\n"
+        . "Username: bogdan\n"
+        . "Password: {$_ownerPassword}\n\n"
+        . "Sign in, change this password immediately, then delete this file.\n"
+    );
+}
 
 // ── Seed: 12 courses (25/26 only) ────────────────────────────────────────────
 $_courses = [

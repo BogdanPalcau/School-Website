@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Root protection for the RIEO portal.
+#
+# The application is intended to be served from the public/ folder. The files in
+# this project root (bootstrap.php, db_init.php, course_catalog.php, layout.php)
+# are PHP includes that must never be requested directly, and the database/ and
+# uploads/ folders must never be browsable over HTTP.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# No directory listings anywhere.
+Options -Indexes
+
+# Block direct requests to the include-only PHP files in the project root.
+<FilesMatch "^(bootstrap|db_init|course_catalog|layout)\.php$">
+    Require all denied
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Block direct download of database / version-control / dotfiles.
+<FilesMatch "\.(db|sqlite|sqlite3|sql|git|gitignore|env)$">
+    Require all denied
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

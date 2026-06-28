@@ -4,6 +4,20 @@ declare(strict_types=1);
 date_default_timezone_set('Europe/London');
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
+    // Harden the session cookie: not readable by JS, sent same-site, and
+    // marked Secure automatically when the request is served over HTTPS.
+    $portalCookieSecure = (
+        (($_SERVER['HTTPS'] ?? '') !== '' && strtolower((string) $_SERVER['HTTPS']) !== 'off')
+        || ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443')
+    );
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'domain'   => '',
+        'secure'   => $portalCookieSecure,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
     session_start();
 }
 
@@ -357,6 +371,169 @@ if (!function_exists('portal_logout')) {
     }
 }
 
+// ── CSRF protection helpers ───────────────────────────────────────────────────
+
+if (!function_exists('portal_csrf_token')) {
+    function portal_csrf_token(): string
+    {
+        if (empty($_SESSION['_csrf']) || !is_string($_SESSION['_csrf'])) {
+            $_SESSION['_csrf'] = bin2hex(random_bytes(32));
+        }
+        return $_SESSION['_csrf'];
+    }
+}
+
+if (!function_exists('portal_csrf_field')) {
+    function portal_csrf_field(): string
+    {
+        return '<input type="hidden" name="_token" value="' . portal_escape(portal_csrf_token()) . '">';
+    }
+}
+
+if (!function_exists('portal_verify_csrf')) {
+    function portal_verify_csrf(): bool
+    {
+        $token = $_POST['_token'] ?? '';
+        return is_string($token)
+            && $token !== ''
+            && !empty($_SESSION['_csrf'])
+            && hash_equals((string) $_SESSION['_csrf'], $token);
+    }
+}
+
+// ── Course access control (enrollment / management) ───────────────────────────
+
+if (!function_exists('portal_can_access_course')) {
+    function portal_can_access_course(int $courseId): bool
+    {
+        if ($courseId <= 0 || !portal_is_logged_in()) {
+            return false;
+        }
+        // Admins, owners, and teachers assigned to the course can always enter.
+        if (portal_can_manage_course($courseId)) {
+            return true;
+        }
+        // Otherwise the user must be enrolled.
+        $user = portal_current_user();
+        $stmt = portal_db()->prepare(
+            "SELECT 1 FROM enrollments WHERE user_id = ? AND course_id = ? LIMIT 1"
+        );
+        $stmt->execute([(int) $user['id'], $courseId]);
+        return (bool) $stmt->fetchColumn();
+    }
+}
+
+// ── Login brute-force throttling (per client IP) ──────────────────────────────
+
+if (!function_exists('portal_client_ip')) {
+    function portal_client_ip(): string
+    {
+        $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        return $ip !== '' ? $ip : 'unknown';
+    }
+}
+
+if (!function_exists('portal_login_is_locked')) {
+    function portal_login_is_locked(string $ip, int $maxAttempts = 8, int $windowSeconds = 900): bool
+    {
+        try {
+            $stmt = portal_db()->prepare(
+                "SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND attempted_at > ?"
+            );
+            $stmt->execute([$ip, time() - $windowSeconds]);
+            return (int) $stmt->fetchColumn() >= $maxAttempts;
+        } catch (\PDOException $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('portal_login_record_failure')) {
+    function portal_login_record_failure(string $ip): void
+    {
+        try {
+            portal_db()
+                ->prepare("INSERT INTO login_attempts (ip, attempted_at) VALUES (?, ?)")
+                ->execute([$ip, time()]);
+        } catch (\PDOException $e) {}
+    }
+}
+
+if (!function_exists('portal_login_clear_attempts')) {
+    function portal_login_clear_attempts(string $ip): void
+    {
+        try {
+            portal_db()
+                ->prepare("DELETE FROM login_attempts WHERE ip = ?")
+                ->execute([$ip]);
+        } catch (\PDOException $e) {}
+    }
+}
+
+// ── Upload content-type validation ────────────────────────────────────────────
+
+if (!function_exists('portal_upload_mime_ok')) {
+    function portal_upload_mime_ok(string $tmpPath, string $ext): bool
+    {
+        // If we cannot inspect the file, fall back to the extension whitelist
+        // plus the upload-directory .htaccess that blocks script execution.
+        if ($tmpPath === '' || !is_file($tmpPath) || !class_exists('finfo')) {
+            return true;
+        }
+
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime  = (string) $finfo->file($tmpPath);
+        if ($mime === '') {
+            return true;
+        }
+
+        $zip = 'application/zip';
+        $ole = ['application/x-ole-storage', 'application/vnd.ms-office', 'application/CDFV2'];
+
+        $allowed = [
+            'pdf'  => ['application/pdf'],
+            'txt'  => ['text/plain', 'text/csv', 'application/csv'],
+            'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', $zip],
+            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $zip],
+            'pptx' => ['application/vnd.openxmlformats-officedocument.presentationml.presentation', $zip],
+            'ppsx' => ['application/vnd.openxmlformats-officedocument.presentationml.slideshow', $zip],
+            'potx' => ['application/vnd.openxmlformats-officedocument.presentationml.template', $zip],
+            'odp'  => ['application/vnd.oasis.opendocument.presentation', $zip],
+            'ppt'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
+            'pps'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
+            'pot'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
+        ];
+
+        // Unknown extension: extension whitelist already handled this elsewhere.
+        if (!isset($allowed[$ext])) {
+            return true;
+        }
+
+        return in_array($mime, $allowed[$ext], true);
+    }
+}
+
+// ── Protect sensitive directories from direct web access ──────────────────────
+
+if (!function_exists('portal_protect_sensitive_paths')) {
+    function portal_protect_sensitive_paths(): void
+    {
+        // Apache 2.4 directive that denies all direct HTTP access to a folder.
+        $deny = "Require all denied\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
+
+        foreach (['database', 'uploads'] as $folder) {
+            $dir = __DIR__ . DIRECTORY_SEPARATOR . $folder;
+            if (!is_dir($dir)) {
+                continue;
+            }
+            $htaccess = $dir . DIRECTORY_SEPARATOR . '.htaccess';
+            if (!is_file($htaccess)) {
+                @file_put_contents($htaccess, $deny);
+            }
+        }
+    }
+}
+
 // ── Auto-initialise database on first run ─────────────────────────────────────
 if (!file_exists(__DIR__ . '/database/portal.db')) {
     require_once __DIR__ . '/db_init.php';
@@ -523,6 +700,27 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
 
+        // ── Login attempt log (brute-force throttling, per IP) ─────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip           TEXT    NOT NULL,
+                attempted_at INTEGER NOT NULL
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, attempted_at)");
+
+        // ── Announcement read tracking ─────────────────────────────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS announcement_reads (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                announcement_id INTEGER NOT NULL REFERENCES course_announcements(id) ON DELETE CASCADE,
+                read_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, announcement_id)
+            )
+        ");
+
         // ── Course tab visibility settings ────────────────────────────────────
         $db->exec("
             CREATE TABLE IF NOT EXISTS course_tab_settings (
@@ -576,6 +774,7 @@ if (!function_exists('portal_run_migrations')) {
 }
 
 portal_run_migrations();
+portal_protect_sensitive_paths();
 
 // ── Teacher / course-manager permission helpers ───────────────────────────────
 

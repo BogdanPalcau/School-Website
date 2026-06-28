@@ -14,6 +14,11 @@ $flash = [];
 
 // ── POST actions ──────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!portal_verify_csrf()) {
+        $_SESSION['admin_flash'] = ['error', 'Your session expired. Please try that again.'];
+        portal_redirect('admin.php');
+    }
+
     $action = (string) ($_POST['action'] ?? '');
 
     if ($action === 'create_user') {
@@ -170,6 +175,7 @@ ob_start();
             </div>
 
             <form class="admin-create-form" method="post" action="admin.php">
+                <?= portal_csrf_field() ?>
                 <input type="hidden" name="action" value="create_user">
 
                 <div class="admin-form-grid">
@@ -249,6 +255,7 @@ ob_start();
 
                         <?php if ($isOwner && !$isSelf && $u['role'] !== 'owner'): ?>
                         <form method="post" action="admin.php" class="admin-inline-form">
+                            <?= portal_csrf_field() ?>
                             <input type="hidden" name="action" value="change_role">
                             <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
                             <select name="role" class="admin-role-select" onchange="this.form.submit()">
@@ -262,6 +269,7 @@ ob_start();
                         <?php if (!$isSelf && $u['role'] !== 'owner' && ($isOwner || $u['role'] === 'student')): ?>
                         <form method="post" action="admin.php" class="admin-inline-form"
                               onsubmit="return confirm('Delete account for <?= portal_escape($u['name']) ?>?')">
+                            <?= portal_csrf_field() ?>
                             <input type="hidden" name="action" value="delete_user">
                             <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
                             <button type="submit" class="admin-delete-btn">Delete</button>
@@ -286,6 +294,7 @@ ob_start();
             </div>
 
             <form method="post" action="admin.php">
+                <?= portal_csrf_field() ?>
                 <input type="hidden" name="action" value="save_enrollments">
                 <input type="hidden" name="user_id" value="<?= (int) $enrollTarget['id'] ?>">
 

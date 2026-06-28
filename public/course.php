@@ -13,6 +13,14 @@ if ($course === null) {
     portal_redirect('courses.php');
 }
 
+// ── Access control: only enrolled students or course managers may enter ───────
+// This guard runs before any GET rendering or POST action handling, so a direct
+// URL to a course the user is not part of is rejected for every request method.
+if (!portal_can_access_course((int) $course['id'])) {
+    $_SESSION['course_flash'] = ['error', 'You do not have access to that course.'];
+    portal_redirect('courses.php');
+}
+
 // ── CSRF token ────────────────────────────────────────────────────────────────
 if (empty($_SESSION['_csrf'])) {
     $_SESSION['_csrf'] = bin2hex(random_bytes(32));
@@ -385,6 +393,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $createItemError = $uploadErrorMessage($fileError);
                 } elseif (!in_array($ext, portal_supported_upload_extensions(), true)) {
                     $createItemError = 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.';
+                } elseif (!portal_upload_mime_ok((string) ($_FILES['file']['tmp_name'] ?? ''), $ext)) {
+                    $createItemError = 'This file content does not match its extension. Please upload a genuine document.';
                 } elseif ($fileSize <= 0) {
                     $createItemError = 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.';
                 } elseif ($fileSize > $maxUploadBytes) {
@@ -736,6 +746,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['course_flash'] = ['error', 'This submission deadline has passed. Ask your teacher if you need an extension.'];
             } elseif (!in_array($ext, portal_supported_upload_extensions(), true)) {
                 $_SESSION['course_flash'] = ['error', 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.'];
+            } elseif (!portal_upload_mime_ok((string) ($_FILES['submission_file']['tmp_name'] ?? ''), $ext)) {
+                $_SESSION['course_flash'] = ['error', 'This file content does not match its extension. Please upload a genuine document.'];
             } elseif ($subSize <= 0) {
                 $_SESSION['course_flash'] = ['error', 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.'];
             } elseif ($subSize > $maxUploadBytes) {
