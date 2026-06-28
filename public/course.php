@@ -344,9 +344,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $folderId = (int) ($_POST['folder_id'] ?? 0);
             // Delete any uploaded files in this folder
             $fiStmt = $db->prepare(
-                "SELECT file_path FROM course_folder_items WHERE folder_id = ? AND file_path != ''"
+                "SELECT file_path FROM course_folder_items WHERE folder_id = ? AND course_id = ? AND file_path != ''"
             );
-            $fiStmt->execute([$folderId]);
+            $fiStmt->execute([$folderId, $courseId]);
             foreach ($fiStmt->fetchAll(PDO::FETCH_COLUMN) as $_fp) {
                 $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $_fp;
                 if (is_file($abs)) @unlink($abs);
@@ -355,9 +355,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ssStmt = $db->prepare(
                 "SELECT cs.filepath FROM course_submissions cs
                  JOIN course_folder_items cfi ON cfi.id = cs.item_id
-                 WHERE cfi.folder_id = ?"
+                 WHERE cfi.folder_id = ? AND cfi.course_id = ? AND cs.course_id = ?"
             );
-            $ssStmt->execute([$folderId]);
+            $ssStmt->execute([$folderId, $courseId, $courseId]);
             foreach ($ssStmt->fetchAll(PDO::FETCH_COLUMN) as $_sp) {
                 $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $_sp;
                 if (is_file($abs)) @unlink($abs);
@@ -523,8 +523,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (is_file($abs)) @unlink($abs);
             }
             // Delete any student submission files for this slot
-            $subStmt = $db->prepare("SELECT filepath FROM course_submissions WHERE item_id = ?");
-            $subStmt->execute([$itemId]);
+            $subStmt = $db->prepare("SELECT filepath FROM course_submissions WHERE item_id = ? AND course_id = ?");
+            $subStmt->execute([$itemId, $courseId]);
             foreach ($subStmt->fetchAll(PDO::FETCH_COLUMN) as $_sp) {
                 $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $_sp;
                 if (is_file($abs)) @unlink($abs);
@@ -720,8 +720,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'leave_group') {
         $gid = (int)($_POST['group_id'] ?? 0);
-        $db->prepare("DELETE FROM course_group_members WHERE group_id = ? AND user_id = ?")
-           ->execute([$gid, (int)$me['id']]);
+        $db->prepare(
+            "DELETE FROM course_group_members
+             WHERE group_id = ?
+               AND user_id = ?
+               AND EXISTS (
+                   SELECT 1 FROM course_groups
+                   WHERE course_groups.id = course_group_members.group_id
+                     AND course_groups.course_id = ?
+               )"
+        )->execute([$gid, (int)$me['id'], $courseId]);
     }
 
     // ── Student: submit work to a submission slot ─────────────────────────────

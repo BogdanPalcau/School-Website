@@ -1,0 +1,27 @@
+{
+  "name": "schoolwebsite",
+  "version": "1.0.0",
+  "description": "A full-stack Learning Management System (LMS) designed for Rangoon International Education. The platform provides a complete digital learning environment where teachers can manage courses and students can access learning materials, schedules, events, and assignments in one place.",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test:security",
+    "test:security": "playwright test",
+    "test:security:headed": "playwright test --headed",
+    "playwright:install": "playwright install chromium"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BogdanPalcau/School-Website.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/BogdanPalcau/School-Website/issues"
+  },
+  "homepage": "https://github.com/BogdanPalcau/School-Website#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}
