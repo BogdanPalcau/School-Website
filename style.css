@@ -5744,6 +5744,12 @@ body {
 
 .sub-ai { color: #7c2d12; }
 .sub-mark { color: #166534; }
+.sub-receipt {
+    font-size: 0.73rem;
+    color: var(--muted);
+    font-weight: 700;
+    word-break: break-word;
+}
 
 .sub-mark-form {
     display: grid;
@@ -5779,8 +5785,21 @@ body {
     gap: 8px;
 }
 
+.submit-work-form textarea {
+    width: 100%;
+    min-height: 118px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    resize: vertical;
+}
+
 .my-submission {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
     padding: 6px 10px;
@@ -5817,9 +5836,209 @@ body {
     font-weight: 700;
 }
 
+.submission-row-report {
+    grid-column: 1 / -1;
+}
+
+.integrity-report {
+    display: grid;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-left: 4px solid #166534;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.integrity-report--medium { border-left-color: #b45309; }
+.integrity-report--high { border-left-color: #b91c1c; }
+.integrity-report--pending { border-left-color: var(--border); }
+
+.integrity-report-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.integrity-report-head h4,
+.integrity-report-head p {
+    margin: 0;
+}
+
+.integrity-report-head h4 {
+    font-size: 0.92rem;
+    word-break: break-word;
+}
+
+.integrity-report-head p {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
+
+.integrity-report-head p span {
+    display: block;
+    margin-top: 2px;
+}
+
+.integrity-score {
+    min-width: 86px;
+    text-align: right;
+}
+
+.integrity-score strong {
+    display: block;
+    font-size: 1.15rem;
+    color: var(--primary-strong);
+}
+
+.integrity-score span,
+.integrity-meta-grid span,
+.integrity-match span,
+.process-history-item span,
+.integrity-eula-panel span {
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+
+.integrity-meter {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #f1ece9;
+}
+
+.integrity-meter span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #16a34a, #f59e0b, #dc2626);
+}
+
+.integrity-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.integrity-meta-grid span {
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--surface-muted);
+}
+
+.integrity-matches,
+.process-history-list {
+    display: grid;
+    gap: 8px;
+}
+
+.integrity-match,
+.process-history-item {
+    display: grid;
+    gap: 3px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-muted);
+}
+
+.integrity-match strong,
+.process-history-item strong {
+    font-size: 0.84rem;
+}
+
+.integrity-match p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
+.integrity-highlights {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.integrity-highlights mark {
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: #fef3c7;
+    color: #78350f;
+    font-size: 0.75rem;
+}
+
+.integrity-ai-panel {
+    display: grid;
+    gap: 4px;
+    padding: 9px;
+    border-radius: 7px;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+}
+
+.integrity-ai-panel pre {
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    margin: 8px 0 0;
+    font-size: 0.72rem;
+}
+
+.process-history {
+    margin-top: 8px;
+}
+
+.process-history summary {
+    cursor: pointer;
+    color: var(--primary-strong);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.integrity-eula-panel {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    align-items: center;
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-muted);
+}
+
+.integrity-eula-panel h3,
+.integrity-eula-panel p {
+    margin: 0;
+}
+
+.integrity-eula-panel p {
+    color: var(--muted);
+    font-size: 0.84rem;
+    line-height: 1.45;
+}
+
 @media (max-width: 760px) {
     .submission-row,
     .sub-mark-form {
+        grid-template-columns: 1fr;
+    }
+
+    .integrity-report-head,
+    .integrity-eula-panel {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .integrity-score {
+        text-align: left;
+    }
+
+    .integrity-meta-grid {
         grid-template-columns: 1fr;
     }
 }

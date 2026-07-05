@@ -101,7 +101,7 @@ if (!function_exists('portal_presentation_extensions')) {
 if (!function_exists('portal_supported_upload_extensions')) {
     function portal_supported_upload_extensions(): array
     {
-        return array_merge(['docx', 'xlsx', 'pdf', 'txt'], portal_presentation_extensions());
+        return array_merge(['doc', 'docx', 'xlsx', 'pdf', 'txt'], portal_presentation_extensions());
     }
 }
 
@@ -116,7 +116,7 @@ if (!function_exists('portal_is_presentation_file')) {
 if (!function_exists('portal_supported_upload_hint')) {
     function portal_supported_upload_hint(): string
     {
-        return '.docx .xlsx .pdf .txt .ppt .pptx .pps .ppsx .pot .potx .odp';
+        return '.doc .docx .xlsx .pdf .txt .ppt .pptx .pps .ppsx .pot .potx .odp';
     }
 }
 
@@ -493,6 +493,7 @@ if (!function_exists('portal_upload_mime_ok')) {
         $allowed = [
             'pdf'  => ['application/pdf'],
             'txt'  => ['text/plain', 'text/csv', 'application/csv'],
+            'doc'  => array_merge(['application/msword'], $ole),
             'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', $zip],
             'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $zip],
             'pptx' => ['application/vnd.openxmlformats-officedocument.presentationml.presentation', $zip],
@@ -751,7 +752,48 @@ if (!function_exists('portal_run_migrations')) {
                 ai_score     REAL,
                 ai_report    TEXT    NOT NULL DEFAULT '',
                 ai_checked_at TEXT   NOT NULL DEFAULT '',
+                receipt_number TEXT NOT NULL DEFAULT '',
+                file_sha256  TEXT NOT NULL DEFAULT '',
+                submission_text TEXT NOT NULL DEFAULT '',
+                text_word_count INTEGER NOT NULL DEFAULT 0,
+                similarity_status TEXT NOT NULL DEFAULT '',
+                similarity_score REAL,
+                similarity_report TEXT NOT NULL DEFAULT '',
+                similarity_checked_at TEXT NOT NULL DEFAULT '',
+                process_edit_seconds INTEGER NOT NULL DEFAULT 0,
+                process_paste_events INTEGER NOT NULL DEFAULT 0,
+                process_pasted_chars INTEGER NOT NULL DEFAULT 0,
+                eula_accepted_at TEXT NOT NULL DEFAULT '',
                 UNIQUE(item_id, user_id)
+            )
+        ");
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS course_submission_versions (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER REFERENCES course_submissions(id) ON DELETE CASCADE,
+                item_id      INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
+                course_id    INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                filename     TEXT NOT NULL DEFAULT '',
+                filesize     INTEGER NOT NULL DEFAULT 0,
+                file_sha256  TEXT NOT NULL DEFAULT '',
+                text_word_count INTEGER NOT NULL DEFAULT 0,
+                receipt_number TEXT NOT NULL DEFAULT '',
+                similarity_status TEXT NOT NULL DEFAULT '',
+                similarity_score REAL,
+                process_edit_seconds INTEGER NOT NULL DEFAULT 0,
+                process_paste_events INTEGER NOT NULL DEFAULT 0,
+                process_pasted_chars INTEGER NOT NULL DEFAULT 0,
+                submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS integrity_eula_acceptances (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                version     TEXT NOT NULL,
+                accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, version)
             )
         ");
         $submissionCols = array_column($db->query("PRAGMA table_info(course_submissions)")->fetchAll(), 'name');
@@ -764,6 +806,18 @@ if (!function_exists('portal_run_migrations')) {
             'ai_score'      => "ALTER TABLE course_submissions ADD COLUMN ai_score REAL",
             'ai_report'     => "ALTER TABLE course_submissions ADD COLUMN ai_report TEXT NOT NULL DEFAULT ''",
             'ai_checked_at' => "ALTER TABLE course_submissions ADD COLUMN ai_checked_at TEXT NOT NULL DEFAULT ''",
+            'receipt_number' => "ALTER TABLE course_submissions ADD COLUMN receipt_number TEXT NOT NULL DEFAULT ''",
+            'file_sha256' => "ALTER TABLE course_submissions ADD COLUMN file_sha256 TEXT NOT NULL DEFAULT ''",
+            'submission_text' => "ALTER TABLE course_submissions ADD COLUMN submission_text TEXT NOT NULL DEFAULT ''",
+            'text_word_count' => "ALTER TABLE course_submissions ADD COLUMN text_word_count INTEGER NOT NULL DEFAULT 0",
+            'similarity_status' => "ALTER TABLE course_submissions ADD COLUMN similarity_status TEXT NOT NULL DEFAULT ''",
+            'similarity_score' => "ALTER TABLE course_submissions ADD COLUMN similarity_score REAL",
+            'similarity_report' => "ALTER TABLE course_submissions ADD COLUMN similarity_report TEXT NOT NULL DEFAULT ''",
+            'similarity_checked_at' => "ALTER TABLE course_submissions ADD COLUMN similarity_checked_at TEXT NOT NULL DEFAULT ''",
+            'process_edit_seconds' => "ALTER TABLE course_submissions ADD COLUMN process_edit_seconds INTEGER NOT NULL DEFAULT 0",
+            'process_paste_events' => "ALTER TABLE course_submissions ADD COLUMN process_paste_events INTEGER NOT NULL DEFAULT 0",
+            'process_pasted_chars' => "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
+            'eula_accepted_at' => "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
         ];
         foreach ($submissionAdds as $col => $sql) {
             if (!in_array($col, $submissionCols, true)) {

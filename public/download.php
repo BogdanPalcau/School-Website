@@ -27,6 +27,7 @@ function portal_send_file(string $absPath, string $displayName, bool $inline = f
     $ext      = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
     $mimeMap  = [
         'pdf'  => 'application/pdf',
+        'doc'  => 'application/msword',
         'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'txt'  => 'text/plain; charset=UTF-8',

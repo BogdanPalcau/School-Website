@@ -507,7 +507,7 @@ body {
 <?php else: ?>
     <div class="vc-scroll">
         <div class="vw-error">
-            Presentation preview for .<?= htmlspecialchars($ext) ?> files needs LibreOffice on the server.
+            Inline preview is not available for .<?= htmlspecialchars($ext) ?> files. Use Download to open it locally.
         </div>
     </div>
 <?php endif; ?>
