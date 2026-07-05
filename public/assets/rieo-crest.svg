@@ -1,0 +1,56 @@
+<svg width="1536" height="1536" viewBox="0 0 1536 1536" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RIEO crest</title>
+  <desc id="desc">RIEO school crest with flame, shield, graduation cap, book, and students.</desc>
+  <defs>
+    <style>
+      .navy { fill: #16245a; }
+      .navy-stroke { stroke: #16245a; stroke-width: 18; stroke-linejoin: round; stroke-linecap: round; }
+      .red { fill: #aa2b25; }
+      .orange { fill: #ee7b2a; }
+      .white { fill: #ffffff; }
+      .outline { fill: #ffffff; stroke: #16245a; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <g>
+    <path class="red navy-stroke" d="M382 679c-112-29-175-112-159-217 9-60 47-113 103-152-18 74-10 140 24 196 40 67 108 104 192 132-50 40-105 56-160 41Z"/>
+    <path class="red navy-stroke" d="M1154 679c112-29 175-112 159-217-9-60-47-113-103-152 18 74 10 140-24 196-40 67-108 104-192 132 50 40 105 56 160 41Z"/>
+    <path class="red navy-stroke" d="M276 718c-57-13-93-51-111-111-26 95 28 154 128 193-35 33-50 72-43 120 37-53 92-90 164-104l-38-130c-35 26-68 36-100 32Z"/>
+    <path class="red navy-stroke" d="M1260 718c57-13 93-51 111-111 26 95-28 154-128 193 35 33 50 72 43 120-37-53-92-90-164-104l38-130c35 26 68 36 100 32Z"/>
+    <path class="orange navy-stroke" d="M382 321c39-92 94-131 182-171-55 72-78 123-91 179-58 47-93 97-116 160-17-59-11-118 25-168Z"/>
+    <path class="orange navy-stroke" d="M1154 321c-39-92-94-131-182-171 55 72 78 123 91 179 58 47 93 97 116 160 17-59 11-118-25-168Z"/>
+    <path class="orange navy-stroke" d="M246 897c-16 21-31 44-43 69-16-55 7-101 62-139-15 30-20 53-19 70Z"/>
+    <path class="orange navy-stroke" d="M1290 897c16 21 31 44 43 69 16-55-7-101-62-139 15 30 20 53 19 70Z"/>
+  </g>
+
+  <path class="red navy-stroke" d="M706 356c30-36 65-51 108-56 54-6 87-7 117-33 28-24 57-49 59-86 42 37 42 83 0 138 25 48 21 92-16 134-33-30-55-44-87-35 2 38-38 65-83 83-60 24-109 56-135 94 4-58 29-102 81-132-31-58-23-89-44-107Z"/>
+
+  <path class="outline" d="M636 549 768 548 900 549 1070 726c35 209-58 421-302 496-244-75-337-287-302-496l170-177Z"/>
+  <path class="white navy-stroke" d="M385 792c104-35 190-89 282-181l101-2 101 2c92 92 178 146 282 181-37 182-136 311-383 399-247-88-346-217-383-399Z"/>
+
+  <g>
+    <path class="navy" d="M768 650 914 724 767 792 621 724l147-74Z"/>
+    <path class="white" d="M723 713 777 682 844 719 777 750l-54-37Z"/>
+    <path class="navy" d="M657 769 768 815 878 769v78H657v-78Z"/>
+    <path class="navy" d="M889 739h15v82h-15z"/>
+    <circle class="navy" cx="896" cy="842" r="20"/>
+  </g>
+
+  <g>
+    <text x="768" y="1008" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="156" font-weight="700" letter-spacing="6" fill="#aa2b25" stroke="#16245a" stroke-width="7" paint-order="stroke fill">RIEO</text>
+    <path class="navy" d="M668 1124c0-33 27-60 60-60 18 0 34 8 45 20 12-22 35-37 62-37s50 15 62 37c11-12 27-20 45-20 33 0 60 27 60 60 0 3 0 6-1 9 25 8 43 31 43 59v15H628v-15c0-28 18-51 43-59-2-3-3-6-3-9Z"/>
+    <path class="navy" d="M532 1245c71 34 149 63 236 90 87-27 165-56 236-90l-43 52 201-53-20-35c48 27 93 52 133 77-151 57-319 84-507 84s-356-27-507-84c40-25 85-50 133-77l-20 35 201 53-43-52Z"/>
+    <path class="red navy-stroke" d="M717 1356c14-23 31-36 51-43 20 7 37 20 51 43 21-8 42-7 66 2-36 25-58 67-65 127-14-40-31-71-52-93-21 22-38 53-52 93-7-60-29-102-65-127 24-9 45-10 66-2Z"/>
+  </g>
+
+  <g>
+    <path class="orange navy-stroke" d="M438 1147c-24-4-45-17-62-39 34-11 60 4 76 46l-14-7Z"/>
+    <path class="orange navy-stroke" d="M489 1192c-25-15-39-38-43-70 37 9 55 31 56 68l-13 2Z"/>
+    <path class="orange navy-stroke" d="M441 1233c-31 2-56-9-77-34 38-17 68-6 91 34h-14Z"/>
+    <path class="orange navy-stroke" d="M508 1262c-28 10-53 6-76-12 29-28 60-27 89 3l-13 9Z"/>
+    <path class="orange navy-stroke" d="M1098 1147c24-4 45-17 62-39-34-11-60 4-76 46l14-7Z"/>
+    <path class="orange navy-stroke" d="M1047 1192c25-15 39-38 43-70-37 9-55 31-56 68l13 2Z"/>
+    <path class="orange navy-stroke" d="M1095 1233c31 2 56-9 77-34-38-17-68-6-91 34h14Z"/>
+    <path class="orange navy-stroke" d="M1028 1262c28 10 53 6 76-12-29-28-60-27-89 3l13 9Z"/>
+  </g>
+</svg>
