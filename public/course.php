@@ -112,6 +112,26 @@ try {
         )
     ");
 } catch (\PDOException $e) {}
+try {
+    portal_db()->exec("
+        CREATE TABLE IF NOT EXISTS course_submission_annotations (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL REFERENCES course_submissions(id) ON DELETE CASCADE,
+            course_id     INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            author_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            anchor_type   TEXT NOT NULL DEFAULT 'text',
+            range_start   INTEGER,
+            range_end     INTEGER,
+            quote         TEXT NOT NULL DEFAULT '',
+            pos_x         REAL,
+            pos_y         REAL,
+            comment       TEXT NOT NULL DEFAULT '',
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+    portal_db()->exec("CREATE INDEX IF NOT EXISTS idx_submission_annotations ON course_submission_annotations(submission_id)");
+} catch (\PDOException $e) {}
 
 $integrityEulaVersion = 'integrity-tools-2026-07';
 
@@ -547,6 +567,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
                 $_SESSION['course_flash'] = ['success', 'Submission marked.'];
             }
+
+        } elseif ($action === 'save_annotation' && portal_can_manage_course($courseId)) {
+            header('Content-Type: application/json');
+            $subId = (int) ($_POST['submission_id'] ?? 0);
+            $chk = $db->prepare("SELECT id FROM course_submissions WHERE id = ? AND course_id = ?");
+            $chk->execute([$subId, $courseId]);
+            if (!$chk->fetch()) {
+                echo json_encode(['ok' => false, 'error' => 'Submission not found.']);
+                exit;
+            }
+
+            $annId      = (int) ($_POST['annotation_id'] ?? 0);
+            $anchorType = (string) ($_POST['anchor_type'] ?? 'text');
+            if (!in_array($anchorType, ['text', 'image', 'general'], true)) {
+                $anchorType = 'text';
+            }
+            $comment = trim((string) ($_POST['comment'] ?? ''));
+            $comment = mb_substr($comment, 0, 2000);
+            if ($comment === '') {
+                echo json_encode(['ok' => false, 'error' => 'Comment cannot be empty.']);
+                exit;
+            }
+            $quote      = mb_substr((string) ($_POST['quote'] ?? ''), 0, 2000);
+            $rangeStart = isset($_POST['range_start']) && $_POST['range_start'] !== '' ? (int) $_POST['range_start'] : null;
+            $rangeEnd   = isset($_POST['range_end']) && $_POST['range_end'] !== '' ? (int) $_POST['range_end'] : null;
+            $posX       = isset($_POST['pos_x']) && $_POST['pos_x'] !== '' ? max(0.0, min(100.0, (float) $_POST['pos_x'])) : null;
+            $posY       = isset($_POST['pos_y']) && $_POST['pos_y'] !== '' ? max(0.0, min(100.0, (float) $_POST['pos_y'])) : null;
+
+            if ($annId > 0) {
+                $own = $db->prepare(
+                    "SELECT id FROM course_submission_annotations WHERE id = ? AND submission_id = ? AND course_id = ?"
+                );
+                $own->execute([$annId, $subId, $courseId]);
+                if ($own->fetch()) {
+                    $db->prepare(
+                        "UPDATE course_submission_annotations
+                         SET comment = ?, updated_at = datetime('now')
+                         WHERE id = ?"
+                    )->execute([$comment, $annId]);
+                }
+            } else {
+                $db->prepare(
+                    "INSERT INTO course_submission_annotations
+                     (submission_id, course_id, author_id, anchor_type, range_start, range_end, quote, pos_x, pos_y, comment)
+                     VALUES (?,?,?,?,?,?,?,?,?,?)"
+                )->execute([$subId, $courseId, (int) $me['id'], $anchorType, $rangeStart, $rangeEnd, $quote, $posX, $posY, $comment]);
+                $annId = (int) $db->lastInsertId();
+            }
+
+            $row = $db->prepare(
+                "SELECT a.*, u.name AS author_name
+                 FROM course_submission_annotations a
+                 LEFT JOIN users u ON u.id = a.author_id
+                 WHERE a.id = ?"
+            );
+            $row->execute([$annId]);
+            echo json_encode(['ok' => true, 'annotation' => $row->fetch() ?: null]);
+            exit;
+
+        } elseif ($action === 'delete_annotation' && portal_can_manage_course($courseId)) {
+            header('Content-Type: application/json');
+            $annId = (int) ($_POST['annotation_id'] ?? 0);
+            $db->prepare(
+                "DELETE FROM course_submission_annotations WHERE id = ? AND course_id = ?"
+            )->execute([$annId, $courseId]);
+            echo json_encode(['ok' => true]);
+            exit;
 
         } elseif ($action === 'delete_submission') {
             $subId = (int) ($_POST['submission_id'] ?? 0);
@@ -1045,6 +1132,36 @@ if (portal_can_manage_course($courseId)) {
     foreach ($_myStmt->fetchAll() as $_sub) {
         $mySubmissions[(int) $_sub['item_id']] = $_sub;
     }
+}
+
+// Review annotations grouped by submission id
+$submissionAnnotations = []; // submission_id → [ annotations ]
+try {
+    if (portal_can_manage_course($courseId)) {
+        $_anStmt = $_db->prepare(
+            "SELECT a.*, u.name AS author_name
+             FROM course_submission_annotations a
+             LEFT JOIN users u ON u.id = a.author_id
+             WHERE a.course_id = ?
+             ORDER BY a.id ASC"
+        );
+        $_anStmt->execute([$courseId]);
+    } else {
+        $_anStmt = $_db->prepare(
+            "SELECT a.*, u.name AS author_name
+             FROM course_submission_annotations a
+             LEFT JOIN users u ON u.id = a.author_id
+             JOIN course_submissions cs ON cs.id = a.submission_id
+             WHERE a.course_id = ? AND cs.user_id = ?
+             ORDER BY a.id ASC"
+        );
+        $_anStmt->execute([$courseId, (int) $_me['id']]);
+    }
+    foreach ($_anStmt->fetchAll() as $_an) {
+        $submissionAnnotations[(int) $_an['submission_id']][] = $_an;
+    }
+} catch (\PDOException $e) {
+    $submissionAnnotations = [];
 }
 
 if (portal_can_manage_course($courseId)) {
@@ -1664,50 +1781,22 @@ ob_start();
                                                                     <?php if (!empty($subs)): ?>
                                                                         <p class="sub-modal-count"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
                                                                         <?php foreach ($subs as $sub): ?>
-                                                                        <?php $subVersions = $submissionVersions[(int)$sub['id']] ?? []; ?>
-                                                                        <article class="sub-modal-entry">
-                                                                            <div class="sub-modal-entry-top">
-                                                                                <div class="sub-modal-entry-who">
-                                                                                    <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
-                                                                                    <div>
-                                                                                        <strong><?= portal_escape($sub['student_name']) ?></strong>
-                                                                                        <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($sub['submitted_at']))) ?></span>
-                                                                                    </div>
+                                                                        <article class="sub-modal-entry sub-modal-entry--row">
+                                                                            <div class="sub-modal-entry-who">
+                                                                                <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
+                                                                                <div>
+                                                                                    <strong><?= portal_escape($sub['student_name']) ?></strong>
+                                                                                    <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($sub['submitted_at']))) ?> &middot; <?= portal_escape($sub['filename']) ?></span>
                                                                                 </div>
+                                                                            </div>
+                                                                            <div class="sub-modal-entry-end">
                                                                                 <?php if ($sub['score'] !== null): ?>
                                                                                     <span class="sub-modal-grade sub-modal-grade--marked"><?= (int)$sub['score'] ?><small>/100</small></span>
                                                                                 <?php else: ?>
                                                                                     <span class="sub-modal-grade sub-modal-grade--pending">Not graded</span>
                                                                                 <?php endif; ?>
-                                                                            </div>
-
-                                                                            <div class="sub-modal-entry-file">
-                                                                                <a href="download.php?sub=<?= (int)$sub['id'] ?>" class="sub-download">
-                                                                                    <?= portal_icon('download', 'icon-xs') ?>
-                                                                                    <?= portal_escape($sub['filename']) ?>
-                                                                                </a>
-                                                                                <?php if (($sub['receipt_number'] ?? '') !== ''): ?>
-                                                                                    <span class="sub-receipt">Receipt <?= portal_escape($sub['receipt_number']) ?></span>
-                                                                                <?php endif; ?>
-                                                                            </div>
-
-                                                                            <form method="POST" class="sub-mark-form sub-mark-form--modal">
-                                                                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                                                                <input type="hidden" name="action" value="mark_submission">
-                                                                                <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
-                                                                                <input type="number" name="score" min="0" max="100" value="<?= $sub['score'] !== null ? (int)$sub['score'] : '' ?>" placeholder="Score">
-                                                                                <input type="text" name="feedback" maxlength="2000" value="<?= portal_escape($sub['feedback'] ?? '') ?>" placeholder="Feedback">
-                                                                                <button type="submit" class="button button--sm">Save mark</button>
-                                                                            </form>
-
-                                                                            <div class="sub-modal-entry-actions">
-                                                                                <form method="POST" class="sub-rerun-form">
-                                                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                                                                    <input type="hidden" name="action" value="rerun_integrity">
-                                                                                    <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
-                                                                                    <button type="submit" class="button button--sm button--ghost">Re-run checks</button>
-                                                                                </form>
-                                                                                <form method="POST" class="sub-delete-form">
+                                                                                <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$sub['id'] ?>">Open review</button>
+                                                                                <form method="POST" class="sub-delete-form" onsubmit="return confirm('Remove this submission?');">
                                                                                     <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                                                                     <input type="hidden" name="action" value="delete_submission">
                                                                                     <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
@@ -1716,26 +1805,6 @@ ob_start();
                                                                                     </button>
                                                                                 </form>
                                                                             </div>
-
-                                                                            <div class="sub-modal-section">
-                                                                                <h4 class="sub-modal-section-title">Originality report</h4>
-                                                                                <?= portal_render_integrity_report($sub, true) ?>
-                                                                            </div>
-
-                                                                            <?php if (!empty($subVersions)): ?>
-                                                                                <details class="process-history">
-                                                                                    <summary>Version history</summary>
-                                                                                    <div class="process-history-list">
-                                                                                        <?php foreach (array_slice($subVersions, 0, 5) as $version): ?>
-                                                                                            <div class="process-history-item">
-                                                                                                <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
-                                                                                                <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min edit time &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
-                                                                                                <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
-                                                                                            </div>
-                                                                                        <?php endforeach; ?>
-                                                                                    </div>
-                                                                                </details>
-                                                                            <?php endif; ?>
                                                                         </article>
                                                                         <?php endforeach; ?>
                                                                     <?php else: ?>
@@ -1743,46 +1812,21 @@ ob_start();
                                                                     <?php endif; ?>
 
                                                                 <?php else: ?>
-                                                                    <?php $myVersions = $mySub ? ($submissionVersions[(int)$mySub['id']] ?? []) : []; ?>
-
                                                                     <?php if ($mySub): ?>
-                                                                    <div class="sub-modal-download-bar">
-                                                                        <a href="download.php?sub=<?= (int)$mySub['id'] ?>" class="sub-download" onclick="event.stopPropagation()">
-                                                                            <?= portal_icon('download', 'icon-xs') ?>
-                                                                            Download <?= portal_escape($mySub['filename']) ?>
-                                                                        </a>
-                                                                    </div>
-                                                                    <?php endif; ?>
-
-                                                                    <?php if ($mySub && ($mySub['feedback'] ?? '') !== ''): ?>
-                                                                    <section class="sub-modal-section">
-                                                                        <h4 class="sub-modal-section-title">Teacher feedback</h4>
-                                                                        <div class="sub-modal-feedback">
-                                                                            <p><?= portal_escape($mySub['feedback']) ?></p>
+                                                                    <div class="sub-modal-mine">
+                                                                        <div class="sub-modal-mine-info">
+                                                                            <span class="sub-slot-file"><?= portal_icon('file', 'icon-xs') ?><?= portal_escape($mySub['filename']) ?></span>
+                                                                            <span class="sub-modal-mine-meta">Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?></span>
                                                                         </div>
-                                                                    </section>
-                                                                    <?php endif; ?>
-
-                                                                    <?php if ($mySub): ?>
-                                                                    <section class="sub-modal-section">
-                                                                        <h4 class="sub-modal-section-title">Similarity</h4>
-                                                                        <?= portal_render_integrity_report($mySub, false) ?>
-                                                                    </section>
-
-                                                                    <?php if (!empty($myVersions) && count($myVersions) > 1): ?>
-                                                                    <section class="sub-modal-section">
-                                                                        <details class="process-history">
-                                                                            <summary>Previous submissions</summary>
-                                                                            <div class="process-history-list">
-                                                                                <?php foreach (array_slice($myVersions, 0, 5) as $version): ?>
-                                                                                    <div class="process-history-item">
-                                                                                        <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
-                                                                                    </div>
-                                                                                <?php endforeach; ?>
-                                                                            </div>
-                                                                        </details>
-                                                                    </section>
-                                                                    <?php endif; ?>
+                                                                        <div class="sub-modal-mine-end">
+                                                                            <?php if ($mySub['score'] !== null): ?>
+                                                                                <span class="sub-modal-grade sub-modal-grade--marked"><?= (int)$mySub['score'] ?><small>/100</small></span>
+                                                                            <?php else: ?>
+                                                                                <span class="sub-modal-grade sub-modal-grade--pending">Not graded</span>
+                                                                            <?php endif; ?>
+                                                                            <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$mySub['id'] ?>">Open review</button>
+                                                                        </div>
+                                                                    </div>
                                                                     <?php endif; ?>
 
                                                                     <?php if ($deadlinePassed): ?>
@@ -1800,7 +1844,7 @@ ob_start();
                                                                             <input type="hidden" name="process_paste_events" value="0">
                                                                             <input type="hidden" name="process_pasted_chars" value="0">
                                                                             <label class="submit-file-label">
-                                                                                <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt">
+                                                                                <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt,.png,.jpg,.jpeg,.gif,.webp">
                                                                                 <span class="submit-hint"><?= portal_escape(portal_supported_submission_hint()) ?> — max 40 MB</span>
                                                                             </label>
                                                                             <label class="submit-file-label">
@@ -1815,6 +1859,43 @@ ob_start();
                                                                 </div>
                                                             </div>
                                                         </div>
+
+                                                        <?php
+                                                            // Dedicated Turnitin-style review overlays
+                                                            $reviewList = portal_can_manage_course($courseId)
+                                                                ? $subs
+                                                                : ($mySub ? [$mySub] : []);
+                                                            $isTeacherReview = portal_can_manage_course($courseId);
+                                                        ?>
+                                                        <?php foreach ($reviewList as $reviewSub): ?>
+                                                            <?php
+                                                                $reviewAnns = $submissionAnnotations[(int) $reviewSub['id']] ?? [];
+                                                                $reviewWho  = $isTeacherReview ? (string) ($reviewSub['student_name'] ?? '') : 'Your submission';
+                                                            ?>
+                                                            <div id="rvw-<?= (int) $reviewSub['id'] ?>" class="rvw-overlay" hidden role="dialog" aria-modal="true">
+                                                                <div class="rvw-dialog">
+                                                                    <header class="rvw-dialog-header">
+                                                                        <div class="rvw-dialog-heading">
+                                                                            <p class="eyebrow">Assignment review</p>
+                                                                            <h3><?= portal_escape($item['title']) ?></h3>
+                                                                            <p class="rvw-dialog-sub"><?= portal_escape($reviewWho) ?> &middot; <?= portal_escape((string) $reviewSub['filename']) ?> &middot; <?= portal_escape(date('j M Y H:i', strtotime((string) $reviewSub['submitted_at']))) ?></p>
+                                                                        </div>
+                                                                        <div class="rvw-dialog-actions">
+                                                                            <?php if ($isTeacherReview): ?>
+                                                                                <form method="POST" class="sub-rerun-form">
+                                                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                                    <input type="hidden" name="action" value="rerun_integrity">
+                                                                                    <input type="hidden" name="submission_id" value="<?= (int) $reviewSub['id'] ?>">
+                                                                                    <button type="submit" class="button button--sm button--ghost">Re-run checks</button>
+                                                                                </form>
+                                                                            <?php endif; ?>
+                                                                            <button type="button" class="rvw-close" aria-label="Close">&times;</button>
+                                                                        </div>
+                                                                    </header>
+                                                                    <?= portal_render_submission_review($reviewSub, $isTeacherReview, $item, $reviewAnns, $csrfToken) ?>
+                                                                </div>
+                                                            </div>
+                                                        <?php endforeach; ?>
                                                         <?php $submissionModals .= ob_get_clean(); ?>
                                                     <?php endif; ?>
                                                     <?php endif; // end locked check ?>
@@ -2949,6 +3030,307 @@ ob_start();
             if (pastedCharsField) pastedCharsField.value = String(pastedChars);
         });
     });
+
+    // ── Turnitin-style submission review (all users) ────────────────────────
+    (function initReview() {
+        const tokenInput = document.querySelector('input[name="_token"]');
+        const csrf = tokenInput ? tokenInput.value : '';
+        const courseParam = new URLSearchParams(location.search).get('course') || '';
+        let openReview = null;
+
+        function escapeHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function offsetInNode(root, node, offset) {
+            let total = 0;
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+            let cur;
+            while ((cur = walker.nextNode())) {
+                if (cur === node) return total + offset;
+                total += cur.textContent.length;
+            }
+            if (node === root) {
+                let n = 0, sum = 0;
+                for (const child of root.childNodes) {
+                    if (n >= offset) break;
+                    sum += child.textContent.length;
+                    n++;
+                }
+                return sum;
+            }
+            return total;
+        }
+
+        function openReviewOverlay(overlay) {
+            if (!overlay) return;
+            overlay.hidden = false;
+            document.body.classList.add('sub-slot-body-lock');
+            openReview = overlay;
+            requestAnimationFrame(() => overlay.classList.add('rvw-overlay--in'));
+        }
+        function closeReviewOverlay(overlay) {
+            if (!overlay) return;
+            overlay.classList.remove('rvw-overlay--in');
+            setTimeout(() => {
+                overlay.hidden = true;
+                if (openReview === overlay) openReview = null;
+                if (!document.querySelector('.rvw-overlay:not([hidden]), .sub-slot-overlay:not([hidden])')) {
+                    document.body.classList.remove('sub-slot-body-lock');
+                }
+            }, 200);
+        }
+
+        document.querySelectorAll('[data-review-open]').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                openReviewOverlay(document.getElementById(btn.dataset.reviewOpen));
+            });
+        });
+        document.querySelectorAll('.rvw-overlay .rvw-close').forEach(btn => {
+            btn.addEventListener('click', () => closeReviewOverlay(btn.closest('.rvw-overlay')));
+        });
+        document.querySelectorAll('.rvw-overlay').forEach(ov => {
+            ov.addEventListener('click', e => { if (e.target === ov) closeReviewOverlay(ov); });
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'Escape') return;
+            const pop = document.querySelector('.rvw-popover');
+            if (pop) { pop.remove(); return; }
+            if (openReview) closeReviewOverlay(openReview);
+        });
+
+        function postAction(params) {
+            const body = new URLSearchParams(params);
+            body.set('_token', csrf);
+            return fetch('course.php?course=' + encodeURIComponent(courseParam), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' },
+                body: body.toString()
+            }).then(r => r.json());
+        }
+
+        function normalizeAnn(a) {
+            return {
+                id: parseInt(a.id, 10),
+                anchor_type: a.anchor_type,
+                range_start: a.range_start != null ? parseInt(a.range_start, 10) : null,
+                range_end: a.range_end != null ? parseInt(a.range_end, 10) : null,
+                quote: a.quote || '',
+                pos_x: a.pos_x != null ? parseFloat(a.pos_x) : null,
+                pos_y: a.pos_y != null ? parseFloat(a.pos_y) : null,
+                comment: a.comment || '',
+                author: a.author_name || a.author || ''
+            };
+        }
+
+        function closeComposer() {
+            document.querySelectorAll('.rvw-popover').forEach(p => p.remove());
+        }
+
+        document.querySelectorAll('.rvw-shell').forEach(shell => {
+            const subId = shell.dataset.submissionId;
+            const canAnnotate = shell.dataset.canAnnotate === '1';
+            const dataEl = shell.querySelector('.rvw-annotations-data');
+            let annotations = [];
+            try { annotations = JSON.parse((dataEl && dataEl.textContent) || '[]'); } catch (_) { annotations = []; }
+
+            const commentsEl = shell.querySelector('[data-comments]');
+            const textEl = shell.querySelector('[data-doc-text]');
+            const rawText = textEl ? textEl.textContent : '';
+            const imageWrap = shell.querySelector('[data-image-layer]');
+            const pinsEl = shell.querySelector('[data-pins]');
+
+            function render() {
+                renderComments();
+                if (textEl) renderHighlights();
+                if (pinsEl) renderPins();
+            }
+
+            function renderHighlights() {
+                const ranges = annotations
+                    .filter(a => a.anchor_type === 'text' && a.range_start != null && a.range_end != null && a.range_end > a.range_start)
+                    .sort((a, b) => a.range_start - b.range_start);
+                let html = '', cursor = 0;
+                ranges.forEach(a => {
+                    if (a.range_start < cursor) return;
+                    html += escapeHtml(rawText.slice(cursor, a.range_start));
+                    html += '<mark class="rvw-hl" data-ann="' + a.id + '">' + escapeHtml(rawText.slice(a.range_start, a.range_end)) + '</mark>';
+                    cursor = a.range_end;
+                });
+                html += escapeHtml(rawText.slice(cursor));
+                textEl.innerHTML = html;
+                textEl.querySelectorAll('mark.rvw-hl').forEach(m => {
+                    m.addEventListener('click', () => focusComment(parseInt(m.dataset.ann, 10)));
+                });
+            }
+
+            function renderPins() {
+                pinsEl.innerHTML = '';
+                let n = 0;
+                annotations.filter(a => a.anchor_type === 'image' && a.pos_x != null && a.pos_y != null).forEach(a => {
+                    n++;
+                    const pin = document.createElement('button');
+                    pin.type = 'button';
+                    pin.className = 'rvw-pin';
+                    pin.dataset.ann = a.id;
+                    pin.style.left = a.pos_x + '%';
+                    pin.style.top = a.pos_y + '%';
+                    pin.textContent = String(n);
+                    pin.addEventListener('click', () => focusComment(a.id));
+                    pinsEl.appendChild(pin);
+                });
+            }
+
+            function renderComments() {
+                commentsEl.innerHTML = '';
+                if (!annotations.length) {
+                    const p = document.createElement('p');
+                    p.className = 'rvw-comments-empty';
+                    p.textContent = canAnnotate
+                        ? 'No comments yet. Select text or click the image to add one.'
+                        : 'No comments from your teacher yet.';
+                    commentsEl.appendChild(p);
+                    return;
+                }
+                annotations.forEach(a => {
+                    const card = document.createElement('div');
+                    card.className = 'rvw-comment';
+                    card.dataset.ann = a.id;
+                    let inner = '';
+                    if (a.quote) inner += '<p class="rvw-comment-quote">\u201C' + escapeHtml(a.quote) + '\u201D</p>';
+                    inner += '<p class="rvw-comment-body">' + escapeHtml(a.comment) + '</p>';
+                    inner += '<div class="rvw-comment-meta"><span class="rvw-comment-author">' + escapeHtml(a.author || '') + '</span>';
+                    if (canAnnotate) {
+                        inner += '<span class="rvw-comment-actions">'
+                            + '<button type="button" class="rvw-comment-btn" data-edit="' + a.id + '">Edit</button>'
+                            + '<button type="button" class="rvw-comment-btn rvw-comment-btn--danger" data-del="' + a.id + '">Delete</button>'
+                            + '</span>';
+                    }
+                    inner += '</div>';
+                    card.innerHTML = inner;
+                    card.addEventListener('click', e => {
+                        if (e.target.closest('[data-edit],[data-del]')) return;
+                        focusComment(a.id);
+                    });
+                    commentsEl.appendChild(card);
+                });
+                if (canAnnotate) {
+                    commentsEl.querySelectorAll('[data-del]').forEach(b =>
+                        b.addEventListener('click', () => deleteAnnotation(parseInt(b.dataset.del, 10))));
+                    commentsEl.querySelectorAll('[data-edit]').forEach(b =>
+                        b.addEventListener('click', () => {
+                            const a = annotations.find(x => x.id === parseInt(b.dataset.edit, 10));
+                            if (a) openComposer({ existing: a });
+                        }));
+                }
+            }
+
+            function focusComment(id) {
+                shell.querySelectorAll('.rvw-comment--active').forEach(el => el.classList.remove('rvw-comment--active'));
+                shell.querySelectorAll('mark.rvw-hl--active').forEach(el => el.classList.remove('rvw-hl--active'));
+                shell.querySelectorAll('.rvw-pin--active').forEach(el => el.classList.remove('rvw-pin--active'));
+                const card = commentsEl.querySelector('.rvw-comment[data-ann="' + id + '"]');
+                if (card) { card.classList.add('rvw-comment--active'); card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+                const mark = shell.querySelector('mark.rvw-hl[data-ann="' + id + '"]');
+                if (mark) mark.classList.add('rvw-hl--active');
+                const pin = shell.querySelector('.rvw-pin[data-ann="' + id + '"]');
+                if (pin) pin.classList.add('rvw-pin--active');
+            }
+
+            function saveAnnotation(payload) {
+                return postAction(Object.assign({ action: 'save_annotation', submission_id: subId }, payload)).then(res => {
+                    if (res && res.ok && res.annotation) {
+                        const norm = normalizeAnn(res.annotation);
+                        const idx = annotations.findIndex(a => a.id === norm.id);
+                        if (idx >= 0) annotations[idx] = norm; else annotations.push(norm);
+                        render();
+                        focusComment(norm.id);
+                    } else if (res && res.error) {
+                        alert(res.error);
+                    }
+                }).catch(() => alert('Could not save the comment.'));
+            }
+
+            function deleteAnnotation(id) {
+                if (!confirm('Delete this comment?')) return;
+                postAction({ action: 'delete_annotation', annotation_id: id }).then(res => {
+                    if (res && res.ok) {
+                        annotations = annotations.filter(a => a.id !== id);
+                        render();
+                    }
+                });
+            }
+
+            function openComposer(opts) {
+                closeComposer();
+                const pop = document.createElement('div');
+                pop.className = 'rvw-popover';
+                pop.innerHTML = '<textarea placeholder="Write a comment\u2026"></textarea>'
+                    + '<div class="rvw-popover-actions">'
+                    + '<button type="button" class="button button--sm button--ghost" data-cancel>Cancel</button>'
+                    + '<button type="button" class="button button--sm" data-save>Save</button></div>';
+                document.body.appendChild(pop);
+                const x = Math.min(opts.x != null ? opts.x : window.innerWidth / 2, window.innerWidth - 276);
+                const y = Math.min(opts.y != null ? opts.y : window.innerHeight / 2, window.innerHeight - 170);
+                pop.style.left = Math.max(12, x) + 'px';
+                pop.style.top = Math.max(12, y) + 'px';
+                const ta = pop.querySelector('textarea');
+                if (opts.existing) ta.value = opts.existing.comment;
+                ta.focus();
+                pop.querySelector('[data-cancel]').addEventListener('click', closeComposer);
+                pop.querySelector('[data-save]').addEventListener('click', () => {
+                    const val = ta.value.trim();
+                    if (!val) { ta.focus(); return; }
+                    const payload = { comment: val };
+                    if (opts.existing) {
+                        payload.annotation_id = opts.existing.id;
+                    } else {
+                        payload.anchor_type = opts.anchor_type;
+                        if (opts.anchor_type === 'text') {
+                            payload.range_start = opts.start;
+                            payload.range_end = opts.end;
+                            payload.quote = opts.quote;
+                        } else if (opts.anchor_type === 'image') {
+                            payload.pos_x = opts.pos_x;
+                            payload.pos_y = opts.pos_y;
+                        }
+                    }
+                    saveAnnotation(payload).then(closeComposer);
+                });
+            }
+
+            if (canAnnotate && textEl) {
+                textEl.addEventListener('mouseup', () => {
+                    const sel = window.getSelection();
+                    if (!sel || sel.isCollapsed) return;
+                    const range = sel.getRangeAt(0);
+                    if (!textEl.contains(range.startContainer) || !textEl.contains(range.endContainer)) return;
+                    const start = offsetInNode(textEl, range.startContainer, range.startOffset);
+                    const end = offsetInNode(textEl, range.endContainer, range.endOffset);
+                    if (end <= start) return;
+                    const rect = range.getBoundingClientRect();
+                    const quote = rawText.slice(start, end);
+                    sel.removeAllRanges();
+                    openComposer({ anchor_type: 'text', start, end, quote, x: rect.left, y: rect.bottom + 8 });
+                });
+            }
+
+            if (canAnnotate && imageWrap) {
+                const img = imageWrap.querySelector('img');
+                if (img) {
+                    img.addEventListener('click', e => {
+                        const rect = img.getBoundingClientRect();
+                        const px = ((e.clientX - rect.left) / rect.width) * 100;
+                        const py = ((e.clientY - rect.top) / rect.height) * 100;
+                        openComposer({ anchor_type: 'image', pos_x: px.toFixed(2), pos_y: py.toFixed(2), x: e.clientX, y: e.clientY + 8 });
+                    });
+                }
+            }
+
+            render();
+        });
+    })();
 
     // ── Common setup ──────────────────────────────────────────────────────────
     const pageData = document.getElementById('portal-page-data');

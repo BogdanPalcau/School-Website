@@ -196,6 +196,24 @@ $_pdo->exec("
 ");
 
 $_pdo->exec("
+    CREATE TABLE IF NOT EXISTS course_submission_annotations (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        submission_id INTEGER NOT NULL REFERENCES course_submissions(id) ON DELETE CASCADE,
+        course_id     INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        author_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        anchor_type   TEXT NOT NULL DEFAULT 'text',
+        range_start   INTEGER,
+        range_end     INTEGER,
+        quote         TEXT NOT NULL DEFAULT '',
+        pos_x         REAL,
+        pos_y         REAL,
+        comment       TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+");
+
+$_pdo->exec("
     CREATE TABLE IF NOT EXISTS course_schedule (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,

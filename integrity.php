@@ -216,17 +216,32 @@ if (!function_exists('portal_integrity_normalize_text')) {
     }
 }
 
+if (!function_exists('portal_submission_image_extensions')) {
+    function portal_submission_image_extensions(): array
+    {
+        return ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+    }
+}
+
+if (!function_exists('portal_submission_is_image')) {
+    function portal_submission_is_image(string $filename): bool
+    {
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        return in_array($ext, portal_submission_image_extensions(), true);
+    }
+}
+
 if (!function_exists('portal_supported_submission_extensions')) {
     function portal_supported_submission_extensions(): array
     {
-        return ['doc', 'docx', 'pdf', 'txt'];
+        return array_merge(['doc', 'docx', 'pdf', 'txt'], portal_submission_image_extensions());
     }
 }
 
 if (!function_exists('portal_supported_submission_hint')) {
     function portal_supported_submission_hint(): string
     {
-        return 'DOC, DOCX, PDF, or TXT';
+        return 'DOC, DOCX, PDF, TXT, or an image (PNG, JPG)';
     }
 }
 
@@ -1785,6 +1800,286 @@ if (!function_exists('portal_render_integrity_report')) {
                     <?php endif; ?>
                 </div>
             <?php endif; ?>
+        </div>
+        <?php
+        return trim((string) ob_get_clean());
+    }
+}
+
+if (!function_exists('portal_integrity_tone')) {
+    /** Map a 0-100 risk score to a tone: good | warn | bad. */
+    function portal_integrity_tone(?float $score, float $warnAt = 15.0, float $badAt = 40.0): string
+    {
+        if ($score === null) {
+            return 'muted';
+        }
+        if ($score >= $badAt) {
+            return 'bad';
+        }
+        if ($score >= $warnAt) {
+            return 'warn';
+        }
+        return 'good';
+    }
+}
+
+if (!function_exists('portal_integrity_summary_cards')) {
+    /**
+     * Compact, expandable summary cards used in the review panel.
+     * Detailed evidence is only rendered for teachers ($isTeacher = true).
+     */
+    function portal_integrity_summary_cards(array $submission, bool $isTeacher): string
+    {
+        $report      = portal_integrity_report_data($submission);
+        $simScore    = isset($report['score']) && $report['score'] !== null ? (float) $report['score'] : null;
+        $matches     = is_array($report['matches'] ?? null) ? $report['matches'] : [];
+        $processRev   = is_array($report['process_review'] ?? null) ? $report['process_review'] : null;
+        $heuristicAi  = is_array($report['heuristic_ai'] ?? null) ? $report['heuristic_ai'] : null;
+        $fileMeta     = is_array($report['file_metadata'] ?? null) ? $report['file_metadata'] : null;
+
+        $aiChance    = $heuristicAi !== null && isset($heuristicAi['score']) ? (float) $heuristicAi['score'] : null;
+        $processLevel = $processRev['level'] ?? 'low';
+        $processLabel = match ($processLevel) {
+            'high'   => 'Needs review',
+            'medium' => 'Some signals',
+            default  => 'Looks normal',
+        };
+        $processTone = match ($processLevel) {
+            'high'   => 'bad',
+            'medium' => 'warn',
+            default  => 'good',
+        };
+
+        $keyConfigured = portal_zero_gpt_api_key() !== '';
+        $extStatus = (string) ($submission['ai_status'] ?? '');
+        $extScore  = ($submission['ai_score'] ?? null) !== null ? (float) $submission['ai_score'] : null;
+
+        $editSeconds = (int) ($submission['process_edit_seconds'] ?? 0);
+        $pasteEvents = (int) ($submission['process_paste_events'] ?? 0);
+
+        ob_start();
+        ?>
+        <div class="rvw-cards">
+
+            <!-- Similarity -->
+            <details class="rvw-card rvw-card--<?= portal_escape(portal_integrity_tone($simScore)) ?>"<?= ($isTeacher && !empty($matches)) ? '' : ' data-static="1"' ?>>
+                <summary class="rvw-card-head">
+                    <span class="rvw-card-label">Similarity</span>
+                    <span class="rvw-card-value"><?= $simScore !== null ? portal_escape((string) round($simScore, 1)) . '%' : '—' ?></span>
+                </summary>
+                <div class="rvw-card-body">
+                    <?php if ($isTeacher && !empty($matches)): ?>
+                        <p class="rvw-card-note">Overlap found against the sources below.</p>
+                        <?php foreach (array_slice($matches, 0, 6) as $match): ?>
+                            <div class="rvw-source">
+                                <div class="rvw-source-head">
+                                    <strong><?= portal_escape((string) ($match['source'] ?? 'Matched source')) ?></strong>
+                                    <span><?= portal_escape((string) round((float) ($match['score'] ?? 0), 1)) ?>%</span>
+                                </div>
+                                <?php if (($match['snippet'] ?? '') !== ''): ?>
+                                    <p><?= portal_escape((string) $match['snippet']) ?></p>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <p class="rvw-card-note">
+                            <?php if ($simScore === null): ?>
+                                Similarity is still being processed.
+                            <?php elseif ($simScore < 15): ?>
+                                No significant overlap was found with other sources.
+                            <?php else: ?>
+                                Some overlap with other sources was found.
+                            <?php endif; ?>
+                        </p>
+                    <?php endif; ?>
+                </div>
+            </details>
+
+            <!-- Chance of AI usage -->
+            <details class="rvw-card rvw-card--<?= portal_escape(portal_integrity_tone($aiChance, 20, 45)) ?>"<?= $isTeacher ? '' : ' data-static="1"' ?>>
+                <summary class="rvw-card-head">
+                    <span class="rvw-card-label">Chance of AI usage</span>
+                    <span class="rvw-card-value"><?= $aiChance !== null ? portal_escape((string) round($aiChance, 0)) . '%' : '—' ?></span>
+                </summary>
+                <div class="rvw-card-body">
+                    <p class="rvw-card-note rvw-card-note--soft">Statistical estimate only — not proof of AI use.</p>
+                    <?php if ($isTeacher): ?>
+                        <?php if ($heuristicAi !== null && !empty($heuristicAi['signals'])): ?>
+                            <p class="rvw-evidence-title">Writing-style signals</p>
+                            <ul class="rvw-evidence-list">
+                                <?php foreach ($heuristicAi['signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                        <?php if ($fileMeta !== null && !empty($fileMeta['available'])): ?>
+                            <p class="rvw-evidence-title">Authenticity evidence</p>
+                            <ul class="rvw-evidence-list">
+                                <?php if (($fileMeta['author'] ?? '') !== ''): ?><li>Document author: <strong><?= portal_escape((string) $fileMeta['author']) ?></strong></li><?php endif; ?>
+                                <?php if (($fileMeta['edit_time_minutes'] ?? null) !== null): ?><li>Editing time: <strong><?= (int) $fileMeta['edit_time_minutes'] ?> min</strong></li><?php endif; ?>
+                                <?php if (($fileMeta['application'] ?? '') !== ''): ?><li>Application: <strong><?= portal_escape((string) $fileMeta['application']) ?></strong></li><?php endif; ?>
+                                <?php if ($pasteEvents > 0): ?><li>Paste events while typing: <strong><?= $pasteEvents ?></strong></li><?php endif; ?>
+                            </ul>
+                        <?php endif; ?>
+                    <?php else: ?>
+                        <p class="rvw-card-note">Your teacher can review the detailed evidence.</p>
+                    <?php endif; ?>
+                </div>
+            </details>
+
+            <!-- Writing process -->
+            <details class="rvw-card rvw-card--<?= portal_escape($processTone) ?>"<?= $isTeacher ? '' : ' data-static="1"' ?>>
+                <summary class="rvw-card-head">
+                    <span class="rvw-card-label">Writing process</span>
+                    <span class="rvw-card-value rvw-card-value--text"><?= portal_escape($processLabel) ?></span>
+                </summary>
+                <div class="rvw-card-body">
+                    <?php if ($isTeacher): ?>
+                        <ul class="rvw-evidence-list">
+                            <li>Editing time in portal: <strong><?= (int) round($editSeconds / 60) ?> min</strong></li>
+                            <li>Paste events: <strong><?= $pasteEvents ?></strong></li>
+                            <?php if ($fileMeta !== null && ($fileMeta['edit_time_minutes'] ?? null) !== null): ?>
+                                <li>File editing time: <strong><?= (int) $fileMeta['edit_time_minutes'] ?> min</strong></li>
+                            <?php endif; ?>
+                        </ul>
+                        <?php if ($processRev !== null && !empty($processRev['signals'])): ?>
+                            <ul class="rvw-evidence-list">
+                                <?php foreach ($processRev['signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    <?php else: ?>
+                        <p class="rvw-card-note">Your submission process looked <?= portal_escape(strtolower($processLabel)) ?>.</p>
+                    <?php endif; ?>
+                </div>
+            </details>
+
+            <!-- External AI detection -->
+            <div class="rvw-card rvw-card--flat" data-static="1">
+                <div class="rvw-card-head">
+                    <span class="rvw-card-label">External AI detection</span>
+                    <?php if (!$keyConfigured): ?>
+                        <span class="rvw-card-value rvw-card-value--text rvw-card-value--muted">Disabled</span>
+                    <?php elseif ($extScore !== null): ?>
+                        <span class="rvw-card-value"><?= portal_escape((string) round($extScore, 0)) ?>%</span>
+                    <?php else: ?>
+                        <span class="rvw-card-value rvw-card-value--text"><?= portal_escape($extStatus !== '' ? $extStatus : 'Not checked') ?></span>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+        </div>
+        <?php
+        return trim((string) ob_get_clean());
+    }
+}
+
+if (!function_exists('portal_render_submission_review')) {
+    /**
+     * Turnitin-style review body: submitted content on the left, feedback panel on the right.
+     * $annotations is the list of stored annotations for this submission.
+     */
+    function portal_render_submission_review(array $submission, bool $isTeacher, array $item, array $annotations, string $csrfToken): string
+    {
+        $subId       = (int) $submission['id'];
+        $filename    = (string) ($submission['filename'] ?? '');
+        $isImage     = portal_submission_is_image($filename);
+        $text        = (string) ($submission['submission_text'] ?? '');
+        $studentName = (string) ($submission['student_name'] ?? 'You');
+        $submittedAt = (string) ($submission['submitted_at'] ?? '');
+        $score       = $submission['score'] ?? null;
+        $feedback    = (string) ($submission['feedback'] ?? '');
+        $annKind     = $isImage ? 'image' : 'text';
+
+        ob_start();
+        ?>
+        <div class="rvw-shell" data-submission-id="<?= $subId ?>" data-kind="<?= $annKind ?>" data-can-annotate="<?= $isTeacher ? '1' : '0' ?>">
+            <div class="rvw-main">
+                <div class="rvw-main-toolbar">
+                    <span class="rvw-file"><?= portal_icon($isImage ? 'file' : 'file', 'icon-xs') ?><?= portal_escape($filename) ?></span>
+                    <a href="download.php?sub=<?= $subId ?>" class="rvw-download">Download</a>
+                </div>
+                <div class="rvw-doc">
+                    <?php if ($isImage): ?>
+                        <div class="rvw-image-wrap" data-image-layer>
+                            <img src="download.php?sub=<?= $subId ?>&amp;view=1" alt="<?= portal_escape($filename) ?>" class="rvw-image">
+                            <div class="rvw-pins" data-pins></div>
+                        </div>
+                    <?php elseif (trim($text) !== ''): ?>
+                        <div class="rvw-text" data-doc-text><?= portal_escape($text) ?></div>
+                    <?php else: ?>
+                        <div class="rvw-doc-empty">
+                            <p>No inline preview is available for this file type.</p>
+                            <a href="download.php?sub=<?= $subId ?>" class="button button--sm">Download to view</a>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <aside class="rvw-side">
+                <!-- Grade -->
+                <section class="rvw-panel">
+                    <h4 class="rvw-panel-title">Grade</h4>
+                    <?php if ($isTeacher): ?>
+                        <form method="POST" class="rvw-grade-form">
+                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                            <input type="hidden" name="action" value="mark_submission">
+                            <input type="hidden" name="submission_id" value="<?= $subId ?>">
+                            <div class="rvw-grade-row">
+                                <input type="number" name="score" min="0" max="100" value="<?= $score !== null ? (int) $score : '' ?>" placeholder="0–100">
+                                <span class="rvw-grade-max">/ 100</span>
+                            </div>
+                            <label class="rvw-feedback-label">General feedback</label>
+                            <textarea name="feedback" rows="4" maxlength="2000" placeholder="Overall feedback for this submission"><?= portal_escape($feedback) ?></textarea>
+                            <button type="submit" class="button button--sm">Save grade &amp; feedback</button>
+                        </form>
+                    <?php else: ?>
+                        <div class="rvw-grade-display">
+                            <?php if ($score !== null): ?>
+                                <span class="rvw-grade-big"><?= (int) $score ?><small>/100</small></span>
+                            <?php else: ?>
+                                <span class="rvw-grade-pending">Not graded yet</span>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($feedback !== ''): ?>
+                            <div class="rvw-feedback-read">
+                                <p class="rvw-panel-sub">Teacher feedback</p>
+                                <p><?= portal_escape($feedback) ?></p>
+                            </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </section>
+
+                <!-- Integrity summary -->
+                <section class="rvw-panel">
+                    <h4 class="rvw-panel-title">AI / integrity review</h4>
+                    <?= portal_integrity_summary_cards($submission, $isTeacher) ?>
+                </section>
+
+                <!-- Comments -->
+                <section class="rvw-panel">
+                    <h4 class="rvw-panel-title">
+                        Comments
+                        <?php if ($isTeacher): ?><span class="rvw-panel-hint"><?= $isImage ? 'Click the image to pin a comment' : 'Select text to add a comment' ?></span><?php endif; ?>
+                    </h4>
+                    <div class="rvw-comments" data-comments></div>
+                </section>
+            </aside>
+
+            <script type="application/json" class="rvw-annotations-data"><?= json_encode(array_map(static function (array $a): array {
+                return [
+                    'id'          => (int) $a['id'],
+                    'anchor_type' => (string) $a['anchor_type'],
+                    'range_start' => $a['range_start'] !== null ? (int) $a['range_start'] : null,
+                    'range_end'   => $a['range_end'] !== null ? (int) $a['range_end'] : null,
+                    'quote'       => (string) $a['quote'],
+                    'pos_x'       => $a['pos_x'] !== null ? (float) $a['pos_x'] : null,
+                    'pos_y'       => $a['pos_y'] !== null ? (float) $a['pos_y'] : null,
+                    'comment'     => (string) $a['comment'],
+                    'author'      => (string) ($a['author_name'] ?? ''),
+                ];
+            }, $annotations), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
         </div>
         <?php
         return trim((string) ob_get_clean());

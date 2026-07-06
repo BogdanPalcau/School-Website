@@ -570,6 +570,11 @@ if (!function_exists('portal_upload_mime_ok')) {
         $allowed = [
             'pdf'  => ['application/pdf'],
             'txt'  => ['text/plain', 'text/csv', 'application/csv'],
+            'png'  => ['image/png'],
+            'jpg'  => ['image/jpeg'],
+            'jpeg' => ['image/jpeg'],
+            'gif'  => ['image/gif'],
+            'webp' => ['image/webp'],
             'doc'  => array_merge(['application/msword'], $ole),
             'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', $zip],
             'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $zip],
@@ -777,6 +782,26 @@ if (!function_exists('portal_run_migrations')) {
                 UNIQUE(group_id, user_id)
             )
         ");
+
+        // ── Submission review annotations (Turnitin-style comments) ────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS course_submission_annotations (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER NOT NULL REFERENCES course_submissions(id) ON DELETE CASCADE,
+                course_id     INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                author_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                anchor_type   TEXT NOT NULL DEFAULT 'text',
+                range_start   INTEGER,
+                range_end     INTEGER,
+                quote         TEXT NOT NULL DEFAULT '',
+                pos_x         REAL,
+                pos_y         REAL,
+                comment       TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_submission_annotations ON course_submission_annotations(submission_id)");
 
         // ── Login attempt log (brute-force throttling, per IP) ─────────────────
         $db->exec("
