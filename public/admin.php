@@ -139,6 +139,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             portal_site_setting_set('zerogpt_api_key', '');
         }
 
+        $safeBrowsingKey = trim((string) ($_POST['google_safe_browsing_api_key'] ?? ''));
+        if ($safeBrowsingKey !== '') {
+            portal_site_setting_set('google_safe_browsing_api_key', $safeBrowsingKey);
+        }
+        $clearSafeBrowsingKey = isset($_POST['clear_google_safe_browsing_api_key']) && $_POST['clear_google_safe_browsing_api_key'] === '1';
+        if ($clearSafeBrowsingKey) {
+            portal_site_setting_set('google_safe_browsing_api_key', '');
+        }
+
         $pdo->exec('UPDATE courses SET external_ai_detection = 0');
         if ($policy === 'per_module') {
             $courseIds = array_map('intval', (array) ($_POST['external_ai_courses'] ?? []));
@@ -150,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        $_SESSION['admin_flash'] = ['success', 'External AI detection settings saved.'];
+        $_SESSION['admin_flash'] = ['success', 'Integrity and link safety settings saved.'];
         portal_redirect('admin.php#integrity-settings');
     }
 }
@@ -181,6 +190,7 @@ $stats = [
 
 $integrityPolicy   = portal_external_ai_policy();
 $integrityKeySet   = portal_site_setting_has('zerogpt_api_key') || trim((string) getenv('ZEROGPT_API_KEY')) !== '';
+$safeBrowsingKeySet  = portal_site_setting_has('google_safe_browsing_api_key') || trim((string) getenv('GOOGLE_SAFE_BROWSING_API_KEY')) !== '';
 $integrityCourses  = $pdo->query(
     "SELECT id, title, code, external_ai_detection FROM courses ORDER BY title ASC"
 )->fetchAll();
@@ -420,10 +430,12 @@ ob_start();
             <div class="section-head">
                 <div>
                     <p class="eyebrow">Integrity</p>
-                    <h3 class="card-title">External AI detection</h3>
-                    <p>Configure ZeroGPT for optional external AI checks on student submissions.</p>
+                    <h3 class="card-title">Integrity and link safety</h3>
+                    <p>Configure ZeroGPT for optional external AI checks and Google Safe Browsing for safer external course links.</p>
                 </div>
-                <span class="chip<?= $integrityKeySet ? '' : ' chip--muted' ?>"><?= $integrityKeySet ? 'API key set' : 'No API key' ?></span>
+                <span class="chip<?= ($integrityKeySet || $safeBrowsingKeySet) ? '' : ' chip--muted' ?>">
+                    <?= $integrityKeySet ? 'ZeroGPT set' : 'ZeroGPT missing' ?> · <?= $safeBrowsingKeySet ? 'Safe Browsing set' : 'Safe Browsing missing' ?>
+                </span>
             </div>
 
             <form method="post" action="admin.php#integrity-settings" class="admin-integrity-form">
@@ -441,6 +453,19 @@ ob_start();
                     </label>
                     <?php endif; ?>
                     <small class="admin-field-hint">Stored securely in the site database. You can still use <code>.env</code> as a fallback if no key is saved here.</small>
+                </label>
+
+                <label class="admin-field">
+                    <span>Google Safe Browsing API key <small>(for external course links)</small></span>
+                    <input type="password" name="google_safe_browsing_api_key" autocomplete="new-password"
+                           placeholder="<?= $safeBrowsingKeySet ? 'Leave blank to keep current key' : 'Paste your Google Safe Browsing API key' ?>">
+                    <?php if ($safeBrowsingKeySet): ?>
+                    <label class="admin-checkbox-inline">
+                        <input type="checkbox" name="clear_google_safe_browsing_api_key" value="1">
+                        Remove saved Google Safe Browsing key
+                    </label>
+                    <?php endif; ?>
+                    <small class="admin-field-hint">Used server-side before users open external link items. If unset, users still see an external-link warning but no Google Safe Browsing verdict.</small>
                 </label>
 
                 <fieldset class="admin-policy-fieldset">
@@ -476,7 +501,7 @@ ob_start();
                 </div>
 
                 <div class="button-row">
-                    <button type="submit" class="button">Save integrity settings</button>
+                    <button type="submit" class="button">Save settings</button>
                 </div>
             </form>
         </article>

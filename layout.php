@@ -31,8 +31,7 @@ $auth_description = $auth_description ?? $authDescription ?? 'Sign in to see you
 
 $navItems = [
     ['key' => 'courses',       'label' => 'Courses',       'href' => 'courses.php',       'icon' => 'book-open'],
-    ['key' => 'calendar',      'label' => 'Calendar',      'href' => 'calendar.php',      'icon' => 'calendar'],
-    ['key' => 'timetable',     'label' => 'Timetable',     'href' => 'timetable.php',     'icon' => 'clock'],
+    ['key' => 'timetable',     'label' => 'Timetable',     'href' => 'timetable.php',     'icon' => 'calendar'],
     ['key' => 'communication', 'label' => 'Communication', 'href' => 'communication.php', 'icon' => 'megaphone'],
     ['key' => 'events',        'label' => 'Events',        'href' => 'events.php',        'icon' => 'sparkles'],
     ['key' => 'settings',      'label' => 'Settings',      'href' => 'settings.php',      'icon' => 'settings'],
@@ -48,7 +47,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260426k';
+$asset_version = '20260426l';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>

@@ -139,6 +139,131 @@ try {
 
 $integrityEulaVersion = 'integrity-tools-2026-07';
 
+function portal_course_normalize_external_url(string $url): string
+{
+    $url = trim($url);
+    if ($url === '') {
+        return '';
+    }
+    if (!preg_match('/^https?:\/\//i', $url)
+        && preg_match('/^(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+(?:[\/?#].*)?$/i', $url)) {
+        $url = 'https://' . $url;
+    }
+    if (!preg_match('/^https?:\/\//i', $url)) {
+        return '';
+    }
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['host'])) {
+        return '';
+    }
+    return $url;
+}
+
+function portal_google_safe_browsing_api_key(): string
+{
+    $fromDb = function_exists('portal_site_setting_get') ? portal_site_setting_get('google_safe_browsing_api_key', '') : '';
+    if ($fromDb !== '') {
+        return $fromDb;
+    }
+    return trim((string) getenv('GOOGLE_SAFE_BROWSING_API_KEY'));
+}
+
+function portal_course_google_safe_browsing_url_check(string $url): array
+{
+    $url = portal_course_normalize_external_url($url);
+    if ($url === '') {
+        return ['status' => 'invalid', 'configured' => false, 'message' => 'This is not a valid external URL.'];
+    }
+
+    $apiKey = portal_google_safe_browsing_api_key();
+    if ($apiKey === '') {
+        return ['status' => 'unchecked', 'configured' => false, 'message' => 'Google Safe Browsing is not configured, so this link could not be verified automatically.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['status' => 'unchecked', 'configured' => true, 'message' => 'Google Safe Browsing could not be contacted because cURL is unavailable on this server.'];
+    }
+
+    $ch = curl_init('https://safebrowsing.googleapis.com/v4/threatMatches:find?key=' . rawurlencode($apiKey));
+    $payload = json_encode([
+        'client' => [
+            'clientId' => 'schoolwebsite',
+            'clientVersion' => '1.0',
+        ],
+        'threatInfo' => [
+            'threatTypes' => [
+                'MALWARE',
+                'SOCIAL_ENGINEERING',
+                'UNWANTED_SOFTWARE',
+                'POTENTIALLY_HARMFUL_APPLICATION',
+            ],
+            'platformTypes' => ['ANY_PLATFORM'],
+            'threatEntryTypes' => ['URL'],
+            'threatEntries' => [
+                ['url' => $url],
+            ],
+        ],
+    ], JSON_UNESCAPED_SLASHES);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/json',
+            'Content-Type: application/json',
+        ],
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_CONNECTTIMEOUT => 6,
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $raw = (string) curl_exec($ch);
+    $err = curl_error($ch);
+    $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($err !== '' || $http < 200 || $http >= 300) {
+        return [
+            'status' => 'unchecked',
+            'configured' => true,
+            'message' => 'Google Safe Browsing could not be reached. Treat this external link with caution.',
+            'http' => $http,
+        ];
+    }
+
+    $json = $raw !== '' ? json_decode($raw, true) : null;
+    if (!is_array($json)) {
+        return [
+            'status' => 'unchecked',
+            'configured' => true,
+            'message' => 'Google Safe Browsing returned an unreadable response. Treat this external link with caution.',
+            'http' => $http,
+        ];
+    }
+
+    $matches = is_array($json['matches'] ?? null) ? $json['matches'] : [];
+    if (empty($matches)) {
+        return [
+            'status' => 'safe',
+            'configured' => true,
+            'message' => 'Google Safe Browsing did not report safety threats for this URL.',
+            'threat_types' => [],
+        ];
+    }
+
+    $threatTypes = array_values(array_unique(array_filter(array_map(
+        static fn($match): string => is_array($match) ? (string) ($match['threatType'] ?? '') : '',
+        $matches
+    ))));
+    $status = in_array('MALWARE', $threatTypes, true) ? 'malicious' : 'suspicious';
+    $message = !empty($threatTypes)
+        ? 'Google Safe Browsing reports a possible threat: ' . implode(', ', $threatTypes) . '.'
+        : 'Google Safe Browsing reports a possible safety threat for this URL.';
+    return [
+        'status' => $status,
+        'configured' => true,
+        'message' => $message,
+        'threat_types' => $threatTypes,
+    ];
+}
+
 // Integrity helpers live in ../integrity.php (loaded via bootstrap.php).
 
 // ── POST actions ──────────────────────────────────────────────────────────────
@@ -165,6 +290,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             default => 'Upload failed due to an unknown error.',
         };
     };
+
+    if ($action === 'check_external_link') {
+        $url = portal_course_normalize_external_url((string) ($_POST['url'] ?? ''));
+        if ($url === '') {
+            portal_json_response(['ok' => false, 'error' => 'Invalid external link.'], 400);
+        }
+        $verdict = portal_course_google_safe_browsing_url_check($url);
+        portal_json_response([
+            'ok' => true,
+            'url' => $url,
+            'host' => (string) (parse_url($url, PHP_URL_HOST) ?: $url),
+            'verdict' => $verdict,
+        ]);
+    }
 
     if ($action === 'accept_integrity_eula' && portal_can_manage_course($courseId)) {
         $db->prepare(
@@ -361,12 +500,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $title    = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
             $desc     = substr(trim((string) ($_POST['description'] ?? '')), 0, 500);
-            $url      = substr(trim((string) ($_POST['url'] ?? '')), 0, 2000);
+            $url      = portal_course_normalize_external_url(substr(trim((string) ($_POST['url'] ?? '')), 0, 2000));
             $submissionDeadline = '';
             $submissionAiDetection = 0;
-            if ($url !== '' && !preg_match('/^https?:\/\//i', $url)) {
-                $url = '';
-            }
             $filePath = '';
             $fileName = '';
             $createItemError = null;
@@ -399,6 +535,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $createItemError = 'Upload failed while saving the file. Please try again.';
                     }
                 }
+            } elseif ($type === 'link' && $url === '') {
+                $createItemError = 'Please enter a valid link URL.';
             } elseif ($type === 'document' && $url === '') {
                 $createItemError = 'Please upload a file or provide a URL for this document item.';
             } elseif ($type === 'submission') {
@@ -437,7 +575,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($itemRow) {
                 $title = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
                 $desc = substr(trim((string) ($_POST['description'] ?? '')), 0, 500);
-                $url = substr(trim((string) ($_POST['url'] ?? '')), 0, 2000);
+                $url = portal_course_normalize_external_url(substr(trim((string) ($_POST['url'] ?? '')), 0, 2000));
                 $allowDl = isset($_POST['allow_download']) && $_POST['allow_download'] === '1' ? 1 : 0;
                 $deadline = (string) ($itemRow['submission_deadline'] ?? '');
                 $aiDetection = (int) ($itemRow['submission_ai_detection'] ?? 0);
@@ -448,11 +586,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if ($error === null && $itemRow['type'] === 'link') {
-                    if ($url === '' || !preg_match('/^https?:\/\//i', $url)) {
+                    if ($url === '') {
                         $error = 'Please enter a valid link URL.';
                     }
                 } elseif ($error === null && $itemRow['type'] === 'document' && $itemRow['file_path'] === '') {
-                    if ($url === '' || !preg_match('/^https?:\/\//i', $url)) {
+                    if ($url === '') {
                         $error = 'Please enter a valid file URL.';
                     }
                 } elseif ($itemRow['type'] !== 'link') {
@@ -1660,10 +1798,19 @@ ob_start();
                                                     ? 'Presentation'
                                                     : ($item['type'] === 'submission' ? 'Submission slot' : ucfirst($item['type']));
                                                 $itemLocked = !empty($item['locked']);
+                                                $itemExternalUrl = (!$itemLocked && $item['type'] === 'link')
+                                                    ? portal_course_normalize_external_url((string) $item['url'])
+                                                    : '';
                                             ?>
-                                            <div class="folder-item folder-item--<?= portal_escape($itemKindClass) ?><?= portal_can_manage_course($courseId) ? ' folder-item--managed' : '' ?><?= ($itemLocked && !portal_can_manage_course($courseId)) ? ' folder-item--student-locked' : '' ?>"
+                                            <div class="folder-item folder-item--<?= portal_escape($itemKindClass) ?><?= portal_can_manage_course($courseId) ? ' folder-item--managed' : '' ?><?= ($itemLocked && !portal_can_manage_course($courseId)) ? ' folder-item--student-locked' : '' ?><?= $itemExternalUrl !== '' ? ' folder-item--external-link' : '' ?>"
                                                  data-item-id="<?= (int) $item['id'] ?>"
-                                                 data-folder-id="<?= (int) $folder['id'] ?>">
+                                                 data-folder-id="<?= (int) $folder['id'] ?>"
+                                                 <?php if ($itemExternalUrl !== ''): ?>
+                                                 data-safe-external-link="1"
+                                                 data-safe-url="<?= portal_escape($itemExternalUrl) ?>"
+                                                 role="link"
+                                                 tabindex="0"
+                                                 <?php endif; ?>>
                                                 <?php if (portal_can_manage_course($courseId)): ?>
                                                     <span class="item-drag-handle" title="Drag to reorder">
                                                         <?= portal_icon('grip', 'grip-icon') ?>
@@ -1715,7 +1862,12 @@ ob_start();
                                                             <?php endif; ?>
                                                         </div>
                                                     <?php elseif ($item['url'] !== ''): ?>
-                                                        <a class="item-url-link" href="<?= portal_escape($item['url']) ?>" target="_blank" rel="noopener noreferrer">
+                                                        <a class="item-url-link"
+                                                           href="<?= portal_escape($itemExternalUrl !== '' ? $itemExternalUrl : (string) $item['url']) ?>"
+                                                           target="_blank"
+                                                           rel="noopener noreferrer"
+                                                           data-safe-external-link="1"
+                                                           data-safe-url="<?= portal_escape($itemExternalUrl !== '' ? $itemExternalUrl : (string) $item['url']) ?>">
                                                             <?= portal_icon('link', 'icon-xs') ?>
                                                             <?= portal_escape($item['title']) ?>
                                                         </a>
@@ -2689,6 +2841,27 @@ ob_start();
 <?= $submissionModals ?>
 <?php endif; ?>
 
+<div id="external-link-warning" class="external-link-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="external-link-title">
+    <div class="external-link-dialog">
+        <header class="external-link-header">
+            <div>
+                <p class="eyebrow">External source</p>
+                <h3 id="external-link-title">You are about to leave this website</h3>
+            </div>
+            <button type="button" class="external-link-close" aria-label="Cancel">&times;</button>
+        </header>
+        <div class="external-link-body">
+            <p class="external-link-message" data-external-link-message>Checking this link with Google Safe Browsing...</p>
+            <p class="external-link-url" data-external-link-url></p>
+            <div class="external-link-verdict" data-external-link-verdict>Checking...</div>
+        </div>
+        <footer class="external-link-actions">
+            <button type="button" class="button button--ghost" data-external-link-cancel>Cancel</button>
+            <button type="button" class="button" data-external-link-continue disabled>Continue</button>
+        </footer>
+    </div>
+</div>
+
 <?php if (!empty($unreadAnnouncements)): ?>
 <!-- ── Unread announcements notification ─────────────────────────────────────── -->
 <div id="ann-notification" class="ann-notify-overlay" role="dialog" aria-modal="true" aria-label="New announcements">
@@ -2749,6 +2922,114 @@ ob_start();
 <?php endif; ?>
 <script>
 (function () {
+    // External link safety warning (all users).
+    const externalLinkModal = document.getElementById('external-link-warning');
+    const externalLinkMessage = externalLinkModal?.querySelector('[data-external-link-message]');
+    const externalLinkUrl = externalLinkModal?.querySelector('[data-external-link-url]');
+    const externalLinkVerdict = externalLinkModal?.querySelector('[data-external-link-verdict]');
+    const externalLinkContinue = externalLinkModal?.querySelector('[data-external-link-continue]');
+    const externalLinkCancel = externalLinkModal?.querySelector('[data-external-link-cancel]');
+    const externalLinkClose = externalLinkModal?.querySelector('.external-link-close');
+    let pendingExternalUrl = '';
+
+    function closeExternalLinkModal() {
+        if (!externalLinkModal) return;
+        externalLinkModal.classList.remove('external-link-overlay--in');
+        window.setTimeout(() => {
+            externalLinkModal.hidden = true;
+            pendingExternalUrl = '';
+        }, 160);
+    }
+
+    function openExternalLinkModal(url) {
+        if (!externalLinkModal) return;
+        pendingExternalUrl = url;
+        externalLinkModal.hidden = false;
+        externalLinkModal.classList.add('external-link-overlay--in');
+        if (externalLinkMessage) {
+            externalLinkMessage.textContent = 'You are about to visit an external source. External websites may expose you to unsafe content, tracking, or downloads.';
+        }
+        if (externalLinkUrl) externalLinkUrl.textContent = url;
+        if (externalLinkVerdict) {
+            externalLinkVerdict.className = 'external-link-verdict external-link-verdict--checking';
+            externalLinkVerdict.textContent = 'Checking this URL with Google Safe Browsing...';
+        }
+        if (externalLinkContinue) {
+            externalLinkContinue.disabled = false;
+            externalLinkContinue.textContent = 'Continue';
+        }
+    }
+
+    function applyExternalLinkVerdict(verdict) {
+        if (!externalLinkVerdict || !externalLinkContinue) return;
+        const status = verdict?.status || 'unchecked';
+        const stats = verdict?.stats || null;
+        const statText = stats
+            ? ' Malicious: ' + (stats.malicious || 0) + ', suspicious: ' + (stats.suspicious || 0) + ', harmless: ' + (stats.harmless || 0) + '.'
+            : '';
+        externalLinkVerdict.className = 'external-link-verdict external-link-verdict--' + status;
+        externalLinkVerdict.textContent = (verdict?.message || 'This link could not be verified automatically.') + statText;
+        externalLinkContinue.disabled = status === 'invalid';
+        externalLinkContinue.textContent = (status === 'malicious' || status === 'suspicious') ? 'Continue anyway' : 'Continue';
+    }
+
+    async function checkExternalLink(url) {
+        const pd = document.getElementById('portal-page-data');
+        const token = pd?.dataset.csrf || '';
+        const slug = pd?.dataset.slug || new URLSearchParams(location.search).get('course') || '';
+        const body = new URLSearchParams({ _token: token, action: 'check_external_link', url });
+        const res = await fetch('course.php?course=' + encodeURIComponent(slug), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' },
+            body: body.toString(),
+        });
+        return res.json();
+    }
+
+    document.addEventListener('click', e => {
+        const trigger = e.target.closest('a[data-safe-external-link], .folder-item--external-link[data-safe-external-link]');
+        if (!trigger || !externalLinkModal) return;
+        const interactive = e.target.closest('button, input, select, textarea, summary, label, .item-drag-handle, .settings-panel');
+        if (interactive) return;
+        const url = trigger.dataset.safeUrl || trigger.href || trigger.getAttribute('href') || '';
+        if (!url) return;
+        e.preventDefault();
+        openExternalLinkModal(url);
+        checkExternalLink(url)
+            .then(data => {
+                if (!data.ok) {
+                    applyExternalLinkVerdict({ status: 'unchecked', message: data.error || 'This link could not be verified automatically.' });
+                    return;
+                }
+                if (data.url) {
+                    pendingExternalUrl = data.url;
+                    if (externalLinkUrl) externalLinkUrl.textContent = data.url;
+                }
+                applyExternalLinkVerdict(data.verdict || null);
+            })
+            .catch(() => {
+                applyExternalLinkVerdict({ status: 'unchecked', message: 'This link could not be verified automatically. Treat it with caution.' });
+            });
+    });
+
+    document.addEventListener('keydown', e => {
+        const trigger = e.target.closest('[data-safe-external-link][role="link"]');
+        if (!trigger || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        trigger.click();
+    });
+
+    externalLinkContinue?.addEventListener('click', () => {
+        if (!pendingExternalUrl) return;
+        const url = pendingExternalUrl;
+        closeExternalLinkModal();
+        window.open(url, '_blank', 'noopener,noreferrer');
+    });
+    externalLinkCancel?.addEventListener('click', closeExternalLinkModal);
+    externalLinkClose?.addEventListener('click', closeExternalLinkModal);
+    externalLinkModal?.addEventListener('click', e => {
+        if (e.target === externalLinkModal) closeExternalLinkModal();
+    });
     // ── .docx / .xlsx / .pptx / PDF inline viewer ───────────────────────────
     const viewerOverlay = document.getElementById('file-viewer');
     const viewerBody    = document.getElementById('viewer-body');

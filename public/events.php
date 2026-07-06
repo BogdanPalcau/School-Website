@@ -117,10 +117,10 @@ ob_start();
             </div>
             <article class="schedule-note">
                 <div>
-                    <h3>Use calendar + timetable together</h3>
-                    <p>Check the calendar for dates and the timetable if you want to plan the rest of your day around an event.</p>
+                    <h3>Use the timetable</h3>
+                    <p>Check your live class schedule before planning the rest of your day around an event.</p>
                 </div>
-                <a class="inline-action" href="calendar.php#week-view">Open calendar</a>
+                <a class="inline-action" href="timetable.php#week-view">Open timetable</a>
             </article>
         </article>
     </div>
