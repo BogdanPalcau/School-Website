@@ -1063,11 +1063,407 @@ if (!function_exists('portal_integrity_names_match')) {
     }
 }
 
+if (!function_exists('portal_integrity_document_context')) {
+    /**
+     * Build document-level context used to calibrate AI/style heuristics.
+     *
+     * @return array<string, mixed>
+     */
+    function portal_integrity_document_context(string $text, ?array $fileMetadata, ?array $submissionContext, ?float $similarityScore): array
+    {
+        $words = portal_integrity_words($text);
+        $wordCount = count($words);
+        $lower = strtolower($text);
+        $isLongDocument = $wordCount >= 2000;
+
+        $citationPatterns = [
+            '/\([A-Z][A-Za-z\'-]+(?:\s+(?:and|&)\s+[A-Z][A-Za-z\'-]+|(?:\s+et\s+al\.)?)?,\s*(?:19|20)\d{2}[a-z]?\)/u',
+            '/\[(?:\d{1,3})(?:\s*[-,]\s*\d{1,3})*\]/',
+            '/\b(?:references|bibliography)\b/i',
+            '/\bet\s+al\.?\b/i',
+            '/\bdoi\s*:\s*10\.\d{4,9}\/[-._;()\/:A-Z0-9]+/i',
+            '/\b10\.\d{4,9}\/[-._;()\/:A-Z0-9]+/i',
+        ];
+        $hasCitations = false;
+        foreach ($citationPatterns as $pattern) {
+            if (preg_match($pattern, $text)) {
+                $hasCitations = true;
+                break;
+            }
+        }
+
+        $academicMarkers = [
+            'abstract', 'methodology', 'methods', 'literature review', 'dissertation',
+            'thesis', 'findings', 'discussion', 'conclusion', 'research question',
+            'hypothesis', 'theoretical framework', 'empirical', 'qualitative',
+            'quantitative', 'case study', 'data analysis', 'results',
+        ];
+        $markerHits = 0;
+        foreach ($academicMarkers as $marker) {
+            if (preg_match('/\b' . preg_quote($marker, '/') . '\b/i', $lower)) {
+                $markerHits++;
+            }
+        }
+
+        $isAcademicTechnical = $hasCitations || $markerHits >= 2 || $wordCount >= 3000;
+
+        preg_match_all('/["\x{201C}\x{2018}][^"\x{201D}\x{2019}]{1,240}["\x{201D}\x{2019}]/u', $text, $dialogueMatches);
+        $dialogueCount = count($dialogueMatches[0] ?? []);
+        $dialogueWords = 0;
+        foreach (($dialogueMatches[0] ?? []) as $dialogue) {
+            $dialogueWords += count(portal_integrity_words((string) $dialogue));
+        }
+        preg_match_all('/\b(?:said|asked|replied|whispered|shouted|cried|grinned|sighed)\b/i', $lower, $speechVerbMatches);
+        $speechVerbCount = count($speechVerbMatches[0] ?? []);
+        $dialogueCount = max($dialogueCount, min(12, $speechVerbCount));
+        $dialogueRatio = $wordCount > 0 ? $dialogueWords / $wordCount : 0.0;
+        $paragraphCount = count(array_values(array_filter(
+            array_map('trim', preg_split('/\n{2,}|\r\n\r\n/', $text) ?: []),
+            static fn(string $p): bool => $p !== ''
+        )));
+
+        $narrativeMarkers = [
+            'one day', 'one rainy', 'from that day', 'years later', 'afterwards',
+            'teacher', 'class', 'classroom', 'library', 'school', 'friend',
+            'friends', 'laughed', 'smiled', 'asked', 'replied', 'thought',
+            'looked', 'noticed', 'became', 'lived', 'town', 'story',
+        ];
+        $narrativeMarkerHits = 0;
+        foreach ($narrativeMarkers as $marker) {
+            if (preg_match('/\b' . preg_quote($marker, '/') . '\b/i', $lower)) {
+                $narrativeMarkerHits++;
+            }
+        }
+        $storyArcHits = 0;
+        foreach (['at first', 'then', 'over the next', 'on the day', 'afterwards', 'from that day', 'years later'] as $marker) {
+            if (str_contains($lower, $marker)) {
+                $storyArcHits++;
+            }
+        }
+        $isCreativeNarrative = !$isAcademicTechnical
+            && (
+                ($dialogueCount >= 2 && $narrativeMarkerHits >= 3)
+                || ($paragraphCount >= 6 && $storyArcHits >= 2)
+                || ($narrativeMarkerHits >= 6 && $wordCount >= 250)
+            );
+
+        $genericStoryPhrases = [
+            'small town where everyone knew everyone',
+            'did not become friends straight away',
+            'by bad luck, or perhaps by secret design',
+            'it changed something between them',
+            'over the next week',
+            'on the day of the performance',
+            'the whole class clapped',
+            'from that day on',
+            'years later',
+            'different in almost every way',
+            'where their friendship began',
+            'led not to treasure, but to home',
+        ];
+        $genericStoryPhraseHits = 0;
+        foreach ($genericStoryPhrases as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                $genericStoryPhraseHits++;
+            }
+        }
+        $tidyResolution = $isCreativeNarrative
+            && (bool) preg_match('/\b(from that day on|years later|for once|in the end|and somehow|where their friendship began)\b/i', $lower);
+        $archetypalContrast = $isCreativeNarrative
+            && (bool) preg_match('/\b(quiet|serious|thoughtful)\b.*\b(loud|cheerful|noisy|dreamer)\b|\b(loud|cheerful|noisy|dreamer)\b.*\b(quiet|serious|thoughtful)\b/is', $lower);
+        $settingSpecificity = 0;
+        foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may ', 'june', 'july', 'august', 'september', 'october', 'november', 'december'] as $marker) {
+            if (str_contains($lower, $marker)) {
+                $settingSpecificity++;
+            }
+        }
+        preg_match_all('/\b[A-Z][a-z]{2,}\b/u', $text, $properMatches);
+        $properNames = array_values(array_filter(array_unique($properMatches[0] ?? []), static function (string $name): bool {
+            return !in_array(strtolower($name), [
+                'the', 'one', 'girl', 'boy', 'alex', 'tuesday', 'english', 'because',
+                'then', 'over', 'on', 'afterwards', 'from', 'years',
+            ], true);
+        }));
+        $settingSpecificity += min(3, count($properNames));
+        $lowNarrativeSpecificity = $isCreativeNarrative && $wordCount >= 250 && $settingSpecificity <= 1;
+
+        if ($wordCount < 500) {
+            $styleDampening = 1.0;
+        } elseif ($wordCount < 2000) {
+            $styleDampening = 1.0 - (($wordCount - 500) / 1500) * 0.4;
+        } elseif ($wordCount < 5000) {
+            $styleDampening = 0.6 - (($wordCount - 2000) / 3000) * 0.3;
+        } else {
+            $styleDampening = 0.3;
+        }
+        if ($isAcademicTechnical) {
+            $styleDampening = min($styleDampening, $isLongDocument ? 0.5 : 0.75);
+        }
+        $styleDampening = max(0.25, min(1.0, $styleDampening));
+
+        $fileMetadata = is_array($fileMetadata) ? $fileMetadata : null;
+        $hasFileMetadata = $fileMetadata !== null && !empty($fileMetadata['available']);
+        $studentName = trim((string) ($submissionContext['student_name'] ?? ''));
+        $metaAuthor = trim((string) ($fileMetadata['author'] ?? ''));
+        $metaEditMinutes = ($fileMetadata !== null && ($fileMetadata['edit_time_minutes'] ?? null) !== null)
+            ? max(0, (int) $fileMetadata['edit_time_minutes'])
+            : null;
+        $metaRevision = ($fileMetadata !== null && ($fileMetadata['revision'] ?? null) !== null)
+            ? max(0, (int) $fileMetadata['revision'])
+            : null;
+        $metaGapDays = null;
+        $metaGapSeconds = null;
+        if ($fileMetadata !== null
+            && ($fileMetadata['created_at_ts'] ?? null) !== null
+            && ($fileMetadata['modified_at_ts'] ?? null) !== null) {
+            $metaGapSeconds = max(0, (int) $fileMetadata['modified_at_ts'] - (int) $fileMetadata['created_at_ts']);
+            $metaGapDays = round($metaGapSeconds / 86400, 3);
+        }
+
+        $positiveSignals = [];
+        if ($hasFileMetadata && $studentName !== '' && $metaAuthor !== ''
+            && portal_integrity_names_match($studentName, $metaAuthor, true)) {
+            $positiveSignals[] = 'Document author metadata is consistent with the submitting student.';
+        }
+        if ($metaEditMinutes !== null) {
+            $minimumRealisticMinutes = max(15.0, ($wordCount / 40) * 0.3);
+            if ($metaEditMinutes >= $minimumRealisticMinutes) {
+                $positiveSignals[] = 'Office editing time is consistent with a realistic writing period.';
+            }
+        }
+        if ($metaGapSeconds !== null && $metaGapSeconds >= 3600) {
+            $positiveSignals[] = 'File creation and last-save times are consistent with a sustained writing period.';
+        }
+        if ($metaRevision !== null && $metaRevision >= 5) {
+            $positiveSignals[] = 'Document revision count is consistent with iterative editing.';
+        }
+        if ($similarityScore !== null && $similarityScore < 10.0) {
+            $positiveSignals[] = 'Similarity score is below 10%, which is consistent with original authorship.';
+        }
+        $application = trim((string) ($fileMetadata['application'] ?? ''));
+        if ($application !== '' && preg_match('/\b(word|office|microsoft|libreoffice|openoffice)\b/i', $application)) {
+            $positiveSignals[] = 'File was created or edited with normal document software.';
+        }
+        if ($isLongDocument && $isAcademicTechnical) {
+            $positiveSignals[] = 'Long academic/technical document detected, so style heuristics were weighted conservatively.';
+        }
+
+        return [
+            'word_count' => $wordCount,
+            'is_long_document' => $isLongDocument,
+            'is_academic_technical' => $isAcademicTechnical,
+            'is_creative_narrative' => $isCreativeNarrative,
+            'has_citations' => $hasCitations,
+            'academic_marker_hits' => $markerHits,
+            'narrative_marker_hits' => $narrativeMarkerHits,
+            'story_arc_hits' => $storyArcHits,
+            'dialogue_count' => $dialogueCount,
+            'dialogue_ratio' => round($dialogueRatio, 3),
+            'speech_verb_count' => $speechVerbCount,
+            'generic_story_phrase_hits' => $genericStoryPhraseHits,
+            'tidy_resolution' => $tidyResolution,
+            'archetypal_contrast' => $archetypalContrast,
+            'low_narrative_specificity' => $lowNarrativeSpecificity,
+            'style_dampening' => round($styleDampening, 3),
+            'meta_author' => $metaAuthor,
+            'meta_edit_minutes' => $metaEditMinutes,
+            'meta_revision' => $metaRevision,
+            'meta_gap_days' => $metaGapDays,
+            'tracking_meaningful' => $hasFileMetadata,
+            'positive_signals' => array_values(array_unique($positiveSignals)),
+        ];
+    }
+}
+
 if (!function_exists('portal_integrity_process_review')) {
+    /**
+     * @return array<string, mixed>
+     */
+    function portal_integrity_process_review(array $submission, string $text): array
+    {
+        $wordCount = max(1, count(portal_integrity_words($text)));
+        $portalEditSeconds = max(0, (int) ($submission['process_edit_seconds'] ?? 0));
+        $pasteEvents = max(0, (int) ($submission['process_paste_events'] ?? 0));
+        $pastedChars = max(0, (int) ($submission['process_pasted_chars'] ?? 0));
+        $charCount = max(1, mb_strlen($text));
+        $fileMeta = is_array($submission['file_metadata'] ?? null) ? $submission['file_metadata'] : null;
+        $hasFileMeta = $fileMeta !== null && !empty($fileMeta['available']);
+        $trackingAvailable = $portalEditSeconds > 0 || $pasteEvents > 0 || $pastedChars > 0;
+        $source = match (true) {
+            $hasFileMeta && $trackingAvailable => 'mixed',
+            $hasFileMeta => 'file_metadata_only',
+            $trackingAvailable => 'portal_textarea',
+            default => 'unknown',
+        };
+
+        $riskSignals = [];
+        $positiveSignals = [];
+        $score = 0.0;
+        $fileEditMinutes = null;
+        $effectiveEditSeconds = $portalEditSeconds;
+
+        if ($hasFileMeta) {
+            if (($fileMeta['edit_time_minutes'] ?? null) !== null) {
+                $fileEditMinutes = max(0, (int) $fileMeta['edit_time_minutes']);
+                $fileEditSeconds = $fileEditMinutes * 60;
+                if ($fileEditSeconds > $effectiveEditSeconds) {
+                    $effectiveEditSeconds = $fileEditSeconds;
+                }
+            }
+
+            if (($fileMeta['created_at_ts'] ?? null) !== null && ($fileMeta['modified_at_ts'] ?? null) !== null) {
+                $metaGap = max(0, (int) $fileMeta['modified_at_ts'] - (int) $fileMeta['created_at_ts']);
+                if ($wordCount >= 500 && $metaGap < 120) {
+                    $score += 22;
+                    $riskSignals[] = 'File metadata shows the document was created and last saved within 2 minutes despite ' . $wordCount . ' words.';
+                } elseif ($wordCount >= 200 && $metaGap < 60) {
+                    $score += 14;
+                    $riskSignals[] = 'File metadata shows almost no gap between document creation and last save.';
+                } elseif ($metaGap >= 3600) {
+                    $positiveSignals[] = 'File creation and last-save times are consistent with a sustained writing period.';
+                }
+            }
+
+            if (($fileMeta['word_count_meta'] ?? null) !== null && $wordCount >= 100) {
+                $metaWords = max(0, (int) $fileMeta['word_count_meta']);
+                $wordDelta = abs($metaWords - $wordCount);
+                if ($wordDelta / $wordCount >= 0.35) {
+                    $score += 10;
+                    $riskSignals[] = 'Embedded file word count (' . $metaWords . ') differs significantly from extracted text (' . $wordCount . ' words).';
+                }
+            }
+
+            if ($fileEditMinutes !== null) {
+                if ($wordCount >= 300 && $fileEditMinutes < 3) {
+                    $score += 32;
+                    $riskSignals[] = 'Office metadata reports only ' . $fileEditMinutes . ' minute(s) of editing for ' . $wordCount . ' words.';
+                } elseif ($wordCount >= 1500 && $fileEditMinutes < 10) {
+                    $score += 20;
+                    $riskSignals[] = 'Office metadata reports ' . $fileEditMinutes . ' minutes of editing for a long document (' . $wordCount . ' words).';
+                } elseif ($fileEditMinutes >= 20) {
+                    $positiveSignals[] = 'Office metadata reports ' . $fileEditMinutes . ' minutes of editing time, consistent with a real writing session.';
+                }
+            } elseif (($fileMeta['format'] ?? '') === 'pdf'
+                && ($fileMeta['created_at_ts'] ?? null) !== null
+                && ($fileMeta['modified_at_ts'] ?? null) !== null) {
+                $pdfGap = max(0, (int) $fileMeta['modified_at_ts'] - (int) $fileMeta['created_at_ts']);
+                if ($wordCount >= 400 && $pdfGap < 120) {
+                    $score += 16;
+                    $riskSignals[] = 'PDF metadata shows creation and modification within 2 minutes for a long document.';
+                }
+            }
+
+            if (($fileMeta['revision'] ?? null) !== null) {
+                $revision = (int) $fileMeta['revision'];
+                if ($wordCount >= 400 && $revision <= 1) {
+                    $score += 24;
+                    $riskSignals[] = 'Document was saved only once (revision ' . $revision . ') despite ' . $wordCount . ' words - consistent with paste-and-submit.';
+                } elseif ($wordCount >= 250 && $revision <= 2) {
+                    $score += 12;
+                    $riskSignals[] = 'Very few document revisions (' . $revision . ') for this amount of text.';
+                } elseif ($revision >= 5) {
+                    $positiveSignals[] = 'Document revision count is consistent with iterative editing.';
+                }
+            }
+
+            $studentName = trim((string) ($submission['student_name'] ?? ''));
+            $docAuthor = trim((string) ($fileMeta['author'] ?? ''));
+            $lastModBy = trim((string) ($fileMeta['last_modified_by'] ?? ''));
+            if ($studentName !== '' && $docAuthor !== '' && !portal_integrity_names_match($studentName, $docAuthor)) {
+                $score += 18;
+                $riskSignals[] = 'Document author (' . $docAuthor . ') does not match the submitting student (' . $studentName . ').';
+            } elseif ($docAuthor !== '') {
+                $positiveSignals[] = 'Document author metadata is present and consistent with genuine authorship: ' . $docAuthor . '.';
+            }
+            if ($lastModBy !== '' && $lastModBy !== $docAuthor) {
+                if ($studentName !== '' && !portal_integrity_names_match($studentName, $lastModBy)) {
+                    $score += 8;
+                    $riskSignals[] = 'Last modified by (' . $lastModBy . ') does not match the submitting student.';
+                } else {
+                    $positiveSignals[] = 'Last modified by metadata is consistent with the submitting student.';
+                }
+            }
+            if (($fileMeta['application'] ?? '') !== '') {
+                $positiveSignals[] = 'Created or edited with normal document software: ' . (string) $fileMeta['application'] . '.';
+            }
+
+            if ($fileEditMinutes !== null
+                && $fileEditMinutes === 0
+                && $portalEditSeconds < 30
+                && $wordCount >= 300) {
+                $score += 14;
+                $riskSignals[] = 'Neither the file metadata nor the editing session shows meaningful time spent writing this document.';
+            }
+        }
+
+        $pasteRatio = min(100.0, ($pastedChars / $charCount) * 100);
+        if ($pasteRatio >= 45) {
+            $score += 35;
+            $riskSignals[] = 'High pasted content (' . round($pasteRatio, 1) . '% of characters).';
+        } elseif ($pasteRatio >= 20) {
+            $score += 18;
+            $riskSignals[] = 'Moderate pasted content (' . round($pasteRatio, 1) . '% of characters).';
+        }
+
+        if ($pasteEvents >= 8) {
+            $score += 20;
+            $riskSignals[] = 'Many paste events recorded (' . $pasteEvents . ').';
+        } elseif ($pasteEvents >= 3) {
+            $score += 10;
+            $riskSignals[] = 'Several paste events recorded (' . $pasteEvents . ').';
+        }
+
+        $wordsPerMinute = $effectiveEditSeconds > 0 ? ($wordCount / max(1, $effectiveEditSeconds / 60)) : $wordCount;
+        if ($wordCount >= 300 && $effectiveEditSeconds > 0 && $effectiveEditSeconds < 180) {
+            $score += 25;
+            $riskSignals[] = 'Very short effective editing window for a long submission (' . $effectiveEditSeconds . ' seconds).';
+        } elseif ($wordCount >= 150 && $wordsPerMinute > 250) {
+            $score += 15;
+            $riskSignals[] = 'Unusually fast writing speed for the word count.';
+        }
+
+        if ($trackingAvailable && $portalEditSeconds >= 600 && $pasteEvents === 0) {
+            $positiveSignals[] = 'Healthy portal editing time with no paste events.';
+        }
+
+        $score = min(100.0, round($score, 1));
+        $level = portal_integrity_level($score);
+        $summary = match ($level) {
+            'high' => 'Writing-process evidence needs review.',
+            'medium' => 'Some writing-process signals were detected.',
+            default => $riskSignals === []
+                ? 'No unusual writing-process signals detected.'
+                : 'Minor writing-process signals were detected.',
+        };
+        $signals = array_values(array_merge($riskSignals, $positiveSignals));
+        if ($signals === []) {
+            $signals = ['No unusual writing-process signals detected.'];
+        }
+
+        return [
+            'score' => $score,
+            'level' => $level,
+            'summary' => $summary,
+            'source' => $source,
+            'tracking_available' => $trackingAvailable,
+            'risk_signals' => array_values(array_unique($riskSignals)),
+            'positive_signals' => array_values(array_unique($positiveSignals)),
+            'signals' => $signals,
+            'file_metadata' => $fileMeta,
+            'portal_edit_seconds' => $portalEditSeconds,
+            'portal_paste_events' => $pasteEvents,
+            'portal_pasted_chars' => $pastedChars,
+            'effective_edit_seconds' => $effectiveEditSeconds,
+            'file_edit_minutes' => $fileEditMinutes,
+        ];
+    }
+}
+
+if (!function_exists('portal_integrity_process_review_legacy')) {
     /**
      * @return array{score: float, level: string, signals: string[]}
      */
-    function portal_integrity_process_review(array $submission, string $text): array
+    function portal_integrity_process_review_legacy(array $submission, string $text): array
     {
         $wordCount = max(1, count(portal_integrity_words($text)));
         $editSeconds = max(0, (int) ($submission['process_edit_seconds'] ?? 0));
@@ -1219,11 +1615,325 @@ if (!function_exists('portal_integrity_process_review')) {
 
 if (!function_exists('portal_integrity_heuristic_ai_review')) {
     /**
+     * Lightweight statistical review - not a neural AI detector.
+     *
+     * @return array<string, mixed>
+     */
+    function portal_integrity_heuristic_ai_review(string $text, array $context = []): array
+    {
+        $fileMetadata = is_array($context['file_metadata'] ?? null) ? $context['file_metadata'] : null;
+        $processReview = is_array($context['process_review'] ?? null) ? $context['process_review'] : null;
+        $submissionContext = [
+            'student_name' => (string) ($context['student_name'] ?? ''),
+        ];
+        $similarityScore = ($context['similarity_score'] ?? null) !== null ? (float) $context['similarity_score'] : null;
+        $documentContext = portal_integrity_document_context($text, $fileMetadata, $submissionContext, $similarityScore);
+        $wordCount = (int) $documentContext['word_count'];
+        $styleDampening = (float) $documentContext['style_dampening'];
+        $isAcademicTechnical = !empty($documentContext['is_academic_technical']);
+        $isCreativeNarrative = !empty($documentContext['is_creative_narrative']);
+        $positiveSignals = is_array($documentContext['positive_signals'] ?? null)
+            ? $documentContext['positive_signals']
+            : [];
+        if ($processReview !== null && is_array($processReview['positive_signals'] ?? null)) {
+            $positiveSignals = array_merge($positiveSignals, $processReview['positive_signals']);
+        }
+
+        $sentences = portal_integrity_sentences($text, 30);
+        $levelLabelFor = static function (float $score): string {
+            if ($score >= 45.0) {
+                return 'High concern';
+            }
+            if ($score >= 35.0) {
+                return 'Needs review';
+            }
+            if ($score >= 8.0) {
+                return 'Some concern';
+            }
+            return 'Low';
+        };
+
+        if ($wordCount < 80 || count($sentences) < 5) {
+            $signals = ['Not enough text for a heuristic AI-style review.'];
+            return [
+                'schema_version' => 2,
+                'score' => 0.0,
+                'level' => 'low',
+                'level_label' => 'Low',
+                'evidence_strength' => 'low',
+                'summary' => 'Not enough text was available for a reliable writing-style review.',
+                'risk_signals' => $signals,
+                'positive_signals' => array_values(array_unique($positiveSignals)),
+                'teacher_note' => 'This is a statistical writing-style review only and should support teacher judgement, not replace it. File metadata can be edited, so treat it as context rather than proof.',
+                'metrics' => [
+                    'word_count' => $wordCount,
+                    'style_dampening' => $styleDampening,
+                    'risk_categories' => 0,
+                ],
+                'document_context' => $documentContext,
+                'signals' => $signals,
+            ];
+        }
+
+        $words = portal_integrity_words($text);
+        $lower = strtolower($text);
+        $riskSignals = [];
+        $riskCategories = [];
+        $score = 0.0;
+        $addRisk = static function (
+            string $category,
+            float $points,
+            string $message,
+            bool $countCategory = true,
+            bool $showSignal = true
+        ) use (&$score, &$riskSignals, &$riskCategories, $styleDampening): void {
+            $score += $points * $styleDampening;
+            if ($countCategory) {
+                $riskCategories[$category] = true;
+            }
+            if ($showSignal) {
+                $riskSignals[] = $message;
+            }
+        };
+
+        // 1. Sentence-length uniformity (coefficient of variation) + burstiness.
+        $lengths = array_map(static fn(string $s): int => mb_strlen($s), $sentences);
+        $avg = array_sum($lengths) / count($lengths);
+        $variance = 0.0;
+        foreach ($lengths as $len) {
+            $variance += ($len - $avg) ** 2;
+        }
+        $variance /= count($lengths);
+        $stdDev = sqrt($variance);
+        $cv = $avg > 0 ? $stdDev / $avg : 0.0;
+        if ($cv < 0.22) {
+            $addRisk('sentence_uniformity', 24, 'Sentence lengths are extremely uniform.');
+        } elseif ($cv < 0.30) {
+            $addRisk('sentence_uniformity', 14, 'Sentence lengths are quite uniform.');
+        }
+
+        // 2. Vocabulary diversity (type-token ratio).
+        $uniqueRatio = count(array_unique($words)) / max(1, $wordCount);
+        $softAcademicSignalVisible = !$isAcademicTechnical || $styleDampening >= 0.5;
+        if ($uniqueRatio < 0.38) {
+            $addRisk(
+                'vocabulary_diversity',
+                18,
+                $isAcademicTechnical
+                    ? 'Vocabulary diversity is low, likely affected by technical terminology.'
+                    : 'Vocabulary diversity is lower than typical for human writing.',
+                $softAcademicSignalVisible,
+                $softAcademicSignalVisible
+            );
+        } elseif ($uniqueRatio > 0.72) {
+            $score -= 5;
+        }
+
+        // 3. Hedging / template phrasing frequently over-produced by LLMs.
+        $aiPhrases = [
+            'furthermore', 'moreover', 'however', 'therefore', 'additionally', 'consequently',
+            'in conclusion', 'it is important to note', 'it is worth noting', 'it is essential to',
+            'plays a crucial role', 'plays a vital role', 'plays a significant role',
+            'in today\'s world', 'in the modern world', 'in the realm of', 'a myriad of',
+            'it is important to understand', 'delve into', 'delving into', 'navigating the',
+            'a testament to', 'when it comes to', 'first and foremost', 'in summary',
+            'to summarize', 'overall', 'notably', 'importantly', 'ultimately',
+            'this essay will', 'this paper will', 'in this essay', 'in this paper',
+        ];
+        $phraseHits = [];
+        foreach ($aiPhrases as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                $phraseHits[] = $phrase;
+            }
+        }
+        $phraseCount = count($phraseHits);
+        if ($phraseCount >= 8) {
+            $addRisk(
+                'transition_phrases',
+                22,
+                'Very frequent academic transition/template phrases were detected (' . $phraseCount . ' distinct).',
+                $softAcademicSignalVisible,
+                $softAcademicSignalVisible
+            );
+        } elseif ($phraseCount >= 5) {
+            $addRisk(
+                'transition_phrases',
+                13,
+                'Some repeated academic transition phrases were detected (' . $phraseCount . ' distinct).',
+                $softAcademicSignalVisible,
+                $softAcademicSignalVisible
+            );
+        } elseif ($phraseCount >= 3) {
+            $score += 6 * $styleDampening;
+        }
+
+        // 4. First-person voice. In formal academic/technical work, absence of
+        // first-person voice is a convention, not evidence of AI use.
+        preg_match_all('/\b(i|my|me|mine|myself|we|our|us)\b/i', $lower, $fpMatches);
+        $firstPersonRatio = count($fpMatches[0]) / max(1, $wordCount);
+        if (!$isAcademicTechnical && !$isCreativeNarrative && $firstPersonRatio < 0.002 && $wordCount >= 200) {
+            $addRisk('first_person', 10, 'Almost no first-person voice across a long text.');
+        }
+
+        // 5. Sentence-initial word diversity.
+        $initials = [];
+        foreach ($sentences as $sentence) {
+            if (preg_match('/^\s*([a-z]+)/i', $sentence, $m)) {
+                $initials[] = strtolower($m[1]);
+            }
+        }
+        $initialDiversity = null;
+        if (count($initials) >= 6) {
+            $initialDiversity = count(array_unique($initials)) / count($initials);
+            if ($initialDiversity < 0.5) {
+                $addRisk('sentence_openings', 12, 'Many sentences begin with the same few words.');
+            }
+        }
+
+        // 6. Paragraph-length uniformity.
+        $paragraphs = array_values(array_filter(array_map('trim', preg_split('/\n{2,}|\r\n\r\n/', $text) ?: []), static fn(string $p): bool => $p !== ''));
+        $paraCv = null;
+        if (count($paragraphs) >= 4) {
+            $paraLengths = array_map(static fn(string $p): int => count(portal_integrity_words($p)), $paragraphs);
+            $paraAvg = array_sum($paraLengths) / count($paraLengths);
+            if ($paraAvg > 0) {
+                $paraVar = 0.0;
+                foreach ($paraLengths as $pl) {
+                    $paraVar += ($pl - $paraAvg) ** 2;
+                }
+                $paraVar /= count($paraLengths);
+                $paraCv = sqrt($paraVar) / $paraAvg;
+                if ($paraCv < 0.20) {
+                    $addRisk('paragraph_uniformity', 10, 'Paragraphs are unusually equal in length.');
+                }
+            }
+        }
+
+        // 7. Comma density (list-like generated prose).
+        $commaDensity = substr_count($lower, ',') / max(1, $wordCount);
+        if ($commaDensity > 0.14) {
+            $addRisk('comma_density', 8, 'Comma density is high, which can indicate list-like generated prose.');
+        }
+
+        // 8. Creative-writing genericity. These are deliberately weak signals:
+        // tidy, generic story arcs can appear in AI examples, but they are also
+        // common in younger students' original creative writing.
+        $genericStoryHits = (int) ($documentContext['generic_story_phrase_hits'] ?? 0);
+        $narrativeSignalCount = 0;
+        if ($isCreativeNarrative && $genericStoryHits >= 3) {
+            $narrativeSignalCount++;
+            $addRisk(
+                'narrative_genericity',
+                12,
+                'The story uses several generic/tidy narrative phrases often seen in generated examples (' . $genericStoryHits . ' matches).'
+            );
+        } elseif ($isCreativeNarrative && $genericStoryHits >= 1) {
+            $score += 4 * $styleDampening;
+        }
+        if ($isCreativeNarrative && !empty($documentContext['tidy_resolution'])) {
+            $narrativeSignalCount++;
+            $addRisk('tidy_resolution', 7, 'The ending resolves the friendship arc very neatly.');
+        }
+        if ($isCreativeNarrative && !empty($documentContext['archetypal_contrast'])) {
+            $narrativeSignalCount++;
+            $addRisk('archetypal_contrast', 6, 'The main characters are built around a simple balanced contrast.');
+        }
+        if ($isCreativeNarrative && !empty($documentContext['low_narrative_specificity'])) {
+            $narrativeSignalCount++;
+            $addRisk('low_narrative_specificity', 5, 'The story has a broad setting/timeline with few specific personal details.');
+        }
+
+        $categoryCount = count($riskCategories);
+        if ($categoryCount < 2) {
+            $score = min($score, 14.0);
+        } elseif ($categoryCount < 3) {
+            $score = min($score, 34.0);
+        }
+        $processRiskCount = ($processReview !== null && is_array($processReview['risk_signals'] ?? null))
+            ? count($processReview['risk_signals'])
+            : 0;
+        if ($isCreativeNarrative && $processRiskCount === 0) {
+            $score = min($score, 34.0);
+        }
+
+        $score = max(0.0, min(100.0, round($score, 1)));
+        $level = portal_integrity_level($score);
+        $positiveSignals = array_values(array_unique($positiveSignals));
+        $positiveCount = count($positiveSignals);
+        $strengthRank = ($categoryCount >= 4 || $score >= 35.0) ? 2 : (($categoryCount >= 2 || $score >= 15.0) ? 1 : 0);
+        if ($isCreativeNarrative && $processRiskCount === 0) {
+            $strengthRank = min($strengthRank, 1);
+        }
+        if ($positiveCount >= 3) {
+            $strengthRank--;
+        }
+        if ($positiveCount >= 5) {
+            $strengthRank--;
+        }
+        $strengthRank = max(0, min(2, $strengthRank));
+        $evidenceStrength = ['low', 'medium', 'high'][$strengthRank];
+
+        if ($riskSignals === []) {
+            $riskSignals[] = 'Writing style looks within a typical human range for this heuristic check.';
+        }
+
+        if ($isAcademicTechnical && $positiveCount >= 2) {
+            $summary = 'Formal academic writing patterns were detected, but metadata and document context reduce concern. This is not proof of AI use.';
+        } elseif ($isAcademicTechnical) {
+            $summary = 'Some formal academic writing patterns were detected, but these are common in long technical work. This is not proof of AI use.';
+        } elseif ($isCreativeNarrative && $level === 'medium') {
+            $summary = 'Some generic creative-writing patterns were detected, but text alone is weak evidence. Review file metadata and process evidence before drawing conclusions.';
+        } elseif ($isCreativeNarrative) {
+            $summary = 'Low concern. The submission appears to be creative/narrative writing; generic story patterns alone are weak evidence.';
+        } elseif ($level === 'high') {
+            $summary = 'Several writing-style patterns need teacher review. This is not proof of AI use.';
+        } elseif ($level === 'medium') {
+            $summary = 'Some writing-style patterns were detected. This is not proof of AI use.';
+        } else {
+            $summary = 'Low concern. Writing style looks broadly typical for this heuristic review.';
+        }
+
+        $signals = array_values(array_merge($riskSignals, $positiveSignals));
+
+        return [
+            'schema_version' => 2,
+            'score' => $score,
+            'level' => $level,
+            'level_label' => $levelLabelFor($score),
+            'evidence_strength' => $evidenceStrength,
+            'summary' => $summary,
+            'risk_signals' => $riskSignals,
+            'positive_signals' => $positiveSignals,
+            'teacher_note' => 'This is a statistical writing-style review only and should support teacher judgement, not replace it. File metadata can be edited, so treat it as context rather than proof.',
+            'metrics' => [
+                'word_count' => $wordCount,
+                'sentence_length_cv' => round($cv, 3),
+                'type_token_ratio' => round($uniqueRatio, 3),
+                'ai_phrase_hits' => $phraseCount,
+                'first_person_ratio' => round($firstPersonRatio, 4),
+                'initial_word_diversity' => $initialDiversity !== null ? round($initialDiversity, 3) : null,
+                'paragraph_length_cv' => $paraCv !== null ? round($paraCv, 3) : null,
+                'comma_density' => round($commaDensity, 4),
+                'is_creative_narrative' => $isCreativeNarrative,
+                'generic_story_phrase_hits' => $genericStoryHits,
+                'narrative_signal_count' => $narrativeSignalCount,
+                'style_dampening' => $styleDampening,
+                'risk_categories' => $categoryCount,
+                'process_risk_signals' => $processRiskCount,
+            ],
+            'document_context' => $documentContext,
+            'signals' => $signals,
+        ];
+    }
+}
+
+if (!function_exists('portal_integrity_heuristic_ai_review_legacy')) {
+    /**
      * Lightweight statistical review — not a neural AI detector.
      *
      * @return array{score: float, level: string, signals: string[]}
      */
-    function portal_integrity_heuristic_ai_review(string $text): array
+    function portal_integrity_heuristic_ai_review_legacy(string $text): array
     {
         $sentences = portal_integrity_sentences($text, 30);
         $words = portal_integrity_words($text);
@@ -1990,10 +2700,15 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $processReview = $submissionContext !== null
             ? portal_integrity_process_review($submissionContext, $cleanText)
             : null;
-        $heuristicAi = portal_integrity_heuristic_ai_review($cleanText);
-        $fileMetadata = is_array($submissionContext['file_metadata'] ?? null)
+        $fileMetadata = $submissionContext !== null && is_array($submissionContext['file_metadata'] ?? null)
             ? $submissionContext['file_metadata']
             : (is_array($processReview['file_metadata'] ?? null) ? $processReview['file_metadata'] : null);
+        $heuristicAi = portal_integrity_heuristic_ai_review($cleanText, [
+            'file_metadata' => $fileMetadata,
+            'process_review' => $processReview,
+            'similarity_score' => $score,
+            'student_name' => $submissionContext['student_name'] ?? '',
+        ]);
 
         return [
             'status' => 'checked',
@@ -2186,23 +2901,79 @@ if (!function_exists('portal_render_integrity_report')) {
                 <div class="integrity-process-panel integrity-report--<?= portal_escape((string) ($processReview['level'] ?? 'low')) ?>">
                     <strong>Writing process review</strong>
                     <span><?= portal_escape((string) round((float) ($processReview['score'] ?? 0), 1)) ?>% review score</span>
-                    <ul class="integrity-signal-list">
-                        <?php foreach (($processReview['signals'] ?? []) as $signal): ?>
-                            <li><?= portal_escape((string) $signal) ?></li>
-                        <?php endforeach; ?>
-                    </ul>
+                    <?php if (($processReview['summary'] ?? '') !== ''): ?>
+                        <p><?= portal_escape((string) $processReview['summary']) ?></p>
+                    <?php endif; ?>
+                    <?php if (isset($processReview['risk_signals'])): ?>
+                        <?php if (!empty($processReview['risk_signals'])): ?>
+                            <p><strong>Risk signals</strong></p>
+                            <ul class="integrity-signal-list">
+                                <?php foreach ($processReview['risk_signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                        <?php if (!empty($processReview['positive_signals'])): ?>
+                            <p><strong>Signals consistent with genuine authorship</strong></p>
+                            <ul class="integrity-signal-list">
+                                <?php foreach ($processReview['positive_signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    <?php else: ?>
+                        <ul class="integrity-signal-list">
+                            <?php foreach (($processReview['signals'] ?? []) as $signal): ?>
+                                <li><?= portal_escape((string) $signal) ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
                 </div>
             <?php endif; ?>
 
             <?php if ($heuristicAi !== null): ?>
                 <div class="integrity-heuristic-panel integrity-report--<?= portal_escape((string) ($heuristicAi['level'] ?? 'low')) ?>">
                     <strong>Heuristic AI-style review</strong>
+                    <?php if (isset($heuristicAi['risk_signals'])): ?>
+                        <span>
+                            <?= portal_escape((string) round((float) ($heuristicAi['score'] ?? 0), 1)) ?>%
+                            <?php if (($heuristicAi['level_label'] ?? '') !== ''): ?>
+                                &middot; <?= portal_escape((string) $heuristicAi['level_label']) ?>
+                            <?php endif; ?>
+                            <?php if (($heuristicAi['evidence_strength'] ?? '') !== ''): ?>
+                                &middot; Evidence strength: <?= portal_escape(ucfirst((string) $heuristicAi['evidence_strength'])) ?>
+                            <?php endif; ?>
+                        </span>
+                        <?php if (($heuristicAi['summary'] ?? '') !== ''): ?>
+                            <p><?= portal_escape((string) $heuristicAi['summary']) ?></p>
+                        <?php endif; ?>
+                        <?php if (!empty($heuristicAi['risk_signals'])): ?>
+                            <p><strong>Risk signals</strong></p>
+                            <ul class="integrity-signal-list">
+                                <?php foreach ($heuristicAi['risk_signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                        <?php if (!empty($heuristicAi['positive_signals'])): ?>
+                            <p><strong>Signals consistent with genuine authorship</strong></p>
+                            <ul class="integrity-signal-list">
+                                <?php foreach ($heuristicAi['positive_signals'] as $signal): ?>
+                                    <li><?= portal_escape((string) $signal) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                        <?php if (($heuristicAi['teacher_note'] ?? '') !== ''): ?>
+                            <p><?= portal_escape((string) $heuristicAi['teacher_note']) ?></p>
+                        <?php endif; ?>
+                    <?php else: ?>
                     <span><?= portal_escape((string) round((float) ($heuristicAi['score'] ?? 0), 1)) ?>% — statistical only, not proof of AI use</span>
                     <ul class="integrity-signal-list">
                         <?php foreach (($heuristicAi['signals'] ?? []) as $signal): ?>
                             <li><?= portal_escape((string) $signal) ?></li>
                         <?php endforeach; ?>
                     </ul>
+                    <?php endif; ?>
                 </div>
             <?php endif; ?>
 
@@ -2308,8 +3079,13 @@ if (!function_exists('portal_integrity_summary_cards')) {
         $extScore  = ($submission['ai_score'] ?? null) !== null ? (float) $submission['ai_score'] : null;
         $extDisabled = !$keyConfigured || $policy === 'disabled';
 
-        $editSeconds = (int) ($submission['process_edit_seconds'] ?? 0);
-        $pasteEvents = (int) ($submission['process_paste_events'] ?? 0);
+        $editSeconds = (int) ($processRev['portal_edit_seconds'] ?? ($submission['process_edit_seconds'] ?? 0));
+        $pasteEvents = (int) ($processRev['portal_paste_events'] ?? ($submission['process_paste_events'] ?? 0));
+        $pastedChars = (int) ($processRev['portal_pasted_chars'] ?? ($submission['process_pasted_chars'] ?? 0));
+        $trackingAvailable = $processRev !== null
+            ? (bool) ($processRev['tracking_available'] ?? ($editSeconds > 0 || $pasteEvents > 0 || $pastedChars > 0))
+            : ($editSeconds > 0 || $pasteEvents > 0 || $pastedChars > 0);
+        $processSource = (string) ($processRev['source'] ?? ($fileMeta !== null && !empty($fileMeta['available']) ? 'file_metadata_only' : 'unknown'));
 
         ob_start();
         ?>
@@ -2368,6 +3144,40 @@ if (!function_exists('portal_integrity_summary_cards')) {
                 <div class="rvw-card-body">
                     <p class="rvw-card-note rvw-card-note--soft">Statistical estimate only — not proof of AI use.</p>
                     <?php if ($isTeacher): ?>
+                        <?php if ($heuristicAi !== null && isset($heuristicAi['risk_signals'])): ?>
+                            <?php if (($heuristicAi['level_label'] ?? '') !== '' || ($heuristicAi['evidence_strength'] ?? '') !== ''): ?>
+                                <p class="rvw-card-note">
+                                    <?php if (($heuristicAi['level_label'] ?? '') !== ''): ?>
+                                        Level: <strong><?= portal_escape((string) $heuristicAi['level_label']) ?></strong>
+                                    <?php endif; ?>
+                                    <?php if (($heuristicAi['evidence_strength'] ?? '') !== ''): ?>
+                                        &middot; Evidence strength: <strong><?= portal_escape(ucfirst((string) $heuristicAi['evidence_strength'])) ?></strong>
+                                    <?php endif; ?>
+                                </p>
+                            <?php endif; ?>
+                            <?php if (($heuristicAi['summary'] ?? '') !== ''): ?>
+                                <p class="rvw-card-note"><?= portal_escape((string) $heuristicAi['summary']) ?></p>
+                            <?php endif; ?>
+                            <?php if (!empty($heuristicAi['risk_signals'])): ?>
+                                <p class="rvw-evidence-title">Risk signals</p>
+                                <ul class="rvw-evidence-list">
+                                    <?php foreach ($heuristicAi['risk_signals'] as $signal): ?>
+                                        <li><?= portal_escape((string) $signal) ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            <?php endif; ?>
+                            <?php if (!empty($heuristicAi['positive_signals'])): ?>
+                                <p class="rvw-evidence-title">Signals consistent with genuine authorship</p>
+                                <ul class="rvw-evidence-list">
+                                    <?php foreach ($heuristicAi['positive_signals'] as $signal): ?>
+                                        <li><?= portal_escape((string) $signal) ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            <?php endif; ?>
+                            <?php if (($heuristicAi['teacher_note'] ?? '') !== ''): ?>
+                                <p class="rvw-card-note rvw-card-note--soft"><?= portal_escape((string) $heuristicAi['teacher_note']) ?></p>
+                            <?php endif; ?>
+                        <?php else: ?>
                         <?php if ($heuristicAi !== null && !empty($heuristicAi['signals'])): ?>
                             <p class="rvw-evidence-title">Writing-style signals</p>
                             <ul class="rvw-evidence-list">
@@ -2385,6 +3195,7 @@ if (!function_exists('portal_integrity_summary_cards')) {
                                 <?php if ($pasteEvents > 0): ?><li>Paste events while typing: <strong><?= $pasteEvents ?></strong></li><?php endif; ?>
                             </ul>
                         <?php endif; ?>
+                        <?php endif; ?>
                     <?php else: ?>
                         <p class="rvw-card-note">Your teacher can review the detailed evidence.</p>
                     <?php endif; ?>
@@ -2399,14 +3210,60 @@ if (!function_exists('portal_integrity_summary_cards')) {
                 </summary>
                 <div class="rvw-card-body">
                     <?php if ($isTeacher): ?>
-                        <ul class="rvw-evidence-list">
-                            <li>Editing time in portal: <strong><?= (int) round($editSeconds / 60) ?> min</strong></li>
-                            <li>Paste events: <strong><?= $pasteEvents ?></strong></li>
-                            <?php if ($fileMeta !== null && ($fileMeta['edit_time_minutes'] ?? null) !== null): ?>
-                                <li>File editing time: <strong><?= (int) $fileMeta['edit_time_minutes'] ?> min</strong></li>
+                        <?php if ($processSource === 'file_metadata_only'): ?>
+                            <p class="rvw-card-note"><strong>Writing process:</strong> File metadata only</p>
+                            <p class="rvw-card-note">Portal writing tracking was not used for this uploaded file.</p>
+                        <?php elseif ($processSource === 'mixed'): ?>
+                            <p class="rvw-card-note"><strong>Writing process:</strong> Portal tracking and file metadata</p>
+                        <?php elseif ($processSource === 'portal_textarea'): ?>
+                            <p class="rvw-card-note"><strong>Writing process:</strong> Portal textarea</p>
+                        <?php endif; ?>
+                        <?php if ($trackingAvailable || ($fileMeta !== null && !empty($fileMeta['available']))): ?>
+                            <ul class="rvw-evidence-list">
+                                <?php if ($trackingAvailable && $editSeconds > 0): ?>
+                                    <li>Editing time in portal: <strong><?= (int) round($editSeconds / 60) ?> min</strong></li>
+                                <?php endif; ?>
+                                <?php if ($trackingAvailable && $pasteEvents > 0): ?>
+                                    <li>Paste events: <strong><?= $pasteEvents ?></strong></li>
+                                <?php endif; ?>
+                                <?php if ($trackingAvailable && $pastedChars > 0): ?>
+                                    <li>Pasted characters: <strong><?= $pastedChars ?></strong></li>
+                                <?php endif; ?>
+                                <?php if ($fileMeta !== null && ($fileMeta['edit_time_minutes'] ?? null) !== null): ?>
+                                    <li>File editing time: <strong><?= (int) $fileMeta['edit_time_minutes'] ?> min</strong></li>
+                                <?php endif; ?>
+                                <?php if ($fileMeta !== null && ($fileMeta['author'] ?? '') !== ''): ?>
+                                    <li>File author: <strong><?= portal_escape((string) $fileMeta['author']) ?></strong></li>
+                                <?php endif; ?>
+                                <?php if ($fileMeta !== null && ($fileMeta['created_at'] ?? '') !== ''): ?>
+                                    <li>Created: <strong><?= portal_escape((string) $fileMeta['created_at']) ?></strong></li>
+                                <?php endif; ?>
+                                <?php if ($fileMeta !== null && ($fileMeta['modified_at'] ?? '') !== ''): ?>
+                                    <li>Last saved: <strong><?= portal_escape((string) $fileMeta['modified_at']) ?></strong></li>
+                                <?php endif; ?>
+                                <?php if ($fileMeta !== null && ($fileMeta['application'] ?? '') !== ''): ?>
+                                    <li>Application: <strong><?= portal_escape((string) $fileMeta['application']) ?></strong></li>
+                                <?php endif; ?>
+                            </ul>
+                        <?php endif; ?>
+                        <?php if ($processRev !== null && isset($processRev['risk_signals'])): ?>
+                            <?php if (!empty($processRev['risk_signals'])): ?>
+                                <p class="rvw-evidence-title">Risk signals</p>
+                                <ul class="rvw-evidence-list">
+                                    <?php foreach ($processRev['risk_signals'] as $signal): ?>
+                                        <li><?= portal_escape((string) $signal) ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
                             <?php endif; ?>
-                        </ul>
-                        <?php if ($processRev !== null && !empty($processRev['signals'])): ?>
+                            <?php if (!empty($processRev['positive_signals'])): ?>
+                                <p class="rvw-evidence-title">Signals consistent with genuine authorship</p>
+                                <ul class="rvw-evidence-list">
+                                    <?php foreach ($processRev['positive_signals'] as $signal): ?>
+                                        <li><?= portal_escape((string) $signal) ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            <?php endif; ?>
+                        <?php elseif ($processRev !== null && !empty($processRev['signals'])): ?>
                             <ul class="rvw-evidence-list">
                                 <?php foreach ($processRev['signals'] as $signal): ?>
                                     <li><?= portal_escape((string) $signal) ?></li>

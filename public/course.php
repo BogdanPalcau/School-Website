@@ -3289,6 +3289,15 @@ ob_start();
             openReview = overlay;
             requestAnimationFrame(() => overlay.classList.add('rvw-overlay--in'));
         }
+        function reloadAndOpenReview(reviewId) {
+            if (!reviewId) return;
+            const url = new URL(window.location.href);
+            url.searchParams.set('open_review', reviewId);
+            if (!url.searchParams.has('section')) {
+                url.searchParams.set('section', 'content');
+            }
+            window.location.href = url.toString();
+        }
         function closeReviewOverlay(overlay) {
             if (!overlay) return;
             overlay.classList.remove('rvw-overlay--in');
@@ -3306,6 +3315,10 @@ ob_start();
             if (!btn || !btn.dataset.reviewOpen) return;
             e.stopPropagation();
             const overlay = document.getElementById(btn.dataset.reviewOpen);
+            if (!overlay) {
+                reloadAndOpenReview(btn.dataset.reviewOpen);
+                return;
+            }
             openReviewOverlay(overlay);
             const shell = overlay?.querySelector('.rvw-shell');
             if (shell) loadSubmissionPreview(shell);
@@ -3322,6 +3335,19 @@ ob_start();
             if (pop) { pop.remove(); return; }
             if (openReview) closeReviewOverlay(openReview);
         });
+
+        const requestedReview = new URLSearchParams(location.search).get('open_review') || '';
+        if (requestedReview) {
+            const overlay = document.getElementById(requestedReview);
+            if (overlay) {
+                openReviewOverlay(overlay);
+                const shell = overlay.querySelector('.rvw-shell');
+                if (shell) loadSubmissionPreview(shell);
+                const clean = new URL(window.location.href);
+                clean.searchParams.delete('open_review');
+                history.replaceState(null, '', clean.toString());
+            }
+        }
 
         function showGradeView(block) {
             const view = block.querySelector('.rvw-grade-view');
