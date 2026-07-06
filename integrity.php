@@ -424,8 +424,21 @@ if (!function_exists('portal_integrity_pair_score')) {
             $subSet = array_fill_keys($subContent !== [] ? $subContent : $submissionWords, true);
             $srcSet = array_fill_keys($srcContent !== [] ? $srcContent : $sourceWords, true);
             $intersection = array_intersect_key($subSet, $srcSet);
+
+            // Guardrails: bag-of-words containment/Jaccard is only meaningful when
+            // both sides carry enough distinct vocabulary and the overlap itself is
+            // more than a handful of incidental shared words (names, course/topic
+            // keywords). Without this, a tiny source (e.g. a one-sentence
+            // assignment description, or a short document with a broken/partial
+            // text extraction) can appear "100% contained" in a huge submission
+            // after sharing only 3-8 common words.
+            $minSetWords = 20;
+            $minOverlapWords = 8;
+            $overlapCount = count($intersection);
+            $meaningfulOverlap = $overlapCount >= $minOverlapWords;
+
             $union = $subSet + $srcSet;
-            if ($union !== []) {
+            if ($union !== [] && $meaningfulOverlap && count($subSet) >= $minSetWords && count($srcSet) >= $minSetWords) {
                 $jaccard = (count($intersection) / count($union)) * 100;
                 if ($jaccard > $bestScore) {
                     $bestScore = $jaccard;
@@ -433,7 +446,7 @@ if (!function_exists('portal_integrity_pair_score')) {
                     $bestMethod = 'content-word-jaccard';
                 }
             }
-            if ($srcSet !== []) {
+            if ($srcSet !== [] && $meaningfulOverlap && count($srcSet) >= $minSetWords) {
                 $sourceContained = (count($intersection) / count($srcSet)) * 100;
                 if ($sourceContained > $bestScore) {
                     $bestScore = $sourceContained;
@@ -441,7 +454,7 @@ if (!function_exists('portal_integrity_pair_score')) {
                     $bestMethod = 'source-contained-in-submission';
                 }
             }
-            if ($subSet !== []) {
+            if ($subSet !== [] && $meaningfulOverlap && count($subSet) >= $minSetWords) {
                 $submissionContained = (count($intersection) / count($subSet)) * 100;
                 if ($submissionContained > $bestScore) {
                     $bestScore = $submissionContained;
@@ -553,7 +566,8 @@ if (!function_exists('portal_integrity_fingerprint_matches')) {
         PDO $db,
         string $text,
         ?string $excludeSourceType = null,
-        ?int $excludeSourceId = null
+        ?int $excludeSourceId = null,
+        array $excludeSourceKeys = []
     ): array {
         portal_integrity_ensure_index_table($db);
         $sentences = portal_integrity_sentences($text, 35);
@@ -572,11 +586,32 @@ if (!function_exists('portal_integrity_fingerprint_matches')) {
         $params = $hashes;
         $sql = "SELECT sentence_hash, source_type, source_id, source_label, sentence_preview
                 FROM integrity_sentence_index
-                WHERE sentence_hash IN ($placeholders)";
+                WHERE sentence_hash IN ($placeholders)
+                  AND (
+                    source_type != 'submission'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM course_submissions cs
+                        WHERE cs.id = integrity_sentence_index.source_id
+                    )
+                  )";
         if ($excludeSourceType !== null && $excludeSourceId !== null) {
             $sql .= ' AND NOT (source_type = ? AND source_id = ?)';
             $params[] = $excludeSourceType;
             $params[] = $excludeSourceId;
+        }
+        // Sentence-level matches against the same student's own other work
+        // (e.g. an earlier draft/interim submission or a document they authored
+        // that a teacher shared as course material) are self-overlap, not
+        // plagiarism, and should not inflate the fingerprint score.
+        foreach ($excludeSourceKeys as $key) {
+            if (!is_string($key) || !str_contains($key, ':')) {
+                continue;
+            }
+            [$keyType, $keyId] = explode(':', $key, 2);
+            $sql .= ' AND NOT (source_type = ? AND source_id = ?)';
+            $params[] = $keyType;
+            $params[] = (int) $keyId;
         }
 
         $stmt = $db->prepare($sql);
@@ -998,7 +1033,7 @@ if (!function_exists('portal_integrity_names_match')) {
      * name token — this avoids false mismatches from "J. Smith" vs "John Smith"
      * while still catching a genuinely different person.
      */
-    function portal_integrity_names_match(string $a, string $b): bool
+    function portal_integrity_names_match(string $a, string $b, bool $strict = false): bool
     {
         $norm = static function (string $s): string {
             $s = strtolower(trim($s));
@@ -1008,7 +1043,7 @@ if (!function_exists('portal_integrity_names_match')) {
         $a = $norm($a);
         $b = $norm($b);
         if ($a === '' || $b === '') {
-            return true; // nothing to compare → don't flag
+            return !$strict; // nothing to compare → don't flag a mismatch, but never confirm identity
         }
         if ($a === $b || str_contains($a, $b) || str_contains($b, $a)) {
             return true;
@@ -1016,6 +1051,14 @@ if (!function_exists('portal_integrity_names_match')) {
         $at = array_filter(explode(' ', $a), static fn(string $t): bool => mb_strlen($t) >= 2);
         $bt = array_filter(explode(' ', $b), static fn(string $t): bool => mb_strlen($t) >= 2);
         $shared = array_intersect($at, $bt);
+        // Strict mode is used to positively confirm the same person (e.g. before
+        // excluding a similarity match from scoring as "self-authored"), so a
+        // single shared common name isn't enough — require most of both name's
+        // tokens to overlap.
+        if ($strict) {
+            $minTokens = max(1, min(count($at), count($bt)));
+            return count($shared) >= 2 || count($shared) >= $minTokens;
+        }
         return count($shared) >= 1;
     }
 }
@@ -1667,6 +1710,12 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $words = portal_integrity_words($cleanText);
         $wordCount = count($words);
         $scoringWordCount = count(portal_integrity_words($scoringText));
+        $studentName = trim((string) ($submissionContext['student_name'] ?? ''));
+        // Portal account display names don't always match a document's embedded
+        // "author" metadata (nicknames, real name vs. username, etc.), so also
+        // keep the submitter's own file-author name to cross-check against other
+        // documents' author metadata when identifying self-authored sources.
+        $submissionFileAuthor = trim((string) ($submissionContext['file_metadata']['author'] ?? ''));
 
         if ($wordCount < 25) {
             return [
@@ -1757,11 +1806,18 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 $label,
                 $courseId
             );
+            // A different assignment slot submitted by the same student (e.g. an
+            // earlier draft/interim submission that evolved into this one) is
+            // self-overlap, not plagiarism — flag it so it doesn't drive the score.
+            $selfAuthored = $studentName !== ''
+                && portal_integrity_names_match($studentName, (string) $source['student_name'], true);
             $sources[] = [
                 'label' => $label,
                 'text' => (string) $source['submission_text'],
                 'type' => 'institutional submission',
                 'date' => (string) $source['submitted_at'],
+                'self_authored' => $selfAuthored,
+                'source_key' => 'submission:' . (int) $source['id'],
             ];
         }
 
@@ -1777,14 +1833,21 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $materialStmt->execute();
         foreach ($materialStmt->fetchAll() as $material) {
             $materialText = (string) $material['description'];
+            $materialAuthor = '';
             if ($material['file_path'] !== '') {
                 $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, (string) $material['file_path']);
                 if (is_file($abs)) {
                     $materialText .= "\n" . portal_extract_submission_text($abs, (string) $material['file_name']);
+                    $materialMeta = portal_extract_submission_file_metadata($abs, (string) $material['file_name']);
+                    $materialAuthor = trim((string) ($materialMeta['author'] ?? ''));
                 }
             }
             $materialText = portal_integrity_normalize_text($materialText);
-            if ($materialText !== '') {
+            // Skip trivially short descriptions (e.g. generic placeholder
+            // instructions like "This is where you submit your assignment.") —
+            // they carry no meaningful comparison signal and can only produce
+            // false-positive matches against unrelated submissions.
+            if ($materialText !== '' && count(portal_integrity_words($materialText)) >= 25) {
                 $label = trim($material['title'] . ' (' . $material['course_title'] . ')');
                 portal_integrity_index_document(
                     $db,
@@ -1794,11 +1857,20 @@ if (!function_exists('portal_integrity_check_similarity')) {
                     $label,
                     $courseId
                 );
+                // A course document authored by the same student (e.g. a teacher
+                // sharing that student's own interim report as a reference file)
+                // is self-overlap, not plagiarism.
+                $selfAuthored = ($studentName !== '' && $materialAuthor !== ''
+                        && portal_integrity_names_match($studentName, $materialAuthor, true))
+                    || ($submissionFileAuthor !== '' && $materialAuthor !== ''
+                        && portal_integrity_names_match($submissionFileAuthor, $materialAuthor, true));
                 $sources[] = [
                     'label' => $label,
                     'text' => $materialText,
                     'type' => 'institutional material',
                     'date' => '',
+                    'self_authored' => $selfAuthored,
+                    'source_key' => 'material:' . (int) $material['id'],
                 ];
             }
         }
@@ -1822,7 +1894,11 @@ if (!function_exists('portal_integrity_check_similarity')) {
 
         $matches = [];
         $allMatchedPhrases = [];
+        $selfAuthoredSourceKeys = [];
         foreach ($sources as $source) {
+            if (!empty($source['self_authored']) && isset($source['source_key'])) {
+                $selfAuthoredSourceKeys[] = (string) $source['source_key'];
+            }
             $pair = portal_integrity_pair_score($scoringText, $source['text']);
             if ($pair['score'] <= 0) {
                 continue;
@@ -1836,18 +1912,25 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 'method' => $pair['method'],
                 'matched_phrases' => $pair['phrases'],
                 'snippet' => substr(portal_integrity_normalize_text($source['text']), 0, 260),
+                'self_authored' => !empty($source['self_authored']),
             ];
         }
 
         usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
+        // Self-authored matches (the student's own earlier work, e.g. an
+        // interim draft) are shown for context but must not drive the headline
+        // similarity score — that score should reflect overlap with other
+        // people's work.
+        $scorableMatches = array_values(array_filter($matches, static fn(array $m): bool => empty($m['self_authored'])));
         $institutionalMatches = array_slice($matches, 0, 5);
-        $score = !empty($institutionalMatches) ? (float) $institutionalMatches[0]['score'] : 0.0;
+        $score = !empty($scorableMatches) ? (float) $scorableMatches[0]['score'] : 0.0;
 
         $fingerprint = portal_integrity_fingerprint_matches(
             $db,
             $scoringText,
             $submissionId !== null ? 'submission' : null,
-            $submissionId
+            $submissionId,
+            $selfAuthoredSourceKeys
         );
         if ($fingerprint['score'] > $score) {
             $score = (float) $fingerprint['score'];
@@ -1891,11 +1974,18 @@ if (!function_exists('portal_integrity_check_similarity')) {
 
         $highlights = array_values(array_unique(array_slice($allMatchedPhrases, 0, 16)));
         $level = portal_integrity_level($score);
-        $summary = empty($institutionalMatches) && empty($webMatches)
-            ? 'No meaningful overlap was found in the institutional database.'
-            : ($webMatches !== []
-                ? 'Overlap was found against institutional sources and/or the web.'
-                : 'Potential overlap was found against institutional sources.');
+        $hasScorableMatches = !empty($scorableMatches) || $fingerprint['score'] > 0;
+        $hasSelfAuthoredOnly = !$hasScorableMatches
+            && (!empty(array_filter($institutionalMatches, static fn(array $m): bool => !empty($m['self_authored']))));
+        if ($hasSelfAuthoredOnly) {
+            $summary = 'Overlap found only with this student\'s own earlier work — not flagged as plagiarism.';
+        } elseif (empty($institutionalMatches) && empty($webMatches)) {
+            $summary = 'No meaningful overlap was found in the institutional database.';
+        } elseif ($webMatches !== []) {
+            $summary = 'Overlap was found against institutional sources and/or the web.';
+        } else {
+            $summary = 'Potential overlap was found against institutional sources.';
+        }
 
         $processReview = $submissionContext !== null
             ? portal_integrity_process_review($submissionContext, $cleanText)
@@ -2235,11 +2325,15 @@ if (!function_exists('portal_integrity_summary_cards')) {
                     <?php if ($isTeacher && !empty($matches)): ?>
                         <p class="rvw-card-note">Overlap found against the sources below.</p>
                         <?php foreach (array_slice($matches, 0, 6) as $match): ?>
-                            <div class="rvw-source">
+                            <?php $isSelf = !empty($match['self_authored']); ?>
+                            <div class="rvw-source<?= $isSelf ? ' rvw-source--self' : '' ?>">
                                 <div class="rvw-source-head">
                                     <strong><?= portal_escape((string) ($match['source'] ?? 'Matched source')) ?></strong>
                                     <span><?= portal_escape((string) round((float) ($match['score'] ?? 0), 1)) ?>%</span>
                                 </div>
+                                <?php if ($isSelf): ?>
+                                    <p class="rvw-source-tag">Own earlier work — excluded from the similarity score</p>
+                                <?php endif; ?>
                                 <?php if (($match['snippet'] ?? '') !== ''): ?>
                                     <p><?= portal_escape((string) $match['snippet']) ?></p>
                                 <?php endif; ?>

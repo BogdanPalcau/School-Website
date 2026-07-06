@@ -7893,6 +7893,8 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 .rvw-source { border-top: 1px dashed var(--border); padding-top: 8px; }
 .rvw-source-head { display: flex; justify-content: space-between; gap: 8px; font-size: 0.85rem; }
 .rvw-source p { margin: 4px 0 0; color: var(--muted); font-size: 0.8rem; }
+.rvw-source--self .rvw-source-head span { color: #0284c7; }
+.rvw-source-tag { color: #0284c7 !important; font-weight: 600; font-style: italic; }
 
 .rvw-card--good { border-left-color: #16a34a; }
 .rvw-card--good .rvw-card-value { color: #15803d; }

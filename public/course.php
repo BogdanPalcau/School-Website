@@ -659,6 +659,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($sRow) {
                 $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $sRow['filepath'];
                 if (is_file($abs)) @unlink($abs);
+                // Removed submissions should not remain active plagiarism sources.
+                $db->prepare("DELETE FROM integrity_sentence_index WHERE source_type = 'submission' AND source_id = ?")
+                   ->execute([$subId]);
+                $db->prepare("DELETE FROM course_submission_annotations WHERE submission_id = ? AND course_id = ?")
+                   ->execute([$subId, $courseId]);
                 $db->prepare("DELETE FROM course_submissions WHERE id = ? AND course_id = ?")
                    ->execute([$subId, $courseId]);
             }
@@ -866,13 +871,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $uid = (int) $me['id'];
                 $prevStmt = $db->prepare(
-                    "SELECT filepath FROM course_submissions WHERE item_id = ? AND user_id = ?"
+                    "SELECT id, filepath FROM course_submissions WHERE item_id = ? AND user_id = ?"
                 );
                 $prevStmt->execute([$itemId, $uid]);
                 $prev = $prevStmt->fetch();
                 if ($prev && $prev['filepath'] !== '') {
                     $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $prev['filepath'];
                     if (is_file($abs)) @unlink($abs);
+                }
+                if ($prev && (int) ($prev['id'] ?? 0) > 0) {
+                    $prevSubId = (int) $prev['id'];
+                    // A resubmission replaces the active evidence for this slot;
+                    // don't compare the new attempt against the student's previous
+                    // version or keep old comments pinned to different text.
+                    $db->prepare("DELETE FROM integrity_sentence_index WHERE source_type = 'submission' AND source_id = ?")
+                       ->execute([$prevSubId]);
+                    $db->prepare("DELETE FROM course_submission_annotations WHERE submission_id = ? AND course_id = ?")
+                       ->execute([$prevSubId, $courseId]);
                 }
 
                 $dir = portal_uploads_base() . DIRECTORY_SEPARATOR . 'submissions'
