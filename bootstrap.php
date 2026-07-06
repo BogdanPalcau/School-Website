@@ -796,6 +796,20 @@ if (!function_exists('portal_run_migrations')) {
                 UNIQUE(user_id, version)
             )
         ");
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS integrity_sentence_index (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                sentence_hash    TEXT    NOT NULL,
+                sentence_preview TEXT    NOT NULL DEFAULT '',
+                source_type      TEXT    NOT NULL,
+                source_id        INTEGER NOT NULL,
+                source_label     TEXT    NOT NULL DEFAULT '',
+                course_id        INTEGER,
+                indexed_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_integrity_sentence_hash ON integrity_sentence_index(sentence_hash)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_integrity_sentence_source ON integrity_sentence_index(source_type, source_id)');
         $submissionCols = array_column($db->query("PRAGMA table_info(course_submissions)")->fetchAll(), 'name');
         $submissionAdds = [
             'score'         => "ALTER TABLE course_submissions ADD COLUMN score INTEGER",
@@ -888,3 +902,5 @@ if (!function_exists('portal_can_manage_course')) {
         return in_array($courseId, portal_assigned_course_ids(), true);
     }
 }
+
+require_once __DIR__ . '/integrity.php';

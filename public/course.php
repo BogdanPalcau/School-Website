@@ -115,440 +115,7 @@ try {
 
 $integrityEulaVersion = 'integrity-tools-2026-07';
 
-if (!function_exists('portal_extract_submission_text')) {
-    function portal_extract_submission_text(string $absPath, string $filename): string
-    {
-        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        if ($ext === 'txt') {
-            return trim((string) @file_get_contents($absPath));
-        }
-        if ($ext === 'pdf') {
-            $raw = (string) @file_get_contents($absPath);
-            if ($raw === '') {
-                return '';
-            }
-            preg_match_all('/\((?:\\\\.|[^\\\\)])*\)/s', $raw, $matches);
-            if (empty($matches[0])) {
-                return '';
-            }
-            $chunks = array_map(static function (string $chunk): string {
-                $chunk = substr($chunk, 1, -1);
-                $chunk = preg_replace('/\\\\([nrtbf()\\\\])/', ' ', $chunk) ?? $chunk;
-                $chunk = preg_replace('/\\\\[0-7]{1,3}/', ' ', $chunk) ?? $chunk;
-                return $chunk;
-            }, $matches[0]);
-            return trim(preg_replace('/\s+/', ' ', implode(' ', $chunks)) ?? '');
-        }
-        if ($ext === 'docx' && class_exists('ZipArchive')) {
-            $zip = new ZipArchive();
-            if ($zip->open($absPath) === true) {
-                $xml = (string) $zip->getFromName('word/document.xml');
-                $zip->close();
-                if ($xml !== '') {
-                    $xml = preg_replace('/<\/w:p>/', "\n", $xml) ?? $xml;
-                    return trim(html_entity_decode(strip_tags($xml), ENT_QUOTES | ENT_XML1, 'UTF-8'));
-                }
-            }
-        }
-        return '';
-    }
-}
-
-if (!function_exists('portal_integrity_normalize_text')) {
-    function portal_integrity_normalize_text(string $text): string
-    {
-        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        return trim(preg_replace('/\s+/', ' ', $text) ?? $text);
-    }
-}
-
-if (!function_exists('portal_supported_submission_extensions')) {
-    function portal_supported_submission_extensions(): array
-    {
-        return ['doc', 'docx', 'pdf', 'txt'];
-    }
-}
-
-if (!function_exists('portal_supported_submission_hint')) {
-    function portal_supported_submission_hint(): string
-    {
-        return 'DOC, DOCX, PDF, or TXT';
-    }
-}
-
-if (!function_exists('portal_integrity_words')) {
-    function portal_integrity_words(string $text): array
-    {
-        $text = strtolower(portal_integrity_normalize_text($text));
-        preg_match_all("/[a-z0-9]+(?:'[a-z0-9]+)?/i", $text, $matches);
-        return $matches[0] ?? [];
-    }
-}
-
-if (!function_exists('portal_integrity_shingles')) {
-    function portal_integrity_shingles(array $words, int $size = 5): array
-    {
-        $count = count($words);
-        if ($count < $size) {
-            return [];
-        }
-
-        $shingles = [];
-        for ($i = 0; $i <= $count - $size; $i++) {
-            $shingles[implode(' ', array_slice($words, $i, $size))] = true;
-        }
-        return $shingles;
-    }
-}
-
-if (!function_exists('portal_integrity_level')) {
-    function portal_integrity_level(?float $score): string
-    {
-        if ($score === null) return 'pending';
-        if ($score >= 35.0) return 'high';
-        if ($score >= 15.0) return 'medium';
-        return 'low';
-    }
-}
-
-if (!function_exists('portal_integrity_receipt_number')) {
-    function portal_integrity_receipt_number(int $courseId, int $itemId, int $userId): string
-    {
-        return 'RIEO-' . date('Ymd-His') . '-' . $courseId . '-' . $itemId . '-' . $userId . '-' . strtoupper(bin2hex(random_bytes(3)));
-    }
-}
-
-if (!function_exists('portal_integrity_check_similarity')) {
-    function portal_integrity_check_similarity(PDO $db, string $text, int $courseId, int $itemId, int $userId): array
-    {
-        $cleanText = portal_integrity_normalize_text($text);
-        $words = portal_integrity_words($cleanText);
-        $wordCount = count($words);
-        $submissionShingles = portal_integrity_shingles($words);
-
-        if ($wordCount < 25 || empty($submissionShingles)) {
-            return [
-                'status' => 'no_text',
-                'score' => null,
-                'word_count' => $wordCount,
-                'report' => json_encode([
-                    'engine' => 'native_institutional_v1',
-                    'status' => 'no_text',
-                    'score' => null,
-                    'level' => 'pending',
-                    'summary' => 'Not enough readable text was available to produce a similarity report.',
-                    'scope' => [
-                        'institutional_database' => 'checked',
-                        'global_web' => 'not_configured',
-                        'academic_journals' => 'not_configured',
-                    ],
-                    'matches' => [],
-                    'highlights' => [],
-                ], JSON_UNESCAPED_SLASHES),
-            ];
-        }
-
-        $sources = [];
-        $stmt = $db->prepare(
-            "SELECT cs.submission_text, cs.filename, cs.submitted_at,
-                    u.name AS student_name, c.full_title AS course_title, cfi.title AS slot_title
-             FROM course_submissions cs
-             JOIN users u ON u.id = cs.user_id
-             JOIN courses c ON c.id = cs.course_id
-             JOIN course_folder_items cfi ON cfi.id = cs.item_id
-             WHERE cs.submission_text != ''
-               AND NOT (cs.item_id = ? AND cs.user_id = ?)
-             ORDER BY cs.submitted_at DESC
-             LIMIT 80"
-        );
-        $stmt->execute([$itemId, $userId]);
-        foreach ($stmt->fetchAll() as $source) {
-            $sources[] = [
-                'label' => trim($source['student_name'] . ' - ' . $source['slot_title'] . ' (' . $source['course_title'] . ')'),
-                'text' => (string) $source['submission_text'],
-                'type' => 'institutional submission',
-                'date' => (string) $source['submitted_at'],
-            ];
-        }
-
-        $materialStmt = $db->prepare(
-            "SELECT cfi.title, cfi.description, cfi.file_path, cfi.file_name, c.full_title AS course_title
-             FROM course_folder_items cfi
-             JOIN courses c ON c.id = cfi.course_id
-             WHERE cfi.type = 'document'
-               AND (cfi.description != '' OR cfi.file_path != '')
-             ORDER BY cfi.created_at DESC
-             LIMIT 40"
-        );
-        $materialStmt->execute();
-        foreach ($materialStmt->fetchAll() as $material) {
-            $materialText = (string) $material['description'];
-            if ($material['file_path'] !== '') {
-                $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $material['file_path'];
-                if (is_file($abs)) {
-                    $materialText .= "\n" . portal_extract_submission_text($abs, (string) $material['file_name']);
-                }
-            }
-            $materialText = portal_integrity_normalize_text($materialText);
-            if ($materialText !== '') {
-                $sources[] = [
-                    'label' => trim($material['title'] . ' (' . $material['course_title'] . ')'),
-                    'text' => $materialText,
-                    'type' => 'institutional material',
-                    'date' => '',
-                ];
-            }
-        }
-
-        $matches = [];
-        $allMatchedPhrases = [];
-        foreach ($sources as $source) {
-            $sourceWords = portal_integrity_words($source['text']);
-            $sourceShingles = portal_integrity_shingles($sourceWords);
-            if (empty($sourceShingles)) {
-                continue;
-            }
-            $overlap = array_intersect_key($submissionShingles, $sourceShingles);
-            if (empty($overlap)) {
-                continue;
-            }
-
-            $sourceScore = round((count($overlap) / count($submissionShingles)) * 100, 1);
-            if ($sourceScore <= 0) {
-                continue;
-            }
-
-            $phrases = array_slice(array_keys($overlap), 0, 8);
-            $allMatchedPhrases = array_merge($allMatchedPhrases, $phrases);
-            $matches[] = [
-                'source' => $source['label'],
-                'type' => $source['type'],
-                'score' => $sourceScore,
-                'matched_phrases' => $phrases,
-                'snippet' => substr(portal_integrity_normalize_text($source['text']), 0, 260),
-            ];
-        }
-
-        usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
-        $matches = array_slice($matches, 0, 5);
-        $score = !empty($matches) ? (float) $matches[0]['score'] : 0.0;
-        $highlights = array_values(array_unique(array_slice($allMatchedPhrases, 0, 16)));
-        $level = portal_integrity_level($score);
-
-        return [
-            'status' => 'checked',
-            'score' => $score,
-            'word_count' => $wordCount,
-            'report' => json_encode([
-                'engine' => 'native_institutional_v1',
-                'status' => 'checked',
-                'score' => $score,
-                'level' => $level,
-                'summary' => empty($matches)
-                    ? 'No meaningful overlap was found in the institutional database.'
-                    : 'Potential overlap was found against institutional sources.',
-                'scope' => [
-                    'institutional_database' => 'checked',
-                    'global_web' => 'not_configured',
-                    'academic_journals' => 'not_configured',
-                ],
-                'matches' => $matches,
-                'highlights' => $highlights,
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-        ];
-    }
-}
-
-if (!function_exists('portal_integrity_report_data')) {
-    function portal_integrity_report_data(array $submission): array
-    {
-        $raw = (string) ($submission['similarity_report'] ?? '');
-        if ($raw !== '') {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        $score = isset($submission['similarity_score']) && $submission['similarity_score'] !== null
-            ? (float) $submission['similarity_score']
-            : null;
-        return [
-            'status' => (string) ($submission['similarity_status'] ?? ''),
-            'score' => $score,
-            'level' => portal_integrity_level($score),
-            'summary' => 'No originality report is available yet.',
-            'matches' => [],
-            'highlights' => [],
-            'scope' => [
-                'institutional_database' => 'pending',
-                'global_web' => 'not_configured',
-                'academic_journals' => 'not_configured',
-            ],
-        ];
-    }
-}
-
-if (!function_exists('portal_render_integrity_report')) {
-    function portal_render_integrity_report(array $submission, bool $showAi): string
-    {
-        $report = portal_integrity_report_data($submission);
-        $score = isset($report['score']) && $report['score'] !== null ? (float) $report['score'] : null;
-        $level = portal_integrity_level($score);
-        $matches = is_array($report['matches'] ?? null) ? $report['matches'] : [];
-        $highlights = is_array($report['highlights'] ?? null) ? $report['highlights'] : [];
-        $scope = is_array($report['scope'] ?? null) ? $report['scope'] : [];
-        $receipt = (string) ($submission['receipt_number'] ?? '');
-        $wordCount = (int) ($submission['text_word_count'] ?? 0);
-        $checkedAt = (string) ($submission['similarity_checked_at'] ?? '');
-
-        ob_start();
-        ?>
-        <div class="integrity-report integrity-report--<?= portal_escape($level) ?>">
-            <div class="integrity-report-head">
-                <div>
-                    <p class="eyebrow">Originality receipt</p>
-                    <h4><?= $receipt !== '' ? portal_escape($receipt) : 'Receipt pending' ?></h4>
-                    <p>
-                        <?= portal_escape((string) ($report['summary'] ?? 'No originality report is available yet.')) ?>
-                        <?php if ($checkedAt !== ''): ?>
-                            <span>Checked <?= portal_escape(date('j M Y H:i', strtotime($checkedAt))) ?></span>
-                        <?php endif; ?>
-                    </p>
-                </div>
-                <div class="integrity-score">
-                    <strong><?= $score !== null ? portal_escape((string) round($score, 1)) . '%' : '--' ?></strong>
-                    <span>Similarity</span>
-                </div>
-            </div>
-
-            <div class="integrity-meter" aria-hidden="true">
-                <span style="width: <?= $score !== null ? min(100, max(0, (float) $score)) : 0 ?>%;"></span>
-            </div>
-
-            <div class="integrity-meta-grid">
-                <span>Words checked: <strong><?= $wordCount ?></strong></span>
-                <span>Institutional DB: <strong><?= portal_escape((string) ($scope['institutional_database'] ?? 'pending')) ?></strong></span>
-                <span>Global web: <strong><?= portal_escape((string) ($scope['global_web'] ?? 'not_configured')) ?></strong></span>
-                <span>Journals: <strong><?= portal_escape((string) ($scope['academic_journals'] ?? 'not_configured')) ?></strong></span>
-            </div>
-
-            <?php if (!empty($matches)): ?>
-                <div class="integrity-matches">
-                    <?php foreach ($matches as $match): ?>
-                        <article class="integrity-match">
-                            <strong><?= portal_escape((string) ($match['source'] ?? 'Institutional source')) ?></strong>
-                            <span><?= portal_escape((string) ($match['type'] ?? 'source')) ?> &middot; <?= portal_escape((string) round((float) ($match['score'] ?? 0), 1)) ?>% overlap</span>
-                            <?php if (($match['snippet'] ?? '') !== ''): ?>
-                                <p><?= portal_escape((string) $match['snippet']) ?></p>
-                            <?php endif; ?>
-                        </article>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <?php if (!empty($highlights)): ?>
-                <div class="integrity-highlights" aria-label="Highlighted overlapping phrases">
-                    <?php foreach (array_slice($highlights, 0, 10) as $phrase): ?>
-                        <mark><?= portal_escape((string) $phrase) ?></mark>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <?php if ($showAi): ?>
-                <div class="integrity-ai-panel">
-                    <strong>Teacher-only AI detection</strong>
-                    <span>
-                        <?= portal_escape((string) ($submission['ai_status'] ?? 'not checked')) ?>
-                        <?php if (($submission['ai_score'] ?? null) !== null): ?>
-                            &middot; <?= portal_escape((string) round((float) $submission['ai_score'], 1)) ?>% confidence
-                        <?php endif; ?>
-                    </span>
-                    <?php if (($submission['ai_report'] ?? '') !== ''): ?>
-                        <details>
-                            <summary>Raw AI report</summary>
-                            <pre><?= portal_escape((string) $submission['ai_report']) ?></pre>
-                        </details>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
-        </div>
-        <?php
-        return trim((string) ob_get_clean());
-    }
-}
-
-if (!function_exists('portal_zero_gpt_detection')) {
-    function portal_zero_gpt_detection(string $text): array
-    {
-        $apiKey = trim((string) getenv('ZEROGPT_API_KEY'));
-        if ($apiKey === '') {
-            return ['status' => 'not_configured', 'score' => null, 'report' => 'AI detection is enabled for this slot, but ZEROGPT_API_KEY is not configured on the server.'];
-        }
-        if ($text === '') {
-            return ['status' => 'no_text', 'score' => null, 'report' => 'No readable text could be extracted from this submission for AI detection.'];
-        }
-        if (!function_exists('curl_init')) {
-            return ['status' => 'error', 'score' => null, 'report' => 'PHP cURL is not enabled, so AI detection could not run.'];
-        }
-
-        $limitedText = function_exists('mb_substr') ? mb_substr($text, 0, 15000) : substr($text, 0, 15000);
-        $payload = json_encode(['text' => $limitedText], JSON_UNESCAPED_UNICODE);
-        $ch = curl_init('https://api.zerogpt.org/api/v1/developer/ai-detection');
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 8,
-            CURLOPT_TIMEOUT => 25,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Accept: application/json',
-                'Authorization: Bearer ' . $apiKey,
-                'ApiKey: ' . $apiKey,
-            ],
-            CURLOPT_POSTFIELDS => $payload,
-        ]);
-        $body = (string) curl_exec($ch);
-        $err = curl_error($ch);
-        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($body === '' || $http >= 400) {
-            return ['status' => 'error', 'score' => null, 'report' => $err !== '' ? $err : 'ZeroGPT returned HTTP ' . $http . '.'];
-        }
-
-        $data = json_decode($body, true);
-        $score = null;
-        $paths = [
-            ['data', 'fakePercentage'],
-            ['data', 'aiPercentage'],
-            ['data', 'is_gpt_generated'],
-            ['fakePercentage'],
-            ['aiPercentage'],
-            ['score'],
-        ];
-        foreach ($paths as $path) {
-            $cursor = $data;
-            foreach ($path as $key) {
-                if (!is_array($cursor) || !array_key_exists($key, $cursor)) {
-                    $cursor = null;
-                    break;
-                }
-                $cursor = $cursor[$key];
-            }
-            if (is_numeric($cursor)) {
-                $score = (float) $cursor;
-                break;
-            }
-        }
-
-        return [
-            'status' => 'checked',
-            'score' => $score,
-            'report' => function_exists('mb_substr') ? mb_substr($body, 0, 4000) : substr($body, 0, 4000),
-        ];
-    }
-}
+// Integrity helpers live in ../integrity.php (loaded via bootstrap.php).
 
 // ── POST actions ──────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -1129,6 +696,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         )->execute([$gid, (int)$me['id'], $courseId]);
     }
 
+    // ── Teacher: re-run originality / AI checks on a submission ───────────────
+    if ($action === 'rerun_integrity' && portal_can_manage_course($courseId)) {
+        $submissionId = (int) ($_POST['submission_id'] ?? 0);
+        if ($submissionId > 0) {
+            $owner = $db->prepare("SELECT course_id FROM course_submissions WHERE id = ?");
+            $owner->execute([$submissionId]);
+            $ownerRow = $owner->fetch();
+            if ($ownerRow && (int) $ownerRow['course_id'] === $courseId) {
+                portal_rerun_submission_integrity($db, $submissionId, true);
+                $_SESSION['course_flash'] = ['success', 'Originality and AI checks were re-run for this submission.'];
+            }
+        }
+    }
+
     // ── Student: submit work to a submission slot ─────────────────────────────
     if ($action === 'submit_work') {
         $itemId = (int) ($_POST['item_id'] ?? 0);
@@ -1204,7 +785,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     $receiptNumber = portal_integrity_receipt_number($courseId, $itemId, $uid);
                     $fileHash = is_file($savedAbs) ? hash_file('sha256', $savedAbs) : '';
-                    $similarity = portal_integrity_check_similarity($db, $combinedText, $courseId, $itemId, $uid);
+                    $fileMetadata = is_file($savedAbs)
+                        ? portal_extract_submission_file_metadata($savedAbs, $originalName)
+                        : ['available' => false, 'format' => $hasFile ? $ext : 'txt'];
+                    $submissionContext = [
+                        'process_edit_seconds' => $processEditSeconds,
+                        'process_paste_events' => $processPasteEvents,
+                        'process_pasted_chars' => $processPastedChars,
+                        'file_metadata' => $fileMetadata,
+                    ];
+                    $similarity = portal_integrity_check_similarity(
+                        $db,
+                        $combinedText,
+                        $courseId,
+                        $itemId,
+                        $uid,
+                        $fileHash,
+                        null,
+                        $submissionContext
+                    );
 
                     $db->prepare(
                         "INSERT INTO course_submissions
@@ -1250,7 +849,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $subIdStmt->execute([$itemId, $uid]);
                     $submissionId = (int) ($subIdStmt->fetchColumn() ?: 0);
 
-                    if (!empty($slot['submission_ai_detection'])) {
+                    if ($submissionId > 0) {
+                        $studentName = (string) ($me['name'] ?? 'Student');
+                        portal_integrity_index_document(
+                            $db,
+                            $combinedText,
+                            'submission',
+                            $submissionId,
+                            $studentName . ' - submission #' . $submissionId,
+                            $courseId
+                        );
+                    }
+
+                    if (!empty($slot['submission_ai_detection']) || portal_zero_gpt_api_key() !== '') {
                         $ai = portal_zero_gpt_detection($combinedText);
                         $db->prepare(
                             "UPDATE course_submissions
@@ -1362,6 +973,8 @@ foreach ($courseFolders as &$_folder) {
     $_folder['items'] = $_iStmt->fetchAll();
 }
 unset($_folder);
+
+$submissionModals = '';
 
 // Assigned teachers for this course (with user info)
 $_tStmt = $_db->prepare(
@@ -1922,9 +1535,11 @@ ob_start();
                                                     <?php if ($item['description'] !== ''): ?>
                                                         <p><?= portal_escape($item['description']) ?></p>
                                                     <?php endif; ?>
+                                                    <?php if ($item['type'] !== 'submission'): ?>
                                                     <span class="item-type-badge item-type-badge--<?= portal_escape($itemKindClass) ?>">
                                                         <?= portal_escape($itemKindLabel) ?>
                                                     </span>
+                                                    <?php endif; ?>
 
                                                     <?php if (portal_can_manage_course($courseId)): ?>
                                                         <?php
@@ -1982,134 +1597,236 @@ ob_start();
                                                                 ? date('j M Y H:i', strtotime((string) $item['submission_deadline']))
                                                                 : 'No deadline set';
                                                             $deadlinePassed = $item['submission_deadline'] !== '' && time() > strtotime((string) $item['submission_deadline']);
+                                                            $modalId = 'sub-slot-modal-' . (int) $item['id'];
+                                                            if (portal_can_manage_course($courseId)) {
+                                                                $subs = $slotSubmissions[(int)$item['id']] ?? [];
+                                                            } else {
+                                                                $mySub = $mySubmissions[(int)$item['id']] ?? null;
+                                                            }
                                                         ?>
-                                                        <div class="submission-slot-meta">
-                                                            <span>Deadline: <strong><?= portal_escape($deadlineText) ?></strong></span>
-                                                            <?php if (portal_can_manage_course($courseId) && !empty($item['submission_ai_detection'])): ?>
-                                                                <span>AI detection on</span>
-                                                            <?php endif; ?>
-                                                            <?php if ($deadlinePassed): ?>
-                                                                <span class="is-overdue">Closed</span>
-                                                            <?php endif; ?>
-                                                        </div>
-                                                        <?php if (portal_can_manage_course($courseId)): ?>
-                                                            <?php $subs = $slotSubmissions[(int)$item['id']] ?? []; ?>
-                                                            <?php if (!empty($subs)): ?>
-                                                            <div class="submission-list">
-                                                                <p class="submission-list-head"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
-                                                                <?php foreach ($subs as $sub): ?>
-                                                                <?php $subVersions = $submissionVersions[(int)$sub['id']] ?? []; ?>
-                                                                <div class="submission-row">
-                                                                    <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
-                                                                    <div class="submission-row-info">
-                                                                        <strong><?= portal_escape($sub['student_name']) ?></strong>
-                                                                        <a href="download.php?sub=<?= (int)$sub['id'] ?>" class="sub-download">
-                                                                            <?= portal_icon('download', 'icon-xs') ?>
-                                                                            <?= portal_escape($sub['filename']) ?>
-                                                                        </a>
-                                                                        <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($sub['submitted_at']))) ?></span>
-                                                                        <?php if ($sub['ai_status'] !== ''): ?>
-                                                                            <span class="sub-ai">AI: <?= portal_escape($sub['ai_status']) ?><?= $sub['ai_score'] !== null ? ' (' . portal_escape((string) round((float)$sub['ai_score'], 1)) . '%)' : '' ?></span>
-                                                                        <?php endif; ?>
-                                                                        <?php if ($sub['score'] !== null): ?>
-                                                                            <span class="sub-mark">Marked: <?= (int)$sub['score'] ?>/100</span>
-                                                                        <?php endif; ?>
-                                                                        <?php if (($sub['receipt_number'] ?? '') !== ''): ?>
-                                                                            <span class="sub-receipt">Receipt: <?= portal_escape($sub['receipt_number']) ?></span>
-                                                                        <?php endif; ?>
-                                                                    </div>
-                                                                    <form method="POST" class="sub-mark-form">
-                                                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                                                        <input type="hidden" name="action" value="mark_submission">
-                                                                        <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
-                                                                        <input type="number" name="score" min="0" max="100" value="<?= $sub['score'] !== null ? (int)$sub['score'] : '' ?>" placeholder="0-100" required>
-                                                                        <input type="text" name="feedback" maxlength="2000" value="<?= portal_escape($sub['feedback'] ?? '') ?>" placeholder="Feedback">
-                                                                        <button type="submit" class="button button--sm">Mark</button>
-                                                                    </form>
-                                                                    <form method="POST" class="sub-delete-form">
-                                                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                                                        <input type="hidden" name="action" value="delete_submission">
-                                                                        <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
-                                                                        <button type="submit" class="btn-icon-danger" title="Remove submission">
-                                                                            <?= portal_icon('trash', 'icon-sm') ?>
-                                                                        </button>
-                                                                    </form>
-                                                                    <div class="submission-row-report">
-                                                                        <?= portal_render_integrity_report($sub, true) ?>
-                                                                        <?php if (!empty($subVersions)): ?>
-                                                                            <details class="process-history">
-                                                                                <summary>Version history and process visibility</summary>
-                                                                                <div class="process-history-list">
-                                                                                    <?php foreach (array_slice($subVersions, 0, 5) as $version): ?>
-                                                                                        <div class="process-history-item">
-                                                                                            <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
-                                                                                            <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min edit time &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
-                                                                                            <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
-                                                                                        </div>
-                                                                                    <?php endforeach; ?>
-                                                                                </div>
-                                                                            </details>
-                                                                        <?php endif; ?>
-                                                                    </div>
+                                                        <div class="sub-slot-card"
+                                                             data-sub-modal="<?= portal_escape($modalId) ?>"
+                                                             role="button"
+                                                             tabindex="0"
+                                                             aria-label="Open submission details for <?= portal_escape($item['title']) ?>">
+                                                            <?php if (portal_can_manage_course($courseId)): ?>
+                                                                <div class="sub-slot-card-row">
+                                                                    <span class="sub-slot-file">
+                                                                        <?= portal_icon('upload', 'icon-xs') ?>
+                                                                        <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
+                                                                    </span>
+                                                                    <?php if ($deadlinePassed): ?>
+                                                                        <span class="sub-slot-status sub-slot-status--closed">Closed</span>
+                                                                    <?php endif; ?>
                                                                 </div>
-                                                                <?php endforeach; ?>
-                                                            </div>
                                                             <?php else: ?>
-                                                                <p class="sub-empty">No submissions yet.</p>
-                                                            <?php endif; ?>
-                                                        <?php else: ?>
-                                                            <?php $mySub = $mySubmissions[(int)$item['id']] ?? null; ?>
-                                                            <?php $myVersions = $mySub ? ($submissionVersions[(int)$mySub['id']] ?? []) : []; ?>
-                                                            <?php if ($mySub): ?>
-                                                                <div class="my-submission">
-                                                                    <?= portal_icon('file', 'icon-xs') ?>
-                                                                    <span>Submitted: <strong><?= portal_escape($mySub['filename']) ?></strong></span>
-                                                                    <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?></span>
-                                                                    <?php if (($mySub['receipt_number'] ?? '') !== ''): ?>
-                                                                        <span class="sub-receipt">Receipt: <?= portal_escape($mySub['receipt_number']) ?></span>
-                                                                    <?php endif; ?>
-                                                                    <?php if ($mySub['score'] !== null): ?>
-                                                                        <span class="sub-mark"><?= (int)$mySub['score'] ?>/100</span>
+                                                                <div class="sub-slot-card-row">
+                                                                    <?php if ($mySub): ?>
+                                                                        <span class="sub-slot-file">
+                                                                            <?= portal_icon('file', 'icon-xs') ?>
+                                                                            <span><?= portal_escape($mySub['filename']) ?></span>
+                                                                        </span>
+                                                                        <?php if ($mySub['score'] !== null): ?>
+                                                                            <span class="sub-slot-status sub-slot-status--graded"><?= (int)$mySub['score'] ?>%</span>
+                                                                        <?php else: ?>
+                                                                            <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
+                                                                        <?php endif; ?>
+                                                                    <?php else: ?>
+                                                                        <span class="sub-slot-file sub-slot-file--empty">
+                                                                            <?= portal_icon('upload', 'icon-xs') ?>
+                                                                            <span><?= $deadlinePassed ? 'No submission' : 'Not submitted yet' ?></span>
+                                                                        </span>
                                                                     <?php endif; ?>
                                                                 </div>
-                                                                <?= portal_render_integrity_report($mySub, false) ?>
-                                                                <?php if (!empty($myVersions)): ?>
-                                                                    <details class="process-history">
-                                                                        <summary>Your submission history</summary>
-                                                                        <div class="process-history-list">
-                                                                            <?php foreach (array_slice($myVersions, 0, 5) as $version): ?>
-                                                                                <div class="process-history-item">
-                                                                                    <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
-                                                                                    <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min editing &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
-                                                                                    <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
-                                                                                </div>
-                                                                            <?php endforeach; ?>
-                                                                        </div>
-                                                                    </details>
+                                                            <?php endif; ?>
+                                                            <p class="sub-slot-card-meta">
+                                                                Due <?= portal_escape($deadlineText) ?>
+                                                                <?php if (!portal_can_manage_course($courseId) && $mySub): ?>
+                                                                    &middot; Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?>
                                                                 <?php endif; ?>
-                                                            <?php endif; ?>
-                                                            <?php if ($deadlinePassed): ?>
-                                                                <p class="sub-empty">This submission slot is closed.</p>
-                                                            <?php else: ?>
-                                                                <form method="POST" enctype="multipart/form-data" class="submit-work-form">
-                                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                                                    <input type="hidden" name="action" value="submit_work">
-                                                                    <input type="hidden" name="item_id" value="<?= (int) $item['id'] ?>">
-                                                                    <input type="hidden" name="process_edit_seconds" value="0">
-                                                                    <input type="hidden" name="process_paste_events" value="0">
-                                                                    <input type="hidden" name="process_pasted_chars" value="0">
-                                                                    <label class="submit-file-label">
-                                                                        <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt">
-                                                                        <span class="submit-hint"><?= portal_escape(portal_supported_submission_hint()) ?> - max 40 MB. You can also paste text below.</span>
-                                                                    </label>
-                                                                    <label class="submit-file-label">
-                                                                        <span class="submit-hint">Paste submission text</span>
-                                                                        <textarea name="submission_text" rows="5" maxlength="200000" placeholder="Paste your submission text here if you are not uploading a file."></textarea>
-                                                                    </label>
-                                                                    <button type="submit" class="button button--sm"><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
-                                                                </form>
-                                                            <?php endif; ?>
-                                                        <?php endif; ?>
+                                                            </p>
+                                                        </div>
+
+                                                        <?php ob_start(); ?>
+                                                        <div id="<?= portal_escape($modalId) ?>"
+                                                             class="sub-slot-overlay"
+                                                             hidden
+                                                             role="dialog"
+                                                             aria-modal="true"
+                                                             aria-labelledby="<?= portal_escape($modalId) ?>-title">
+                                                            <div class="sub-slot-dialog">
+                                                                <header class="sub-slot-dialog-header">
+                                                                    <div class="sub-slot-dialog-heading">
+                                                                        <p class="eyebrow">Submission</p>
+                                                                        <h3 id="<?= portal_escape($modalId) ?>-title"><?= portal_escape($item['title']) ?></h3>
+                                                                        <p class="sub-slot-dialog-meta">
+                                                                            <?php if ($deadlinePassed): ?>
+                                                                                Closed &middot; due <?= portal_escape($deadlineText) ?>
+                                                                            <?php else: ?>
+                                                                                Due <?= portal_escape($deadlineText) ?>
+                                                                            <?php endif; ?>
+                                                                        </p>
+                                                                    </div>
+                                                                    <button type="button" class="sub-slot-dialog-close" aria-label="Close">&times;</button>
+                                                                </header>
+
+                                                                <div class="sub-slot-dialog-body">
+                                                                <?php if (portal_can_manage_course($courseId)): ?>
+                                                                    <?php if (!empty($subs)): ?>
+                                                                        <p class="sub-modal-count"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
+                                                                        <?php foreach ($subs as $sub): ?>
+                                                                        <?php $subVersions = $submissionVersions[(int)$sub['id']] ?? []; ?>
+                                                                        <article class="sub-modal-entry">
+                                                                            <div class="sub-modal-entry-top">
+                                                                                <div class="sub-modal-entry-who">
+                                                                                    <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
+                                                                                    <div>
+                                                                                        <strong><?= portal_escape($sub['student_name']) ?></strong>
+                                                                                        <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($sub['submitted_at']))) ?></span>
+                                                                                    </div>
+                                                                                </div>
+                                                                                <?php if ($sub['score'] !== null): ?>
+                                                                                    <span class="sub-modal-grade sub-modal-grade--marked"><?= (int)$sub['score'] ?><small>/100</small></span>
+                                                                                <?php else: ?>
+                                                                                    <span class="sub-modal-grade sub-modal-grade--pending">Not graded</span>
+                                                                                <?php endif; ?>
+                                                                            </div>
+
+                                                                            <div class="sub-modal-entry-file">
+                                                                                <a href="download.php?sub=<?= (int)$sub['id'] ?>" class="sub-download">
+                                                                                    <?= portal_icon('download', 'icon-xs') ?>
+                                                                                    <?= portal_escape($sub['filename']) ?>
+                                                                                </a>
+                                                                                <?php if (($sub['receipt_number'] ?? '') !== ''): ?>
+                                                                                    <span class="sub-receipt">Receipt <?= portal_escape($sub['receipt_number']) ?></span>
+                                                                                <?php endif; ?>
+                                                                            </div>
+
+                                                                            <form method="POST" class="sub-mark-form sub-mark-form--modal">
+                                                                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                                <input type="hidden" name="action" value="mark_submission">
+                                                                                <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
+                                                                                <input type="number" name="score" min="0" max="100" value="<?= $sub['score'] !== null ? (int)$sub['score'] : '' ?>" placeholder="Score">
+                                                                                <input type="text" name="feedback" maxlength="2000" value="<?= portal_escape($sub['feedback'] ?? '') ?>" placeholder="Feedback">
+                                                                                <button type="submit" class="button button--sm">Save mark</button>
+                                                                            </form>
+
+                                                                            <div class="sub-modal-entry-actions">
+                                                                                <form method="POST" class="sub-rerun-form">
+                                                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                                    <input type="hidden" name="action" value="rerun_integrity">
+                                                                                    <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
+                                                                                    <button type="submit" class="button button--sm button--ghost">Re-run checks</button>
+                                                                                </form>
+                                                                                <form method="POST" class="sub-delete-form">
+                                                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                                    <input type="hidden" name="action" value="delete_submission">
+                                                                                    <input type="hidden" name="submission_id" value="<?= (int)$sub['id'] ?>">
+                                                                                    <button type="submit" class="btn-icon-danger" title="Remove submission">
+                                                                                        <?= portal_icon('trash', 'icon-sm') ?>
+                                                                                    </button>
+                                                                                </form>
+                                                                            </div>
+
+                                                                            <div class="sub-modal-section">
+                                                                                <h4 class="sub-modal-section-title">Originality report</h4>
+                                                                                <?= portal_render_integrity_report($sub, true) ?>
+                                                                            </div>
+
+                                                                            <?php if (!empty($subVersions)): ?>
+                                                                                <details class="process-history">
+                                                                                    <summary>Version history</summary>
+                                                                                    <div class="process-history-list">
+                                                                                        <?php foreach (array_slice($subVersions, 0, 5) as $version): ?>
+                                                                                            <div class="process-history-item">
+                                                                                                <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
+                                                                                                <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min edit time &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
+                                                                                                <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
+                                                                                            </div>
+                                                                                        <?php endforeach; ?>
+                                                                                    </div>
+                                                                                </details>
+                                                                            <?php endif; ?>
+                                                                        </article>
+                                                                        <?php endforeach; ?>
+                                                                    <?php else: ?>
+                                                                        <p class="sub-empty">No submissions yet.</p>
+                                                                    <?php endif; ?>
+
+                                                                <?php else: ?>
+                                                                    <?php $myVersions = $mySub ? ($submissionVersions[(int)$mySub['id']] ?? []) : []; ?>
+
+                                                                    <?php if ($mySub): ?>
+                                                                    <div class="sub-modal-download-bar">
+                                                                        <a href="download.php?sub=<?= (int)$mySub['id'] ?>" class="sub-download" onclick="event.stopPropagation()">
+                                                                            <?= portal_icon('download', 'icon-xs') ?>
+                                                                            Download <?= portal_escape($mySub['filename']) ?>
+                                                                        </a>
+                                                                    </div>
+                                                                    <?php endif; ?>
+
+                                                                    <?php if ($mySub && ($mySub['feedback'] ?? '') !== ''): ?>
+                                                                    <section class="sub-modal-section">
+                                                                        <h4 class="sub-modal-section-title">Teacher feedback</h4>
+                                                                        <div class="sub-modal-feedback">
+                                                                            <p><?= portal_escape($mySub['feedback']) ?></p>
+                                                                        </div>
+                                                                    </section>
+                                                                    <?php endif; ?>
+
+                                                                    <?php if ($mySub): ?>
+                                                                    <section class="sub-modal-section">
+                                                                        <h4 class="sub-modal-section-title">Similarity</h4>
+                                                                        <?= portal_render_integrity_report($mySub, false) ?>
+                                                                    </section>
+
+                                                                    <?php if (!empty($myVersions) && count($myVersions) > 1): ?>
+                                                                    <section class="sub-modal-section">
+                                                                        <details class="process-history">
+                                                                            <summary>Previous submissions</summary>
+                                                                            <div class="process-history-list">
+                                                                                <?php foreach (array_slice($myVersions, 0, 5) as $version): ?>
+                                                                                    <div class="process-history-item">
+                                                                                        <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
+                                                                                    </div>
+                                                                                <?php endforeach; ?>
+                                                                            </div>
+                                                                        </details>
+                                                                    </section>
+                                                                    <?php endif; ?>
+                                                                    <?php endif; ?>
+
+                                                                    <?php if ($deadlinePassed): ?>
+                                                                        <?php if (!$mySub): ?>
+                                                                            <p class="sub-empty sub-empty--closed">This submission slot is closed.</p>
+                                                                        <?php endif; ?>
+                                                                    <?php else: ?>
+                                                                    <section class="sub-modal-section sub-modal-section--submit">
+                                                                        <h4 class="sub-modal-section-title"><?= $mySub ? 'Re-submit work' : 'Submit work' ?></h4>
+                                                                        <form method="POST" enctype="multipart/form-data" class="submit-work-form submit-work-form--modal">
+                                                                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                            <input type="hidden" name="action" value="submit_work">
+                                                                            <input type="hidden" name="item_id" value="<?= (int) $item['id'] ?>">
+                                                                            <input type="hidden" name="process_edit_seconds" value="0">
+                                                                            <input type="hidden" name="process_paste_events" value="0">
+                                                                            <input type="hidden" name="process_pasted_chars" value="0">
+                                                                            <label class="submit-file-label">
+                                                                                <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt">
+                                                                                <span class="submit-hint"><?= portal_escape(portal_supported_submission_hint()) ?> — max 40 MB</span>
+                                                                            </label>
+                                                                            <label class="submit-file-label">
+                                                                                <span class="submit-hint">Or paste your text</span>
+                                                                                <textarea name="submission_text" rows="6" maxlength="200000" placeholder="Paste your work here if you are not uploading a file."></textarea>
+                                                                            </label>
+                                                                            <button type="submit" class="button"><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
+                                                                        </form>
+                                                                    </section>
+                                                                    <?php endif; ?>
+                                                                <?php endif; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <?php $submissionModals .= ob_get_clean(); ?>
                                                     <?php endif; ?>
                                                     <?php endif; // end locked check ?>
                                                 </div>
@@ -2193,7 +1910,7 @@ ob_start();
                                                 </label>
                                                 <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                     <input type="checkbox" name="submission_ai_detection" value="1">
-                                                    Use AI detection <small style="font-weight:400">(requires ZeroGPT API key)</small>
+                                                    Use AI detection <small style="font-weight:400">(ZeroGPT API key in .env)</small>
                                                 </label>
                                             </div>
                                             <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
@@ -2550,7 +2267,7 @@ ob_start();
                             <div>
                                 <p class="eyebrow">Integrity tool EULA</p>
                                 <h3><?= $integrityEulaAcceptedAt !== '' ? 'Accepted' : 'Action needed before external providers' ?></h3>
-                                <p>Native institutional checks are active. Global web and academic journal checks will require provider credentials and accepted provider terms.</p>
+                                <p>Built-in checks now include: school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past dissertations or exemplar work. Optional ZeroGPT adds external AI and web plagiarism checks via <code>.env</code>.</p>
                                 <?php if ($integrityEulaAcceptedAt !== ''): ?>
                                     <span>Accepted <?= portal_escape(date('j M Y H:i', strtotime($integrityEulaAcceptedAt))) ?></span>
                                 <?php endif; ?>
@@ -2810,6 +2527,10 @@ ob_start();
         </aside>
     </div>
 </section>
+
+<?php if (!empty($submissionModals)): ?>
+<?= $submissionModals ?>
+<?php endif; ?>
 
 <?php if (!empty($unreadAnnouncements)): ?>
 <!-- ── Unread announcements notification ─────────────────────────────────────── -->
@@ -3151,6 +2872,95 @@ ob_start();
         requestAnimationFrame(() => overlay.classList.add('ann-notify--in'));
     })();
 
+    // ── Submission slot modal (all users) ───────────────────────────────────
+    let openSubSlotModal = null;
+
+    function openSubSlot(overlay) {
+        if (!overlay) return;
+        if (openSubSlotModal && openSubSlotModal !== overlay) closeSubSlot(openSubSlotModal);
+        overlay.hidden = false;
+        document.body.classList.add('sub-slot-body-lock');
+        openSubSlotModal = overlay;
+        requestAnimationFrame(() => overlay.classList.add('sub-slot-overlay--in'));
+    }
+
+    function closeSubSlot(overlay) {
+        if (!overlay) return;
+        overlay.classList.remove('sub-slot-overlay--in');
+        let closed = false;
+        const finish = () => {
+            if (closed) return;
+            closed = true;
+            overlay.hidden = true;
+            if (openSubSlotModal === overlay) {
+                openSubSlotModal = null;
+                if (!document.querySelector('.sub-slot-overlay:not([hidden])')) {
+                    document.body.classList.remove('sub-slot-body-lock');
+                }
+            }
+        };
+        overlay.addEventListener('transitionend', finish, { once: true });
+        setTimeout(finish, 220);
+    }
+
+    document.querySelectorAll('.sub-slot-card[data-sub-modal]').forEach(card => {
+        card.addEventListener('click', () => {
+            const modal = document.getElementById(card.dataset.subModal || '');
+            if (modal) openSubSlot(modal);
+        });
+        card.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                const modal = document.getElementById(card.dataset.subModal || '');
+                if (modal) openSubSlot(modal);
+            }
+        });
+    });
+
+    document.querySelectorAll('.sub-slot-dialog-close').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const overlay = btn.closest('.sub-slot-overlay');
+            if (overlay) closeSubSlot(overlay);
+        });
+    });
+
+    document.querySelectorAll('.sub-slot-overlay').forEach(overlay => {
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) closeSubSlot(overlay);
+        });
+    });
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && openSubSlotModal) closeSubSlot(openSubSlotModal);
+    });
+
+    document.querySelectorAll('.submit-work-form').forEach(form => {
+        const startedAt = Date.now();
+        const textArea = form.querySelector('textarea[name="submission_text"]');
+        const editField = form.querySelector('input[name="process_edit_seconds"]');
+        const pasteField = form.querySelector('input[name="process_paste_events"]');
+        const pastedCharsField = form.querySelector('input[name="process_pasted_chars"]');
+        let pasteEvents = 0;
+        let pastedChars = 0;
+
+        if (textArea) {
+            textArea.addEventListener('paste', e => {
+                pasteEvents += 1;
+                pastedChars += (e.clipboardData?.getData('text') || '').length;
+                if (pasteField) pasteField.value = String(pasteEvents);
+                if (pastedCharsField) pastedCharsField.value = String(pastedChars);
+            });
+        }
+
+        form.addEventListener('submit', () => {
+            if (editField) {
+                editField.value = String(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+            }
+            if (pasteField) pasteField.value = String(pasteEvents);
+            if (pastedCharsField) pastedCharsField.value = String(pastedChars);
+        });
+    });
+
     // ── Common setup ──────────────────────────────────────────────────────────
     const pageData = document.getElementById('portal-page-data');
     if (!pageData || pageData.dataset.canManage !== '1') return;
@@ -3302,33 +3112,6 @@ ob_start();
                     : 'Students cannot download — click to enable';
                 if (settingsCb) settingsCb.checked = !willEnable;
             });
-        });
-    });
-
-    document.querySelectorAll('.submit-work-form').forEach(form => {
-        const startedAt = Date.now();
-        const textArea = form.querySelector('textarea[name="submission_text"]');
-        const editField = form.querySelector('input[name="process_edit_seconds"]');
-        const pasteField = form.querySelector('input[name="process_paste_events"]');
-        const pastedCharsField = form.querySelector('input[name="process_pasted_chars"]');
-        let pasteEvents = 0;
-        let pastedChars = 0;
-
-        if (textArea) {
-            textArea.addEventListener('paste', e => {
-                pasteEvents += 1;
-                pastedChars += (e.clipboardData?.getData('text') || '').length;
-                if (pasteField) pasteField.value = String(pasteEvents);
-                if (pastedCharsField) pastedCharsField.value = String(pastedChars);
-            });
-        }
-
-        form.addEventListener('submit', () => {
-            if (editField) {
-                editField.value = String(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
-            }
-            if (pasteField) pasteField.value = String(pasteEvents);
-            if (pastedCharsField) pastedCharsField.value = String(pastedChars);
         });
     });
 
