@@ -84,6 +84,8 @@ if (!function_exists('portal_icon')) {
             'grip'          => '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>',
             'download'      => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
             'edit'          => '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
+            'pin'           => '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+            'alert'         => '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
         ];
 
         $body = $icons[$name] ?? $icons['book-open'];
@@ -678,6 +680,21 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
 
+        // ── Site-wide (major) announcements — admin/owner only ──────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS site_announcements (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                title       TEXT    NOT NULL,
+                body        TEXT    NOT NULL DEFAULT '',
+                priority    TEXT    NOT NULL DEFAULT 'normal'
+                                    CHECK(priority IN ('normal','urgent')),
+                pinned      INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_site_announcements_pinned ON site_announcements(pinned, created_at)");
+
         // ── Course folders and items ───────────────────────────────────────────
         $db->exec("
             CREATE TABLE IF NOT EXISTS course_folders (
@@ -981,6 +998,31 @@ if (!function_exists('portal_assigned_course_ids')) {
         );
         $stmt->execute([(int) $user['id']]);
         return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+}
+
+if (!function_exists('portal_my_announcement_course_ids')) {
+    /**
+     * Courses whose announcements should show up on the Communication page for
+     * the current user: enrolled courses for students, plus assigned courses
+     * for teachers. Admins/owners see every module for oversight.
+     *
+     * @return int[]
+     */
+    function portal_my_announcement_course_ids(): array
+    {
+        if (!portal_is_logged_in()) {
+            return [];
+        }
+        if (portal_is_admin()) {
+            return array_map('intval', portal_db()->query("SELECT id FROM courses")->fetchAll(PDO::FETCH_COLUMN));
+        }
+        $user = portal_current_user();
+        $ids = portal_enrolled_course_ids((int) $user['id']);
+        if (portal_is_teacher()) {
+            $ids = array_merge($ids, portal_assigned_course_ids());
+        }
+        return array_values(array_unique(array_map('intval', $ids)));
     }
 }
 

@@ -254,6 +254,22 @@ if (!function_exists('portal_integrity_words')) {
     }
 }
 
+if (!function_exists('portal_submission_min_words')) {
+    /** Minimum word count for a text-based submission to be considered substantive. */
+    function portal_submission_min_words(): int
+    {
+        return 20;
+    }
+}
+
+if (!function_exists('portal_submission_min_chars')) {
+    /** Minimum character count (after normalising) for a text-based submission. */
+    function portal_submission_min_chars(): int
+    {
+        return 60;
+    }
+}
+
 if (!function_exists('portal_integrity_stopwords')) {
     /** @return array<string, true> */
     function portal_integrity_stopwords(): array

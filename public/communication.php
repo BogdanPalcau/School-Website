@@ -5,92 +5,301 @@ require_once __DIR__ . '/../bootstrap.php';
 
 portal_require_login();
 
+$me      = portal_current_user();
+$isAdmin = portal_is_admin();
+$db      = portal_db();
+$flash   = null;
+
+// ── POST actions (admin/owner only) ────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!portal_verify_csrf()) {
+        $_SESSION['comm_flash'] = ['error', 'Your session expired. Please try that again.'];
+        portal_redirect('communication.php');
+    }
+
+    $action = (string) ($_POST['action'] ?? '');
+
+    if ($action === 'post_site_announcement' && $isAdmin) {
+        $title    = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
+        $body     = substr(trim((string) ($_POST['body'] ?? '')), 0, 20000);
+        $priority = ((string) ($_POST['priority'] ?? 'normal')) === 'urgent' ? 'urgent' : 'normal';
+        $pinned   = isset($_POST['pinned']) && $_POST['pinned'] === '1' ? 1 : 0;
+
+        if ($title === '') {
+            $_SESSION['comm_flash'] = ['error', 'Please add a title before posting.'];
+        } else {
+            $db->prepare(
+                "INSERT INTO site_announcements (user_id, title, body, priority, pinned) VALUES (?,?,?,?,?)"
+            )->execute([(int) $me['id'], $title, $body, $priority, $pinned]);
+            $_SESSION['comm_flash'] = ['success', 'Announcement posted to the whole school.'];
+        }
+        portal_redirect('communication.php#major-announcements');
+    }
+
+    if ($action === 'delete_site_announcement' && $isAdmin) {
+        $id = (int) ($_POST['announcement_id'] ?? 0);
+        $db->prepare("DELETE FROM site_announcements WHERE id = ?")->execute([$id]);
+        $_SESSION['comm_flash'] = ['success', 'Announcement removed.'];
+        portal_redirect('communication.php#major-announcements');
+    }
+
+    if ($action === 'toggle_pin_site_announcement' && $isAdmin) {
+        $id = (int) ($_POST['announcement_id'] ?? 0);
+        $db->prepare(
+            "UPDATE site_announcements SET pinned = CASE WHEN pinned = 1 THEN 0 ELSE 1 END WHERE id = ?"
+        )->execute([$id]);
+        portal_redirect('communication.php#major-announcements');
+    }
+
+    portal_redirect('communication.php');
+}
+
+if (isset($_SESSION['comm_flash'])) {
+    $flash = $_SESSION['comm_flash'];
+    unset($_SESSION['comm_flash']);
+}
+
+// ── Data: major (school-wide) announcements ────────────────────────────────
+$majorAnnouncements = $db->query(
+    "SELECT sa.*, u.name AS author_name, u.initials AS author_initials
+     FROM site_announcements sa
+     JOIN users u ON u.id = sa.user_id
+     ORDER BY sa.pinned DESC, sa.created_at DESC
+     LIMIT 40"
+)->fetchAll();
+
+// ── Data: module (course) announcements relevant to this user ─────────────
+$myCourseIds        = portal_my_announcement_course_ids();
+$moduleAnnouncements = [];
+if (!empty($myCourseIds)) {
+    $placeholders = implode(',', array_fill(0, count($myCourseIds), '?'));
+    $stmt = $db->prepare(
+        "SELECT ca.*, u.name AS author_name, u.initials AS author_initials,
+                c.title AS course_title, c.slug AS course_slug, c.accent AS course_accent
+         FROM course_announcements ca
+         JOIN users u ON u.id = ca.user_id
+         JOIN courses c ON c.id = ca.course_id
+         WHERE ca.course_id IN ($placeholders)
+         ORDER BY ca.created_at DESC
+         LIMIT 40"
+    );
+    $stmt->execute($myCourseIds);
+    $moduleAnnouncements = $stmt->fetchAll();
+}
+
 $page_title = 'Communication | ' . portal_school_name();
 $active_page = 'communication';
-$page_eyebrow = 'Student bulletin';
+$page_eyebrow = 'School bulletin';
 $page_heading = 'Communication';
-$page_description = 'School news, reminders, and small updates written more like a bulletin than a notice board.';
-
-$features = [
-    ['tag' => 'Principal note', 'title' => 'Assessment week starts strong with shorter morning briefings', 'copy' => 'Morning notices move into the bulletin this week so students get calmer starts before first period.', 'featured' => true],
-    ['tag' => 'Clubs', 'title' => 'Robotics opens sign-ups for the regional build challenge', 'copy' => 'Teams of three can submit by Friday. Beginners are welcome this term.'],
-    ['tag' => 'Library', 'title' => 'Extended revision hours now run until 18:00 on Wednesdays', 'copy' => 'Quiet seating, printer access, and peer mentors are available during the extension.'],
-    ['tag' => 'Wellbeing', 'title' => 'Study-support drop-in now includes short stress reset sessions', 'copy' => 'Student services added ten-minute reset slots between revision blocks.'],
-];
-
-$briefs = [
-    ['title' => 'Tech reminder', 'detail' => 'Update your browser and check your microphone settings before any live session this week.'],
-    ['title' => 'Reminder for year groups', 'detail' => 'Have your materials ready before Thursday\'s session as the class moves into group review.'],
-    ['title' => 'Submission tip', 'detail' => 'Rename coursework files with subject, surname, and draft number before upload.'],
-];
+$page_description = $isAdmin
+    ? 'Post major school-wide announcements and keep an eye on what every module is telling students.'
+    : 'Major announcements from the school office, plus the latest updates from the modules you\'re enrolled in.';
 
 ob_start();
 ?>
-<section class="newsletter-layout" id="latest-issue">
-    <div class="stack">
+<div class="comm-layout">
 
-        <article class="newsletter-cover">
-            <div class="nl-cover-top">
-                <p class="eyebrow">Issue 14</p>
-                <span class="issue-tag">March edition</span>
+    <!-- ── Major (school-wide) announcements ─────────────────────────────── -->
+    <section class="comm-section" id="major-announcements">
+        <div class="comm-section-head">
+            <div>
+                <p class="eyebrow">School-wide</p>
+                <h2 class="comm-section-title"><?= portal_icon('megaphone', 'icon-sm') ?> Major announcements</h2>
+                <p class="comm-section-desc">Official notices from the admin team. Pinned items always stay on top.</p>
             </div>
-            <h3>The RIEO Student Bulletin</h3>
-            <p>Everything students might want to know this week, gathered into one easy read.</p>
-            <p class="issue-meta">Published Saturday, 28 March 2026 · Editor: Student services team</p>
-            <a class="inline-action light" href="events.php#featured-events">See featured events</a>
-        </article>
+            <span class="chip"><?= count($majorAnnouncements) ?> posted</span>
+        </div>
 
-        <div class="nl-stories">
-            <?php foreach ($features as $feature): ?>
-            <article class="nl-story<?= !empty($feature['featured']) ? ' featured' : '' ?>">
-                <span class="issue-tag"><?= portal_escape($feature['tag']) ?></span>
-                <h3><?= portal_escape($feature['title']) ?></h3>
-                <p><?= portal_escape($feature['copy']) ?></p>
+        <?php if ($flash): ?>
+        <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>"><?= portal_escape($flash[1]) ?></div>
+        <?php endif; ?>
+
+        <?php if ($isAdmin): ?>
+        <details class="folder-admin-panel comm-post-panel">
+            <summary class="folder-admin-trigger">
+                <?= portal_icon('plus', 'icon-sm') ?>
+                <span>Post a major announcement</span>
+            </summary>
+            <form method="POST" class="folder-admin-form" action="communication.php">
+                <?= portal_csrf_field() ?>
+                <input type="hidden" name="action" value="post_site_announcement">
+                <label class="folder-form-label">
+                    <span>Title</span>
+                    <input type="text" name="title" required maxlength="200" placeholder="e.g. Half-term dates confirmed">
+                </label>
+                <label class="folder-form-label">
+                    <span>Message <small>(optional)</small></span>
+                    <div class="quill-wrap"><div class="quill-editor" data-target="site-ann-body"></div></div>
+                    <textarea name="body" id="site-ann-body" class="rich-textarea" maxlength="20000" hidden></textarea>
+                </label>
+                <div class="comm-post-options">
+                    <label class="folder-form-label comm-priority-field">
+                        <span>Priority</span>
+                        <select name="priority">
+                            <option value="normal">Normal</option>
+                            <option value="urgent">Urgent</option>
+                        </select>
+                    </label>
+                    <label class="admin-checkbox-inline comm-pin-checkbox">
+                        <input type="checkbox" name="pinned" value="1">
+                        <?= portal_icon('pin', 'icon-sm') ?> Pin to top
+                    </label>
+                </div>
+                <div class="button-row">
+                    <button type="submit" class="button">Post to whole school</button>
+                </div>
+            </form>
+        </details>
+        <?php endif; ?>
+
+        <?php if (empty($majorAnnouncements)): ?>
+            <div class="folder-empty-state comm-empty">
+                <?= portal_icon('megaphone') ?>
+                <p>No school-wide announcements yet. <?= $isAdmin ? 'Post the first one above.' : 'Check back soon for updates from the school office.' ?></p>
+            </div>
+        <?php else: ?>
+        <div class="announcement-feed">
+            <?php foreach ($majorAnnouncements as $ann): ?>
+            <?php $isPinned = (int) $ann['pinned'] === 1; $isUrgent = $ann['priority'] === 'urgent'; ?>
+            <article class="announcement-card<?= $isPinned ? ' pinned' : '' ?><?= $isUrgent ? ' urgent' : '' ?>">
+                <div class="announcement-card-head">
+                    <div class="announcement-badges">
+                        <?php if ($isPinned): ?><span class="announcement-badge announcement-badge--pinned"><?= portal_icon('pin', 'icon-xs') ?> Pinned</span><?php endif; ?>
+                        <?php if ($isUrgent): ?><span class="announcement-badge announcement-badge--urgent"><?= portal_icon('alert', 'icon-xs') ?> Urgent</span><?php endif; ?>
+                    </div>
+                    <span class="announcement-date"><?= portal_escape(date('j M Y, g:ia', strtotime($ann['created_at']))) ?></span>
+                </div>
+                <h3 class="announcement-card-title"><?= portal_escape($ann['title']) ?></h3>
+                <?php if ($ann['body'] !== ''): ?>
+                    <div class="rich-body announcement-card-body"><?= portal_render_rich_text($ann['body']) ?></div>
+                <?php endif; ?>
+                <div class="announcement-card-foot">
+                    <div class="announcement-author">
+                        <span class="course-staff-avatar ann-avatar"><?= portal_escape($ann['author_initials']) ?></span>
+                        <span><?= portal_escape($ann['author_name']) ?> · Admin team</span>
+                    </div>
+                    <?php if ($isAdmin): ?>
+                    <div class="announcement-admin-actions">
+                        <form method="POST">
+                            <?= portal_csrf_field() ?>
+                            <input type="hidden" name="action" value="toggle_pin_site_announcement">
+                            <input type="hidden" name="announcement_id" value="<?= (int) $ann['id'] ?>">
+                            <button type="submit" class="btn-icon<?= $isPinned ? ' btn-icon--active' : '' ?>" title="<?= $isPinned ? 'Unpin' : 'Pin to top' ?>">
+                                <?= portal_icon('pin', 'icon-sm') ?>
+                            </button>
+                        </form>
+                        <form method="POST" onsubmit="return confirm('Delete this announcement?')">
+                            <?= portal_csrf_field() ?>
+                            <input type="hidden" name="action" value="delete_site_announcement">
+                            <input type="hidden" name="announcement_id" value="<?= (int) $ann['id'] ?>">
+                            <button type="submit" class="btn-icon-danger" title="Delete">
+                                <?= portal_icon('trash', 'icon-sm') ?>
+                            </button>
+                        </form>
+                    </div>
+                    <?php endif; ?>
+                </div>
             </article>
             <?php endforeach; ?>
         </div>
+        <?php endif; ?>
+    </section>
 
-    </div>
-
-    <div class="stack">
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Briefs</p>
-                    <h3 class="card-title">Fast reads</h3>
-                </div>
-                <span class="chip"><?= count($briefs) ?> updates</span>
+    <!-- ── Module (in-course) announcements ──────────────────────────────── -->
+    <section class="comm-section" id="module-announcements">
+        <div class="comm-section-head">
+            <div>
+                <p class="eyebrow">Your modules</p>
+                <h2 class="comm-section-title"><?= portal_icon('book-open', 'icon-sm') ?> Module announcements</h2>
+                <p class="comm-section-desc">
+                    <?= $isAdmin
+                        ? 'Everything teachers have posted across every module, newest first.'
+                        : 'Updates from teachers in the modules you\'re enrolled in, newest first.' ?>
+                </p>
             </div>
-            <div class="nl-briefs">
-                <?php foreach ($briefs as $i => $brief): ?>
-                <div class="nl-brief">
-                    <span class="nl-brief-num"><?= $i + 1 ?></span>
-                    <div>
-                        <strong><?= portal_escape($brief['title']) ?></strong>
-                        <p><?= portal_escape($brief['detail']) ?></p>
+            <span class="chip"><?= count($moduleAnnouncements) ?> posted</span>
+        </div>
+
+        <?php if (empty($myCourseIds)): ?>
+            <div class="folder-empty-state comm-empty">
+                <?= portal_icon('book-open') ?>
+                <p>You're not enrolled in any modules yet. Once you are, announcements from your teachers will show up here.</p>
+            </div>
+        <?php elseif (empty($moduleAnnouncements)): ?>
+            <div class="folder-empty-state comm-empty">
+                <?= portal_icon('book-open') ?>
+                <p>No announcements yet from your modules. Check back after your teachers post updates.</p>
+            </div>
+        <?php else: ?>
+        <div class="announcement-feed">
+            <?php foreach ($moduleAnnouncements as $ann): ?>
+            <article class="announcement-card module-announcement-card">
+                <div class="announcement-card-head">
+                    <a class="module-course-chip" href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">
+                        <span class="module-course-dot" style="background:<?= portal_escape((string) $ann['course_accent']) ?>"></span>
+                        <?= portal_escape((string) $ann['course_title']) ?>
+                    </a>
+                    <span class="announcement-date"><?= portal_escape(date('j M Y', strtotime($ann['created_at']))) ?></span>
+                </div>
+                <h3 class="announcement-card-title"><?= portal_escape($ann['title']) ?></h3>
+                <?php if ($ann['body'] !== ''): ?>
+                    <div class="rich-body announcement-card-body"><?= portal_render_rich_text($ann['body']) ?></div>
+                <?php endif; ?>
+                <div class="announcement-card-foot">
+                    <div class="announcement-author">
+                        <span class="course-staff-avatar ann-avatar"><?= portal_escape($ann['author_initials']) ?></span>
+                        <span><?= portal_escape($ann['author_name']) ?></span>
                     </div>
+                    <a class="inline-action" href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">Open module →</a>
                 </div>
-                <?php endforeach; ?>
-            </div>
-        </article>
-
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Follow-up</p>
-                    <h3 class="card-title">Where to go next</h3>
-                </div>
-            </div>
-            <article class="schedule-note">
-                <div>
-                    <h3>Need something practical?</h3>
-                    <p>Jump to the timetable for room changes or open events for club registrations and assemblies.</p>
-                </div>
-                <a class="inline-action" href="timetable.php#week-schedule">Open timetable</a>
             </article>
-        </article>
-    </div>
-</section>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+    </section>
+
+</div>
+
+<?php if ($isAdmin): ?>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
+<script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    if (typeof Quill === 'undefined') return;
+
+    const toolbarOptions = [
+        [{ header: [2, 3, false] }],
+        ['bold', 'italic', 'underline', 'strike'],
+        [{ list: 'ordered' }, { list: 'bullet' }],
+        ['blockquote'],
+        ['clean'],
+    ];
+
+    document.querySelectorAll('.quill-editor[data-target]').forEach(container => {
+        const targetId = container.dataset.target;
+        const textarea = document.getElementById(targetId);
+        if (!textarea) return;
+
+        const quill = new Quill(container, {
+            theme: 'snow',
+            placeholder: 'Write something…',
+            modules: { toolbar: toolbarOptions },
+        });
+
+        quill.on('text-change', () => {
+            textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
+        });
+
+        const form = textarea.closest('form');
+        if (form) {
+            form.addEventListener('submit', () => {
+                textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
+            });
+        }
+    });
+});
+</script>
+<?php endif; ?>
 <?php
 $page_content = ob_get_clean();
 

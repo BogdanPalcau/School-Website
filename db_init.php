@@ -90,6 +90,20 @@ $_pdo->exec("
 ");
 
 $_pdo->exec("
+    CREATE TABLE IF NOT EXISTS site_announcements (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title       TEXT    NOT NULL,
+        body        TEXT    NOT NULL DEFAULT '',
+        priority    TEXT    NOT NULL DEFAULT 'normal'
+                            CHECK(priority IN ('normal','urgent')),
+        pinned      INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
+");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_site_announcements_pinned ON site_announcements(pinned, created_at)");
+
+$_pdo->exec("
     CREATE TABLE IF NOT EXISTS course_folders (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,

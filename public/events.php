@@ -42,7 +42,7 @@ ob_start();
         <article class="ev-hero">
             <div class="ev-hero-header">
                 <p class="eyebrow">Featured event</p>
-                <a class="inline-action light" href="communication.php#latest-issue">Open bulletin</a>
+                <a class="inline-action light" href="communication.php#major-announcements">Open bulletin</a>
             </div>
             <div class="ev-hero-body">
                 <div class="ev-hero-date">

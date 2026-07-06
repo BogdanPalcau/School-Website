@@ -983,6 +983,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $processPasteEvents = max(0, min(1000, (int) ($_POST['process_paste_events'] ?? 0)));
             $processPastedChars = max(0, min(1000000, (int) ($_POST['process_pasted_chars'] ?? 0)));
 
+            // Pre-check the amount of actual content *before* any file is
+            // touched or a previous submission is deleted, so a too-short
+            // resubmission can never destroy a valid earlier one. Images
+            // (e.g. photographed handwritten work) are exempt since there is
+            // no text to measure. Extraction failures for doc/pdf (e.g. no
+            // LibreOffice available) are also exempt rather than blocked,
+            // since we have no reliable evidence either way in that case.
+            $extractableExts = ['txt', 'doc', 'docx', 'pdf'];
+            $precheckText = $pastedText;
+            if ($hasFile && $subError === UPLOAD_ERR_OK && in_array($ext, $extractableExts, true)) {
+                $tmpPath = (string) ($_FILES['submission_file']['tmp_name'] ?? '');
+                if ($tmpPath !== '' && is_file($tmpPath)) {
+                    $precheckFileText = portal_extract_submission_text($tmpPath, $originalName);
+                    $precheckText = trim($pastedText . "\n\n" . $precheckFileText);
+                }
+            }
+            $precheckWordCount = count(portal_integrity_words($precheckText));
+            $precheckCharCount = mb_strlen(portal_integrity_normalize_text($precheckText));
+            $minWords = portal_submission_min_words();
+            $minChars = portal_submission_min_chars();
+            $shouldCheckLength = !$hasFile || (in_array($ext, $extractableExts, true) && $precheckCharCount > 0);
+            $submissionTooShort = $shouldCheckLength
+                && ($precheckWordCount < $minWords || $precheckCharCount < $minChars);
+
             if ($deadlineTs !== false && time() > $deadlineTs) {
                 $_SESSION['course_flash'] = ['error', 'This submission deadline has passed. Ask your teacher if you need an extension.'];
                 $submitJsonExit(false, [], 'This submission deadline has passed. Ask your teacher if you need an extension.');
@@ -1006,6 +1030,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($hasFile && $subSize > $maxUploadBytes) {
                 $_SESSION['course_flash'] = ['error', 'File is too large. Maximum allowed size is 40 MB.'];
                 $submitJsonExit(false, [], 'File is too large. Maximum allowed size is 40 MB.');
+            } elseif ($submissionTooShort) {
+                $msg = 'Your submission is too short (' . $precheckWordCount . ' word' . ($precheckWordCount === 1 ? '' : 's')
+                     . '). Please write a more complete response of at least ' . $minWords . ' words before submitting.';
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
             } else {
                 $uid = (int) $me['id'];
                 $prevStmt = $db->prepare(
@@ -1907,7 +1936,7 @@ ob_start();
                                                                 <?php if ($item['type'] === 'link' || ($item['type'] === 'document' && $item['file_path'] === '')): ?>
                                                                     <label class="folder-form-label">
                                                                         <span>URL</span>
-                                                                        <input type="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://...">
+                                                                        <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://... or www.example.com">
                                                                     </label>
                                                                 <?php endif; ?>
                                                                 <?php if ($item['type'] === 'submission'): ?>
@@ -2083,7 +2112,8 @@ ob_start();
                                                                             </label>
                                                                             <label class="submit-file-label">
                                                                                 <span class="submit-hint">Or paste your text</span>
-                                                                                <textarea name="submission_text" rows="6" maxlength="200000" placeholder="Paste your work here if you are not uploading a file."></textarea>
+                                                                                <textarea name="submission_text" rows="6" maxlength="200000" placeholder="Paste your work here if you are not uploading a file." data-sub-text-counter data-min-words="<?= (int) portal_submission_min_words() ?>"></textarea>
+                                                                                <span class="submit-word-count" data-sub-word-count></span>
                                                                             </label>
                                                                             <button type="submit" class="button" data-sub-submit-btn><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
                                                                         </form>
@@ -2193,13 +2223,15 @@ ob_start();
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-file-group">
-                                                <label class="folder-form-label">
+                                                <label class="folder-form-label" style="grid-column:1/-1;">
                                                     <span>Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
                                                     <input type="file" name="file" accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp">
                                                 </label>
-                                                <label class="folder-form-label item-url-group">
-                                                    <span>Or paste URL <small>(optional)</small></span>
-                                                    <input type="url" name="url" maxlength="2000" placeholder="https://...">
+                                            </div>
+                                            <div class="folder-form-row item-url-group">
+                                                <label class="folder-form-label" style="grid-column:1/-1;">
+                                                    <span class="item-url-label">Or paste URL <small>(optional)</small></span>
+                                                    <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" placeholder="https://... or www.example.com">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row">
@@ -2275,7 +2307,7 @@ ob_start();
                             </label>
                             <label class="folder-form-label">
                                 <span>Join link <small>(optional)</small></span>
-                                <input type="url" name="room" maxlength="500" placeholder="https://zoom.us/j/...">
+                                <input type="text" inputmode="url" autocomplete="url" name="room" maxlength="500" placeholder="https://zoom.us/j/...">
                             </label>
                         </div>
                         <label class="folder-form-label">
@@ -2362,7 +2394,7 @@ ob_start();
                                         </label>
                                         <label class="folder-form-label">
                                             <span>Join link <small>(optional)</small></span>
-                                            <input type="url" name="room" maxlength="500" value="<?= portal_escape($slot['room']) ?>" placeholder="https://zoom.us/j/...">
+                                            <input type="text" inputmode="url" autocomplete="url" name="room" maxlength="500" value="<?= portal_escape($slot['room']) ?>" placeholder="https://zoom.us/j/...">
                                         </label>
                                     </div>
                                     <label class="folder-form-label">
@@ -3220,11 +3252,40 @@ ob_start();
         });
     });
 
+    // ── Auto-prepend https:// to bare domains in URL fields ──────────────────
+    // These fields accept bare domains like "www.google.com" (the server
+    // normalises and validates them properly), so we use type="text" instead
+    // of the stricter native type="url" which would reject anything missing
+    // a scheme. This just tidies the value up for display/consistency.
+    (function () {
+        const normalizeUrlValue = (raw) => {
+            const value = raw.trim();
+            if (value === '' || /^https?:\/\//i.test(value)) return value;
+            if (/^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+(?:[\/?#].*)?$/i.test(value)) {
+                return 'https://' + value;
+            }
+            return value;
+        };
+        document.querySelectorAll('input[name="url"], input[name="room"]').forEach(input => {
+            input.addEventListener('blur', () => {
+                input.value = normalizeUrlValue(input.value);
+            });
+            const form = input.closest('form');
+            if (form) {
+                form.addEventListener('submit', () => {
+                    input.value = normalizeUrlValue(input.value);
+                }, true);
+            }
+        });
+    })();
+
     document.querySelectorAll('.item-type-select').forEach(sel => {
         const update = () => {
             const form     = sel.closest('form');
             const fileGrp  = form.querySelector('.item-file-group');
             const urlGrp   = form.querySelector('.item-url-group');
+            const urlLabel = form.querySelector('.item-url-label');
+            const urlInput = form.querySelector('input[name="url"]');
             const subGrp   = form.querySelector('.item-submission-group');
             const dlOpt    = form.querySelector('input[name="allow_download"]')?.closest('label');
             const type     = sel.value;
@@ -3232,6 +3293,12 @@ ob_start();
             if (urlGrp)  urlGrp.style.display   = type === 'submission' ? 'none' : '';
             if (subGrp)  subGrp.style.display    = type === 'submission' ? '' : 'none';
             if (dlOpt)   dlOpt.style.display     = type === 'document' ? '' : 'none';
+            if (urlLabel) {
+                urlLabel.innerHTML = type === 'link'
+                    ? 'Link URL <small>(required)</small>'
+                    : 'Or paste URL <small>(optional)</small>';
+            }
+            if (urlInput) urlInput.required = type === 'link';
         };
         sel.addEventListener('change', update);
         update();
@@ -3388,6 +3455,19 @@ ob_start();
                 if (pasteField) pasteField.value = String(pasteEvents);
                 if (pastedCharsField) pastedCharsField.value = String(pastedChars);
             });
+
+            const counterEl = form.querySelector('[data-sub-word-count]');
+            const minWords = parseInt(textArea.dataset.minWords || '0', 10);
+            if (counterEl && minWords > 0) {
+                const updateCounter = () => {
+                    const words = (textArea.value.match(/[a-z0-9]+(?:'[a-z0-9]+)?/gi) || []).length;
+                    counterEl.textContent = words + ' / ' + minWords + ' word' + (minWords === 1 ? '' : 's') + ' minimum';
+                    counterEl.classList.toggle('submit-word-count--ok', words >= minWords);
+                    counterEl.classList.toggle('submit-word-count--low', words > 0 && words < minWords);
+                };
+                textArea.addEventListener('input', updateCounter);
+                updateCounter();
+            }
         }
 
         form.addEventListener('submit', async e => {
