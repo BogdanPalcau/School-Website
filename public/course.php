@@ -64,9 +64,56 @@ foreach ([
     "ALTER TABLE course_submissions ADD COLUMN ai_score REAL",
     "ALTER TABLE course_submissions ADD COLUMN ai_report TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE course_submissions ADD COLUMN ai_checked_at TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN receipt_number TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN file_sha256 TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN submission_text TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN text_word_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_submissions ADD COLUMN similarity_status TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN similarity_score REAL",
+    "ALTER TABLE course_submissions ADD COLUMN similarity_report TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN similarity_checked_at TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN process_edit_seconds INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_submissions ADD COLUMN process_paste_events INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
+try {
+    portal_db()->exec("
+        CREATE TABLE IF NOT EXISTS course_submission_versions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER REFERENCES course_submissions(id) ON DELETE CASCADE,
+            item_id      INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
+            course_id    INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            filename     TEXT NOT NULL DEFAULT '',
+            filesize     INTEGER NOT NULL DEFAULT 0,
+            file_sha256  TEXT NOT NULL DEFAULT '',
+            text_word_count INTEGER NOT NULL DEFAULT 0,
+            receipt_number TEXT NOT NULL DEFAULT '',
+            similarity_status TEXT NOT NULL DEFAULT '',
+            similarity_score REAL,
+            process_edit_seconds INTEGER NOT NULL DEFAULT 0,
+            process_paste_events INTEGER NOT NULL DEFAULT 0,
+            process_pasted_chars INTEGER NOT NULL DEFAULT 0,
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+} catch (\PDOException $e) {}
+try {
+    portal_db()->exec("
+        CREATE TABLE IF NOT EXISTS integrity_eula_acceptances (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            version     TEXT NOT NULL,
+            accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, version)
+        )
+    ");
+} catch (\PDOException $e) {}
+
+$integrityEulaVersion = 'integrity-tools-2026-07';
 
 if (!function_exists('portal_extract_submission_text')) {
     function portal_extract_submission_text(string $absPath, string $filename): string
@@ -74,6 +121,23 @@ if (!function_exists('portal_extract_submission_text')) {
         $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         if ($ext === 'txt') {
             return trim((string) @file_get_contents($absPath));
+        }
+        if ($ext === 'pdf') {
+            $raw = (string) @file_get_contents($absPath);
+            if ($raw === '') {
+                return '';
+            }
+            preg_match_all('/\((?:\\\\.|[^\\\\)])*\)/s', $raw, $matches);
+            if (empty($matches[0])) {
+                return '';
+            }
+            $chunks = array_map(static function (string $chunk): string {
+                $chunk = substr($chunk, 1, -1);
+                $chunk = preg_replace('/\\\\([nrtbf()\\\\])/', ' ', $chunk) ?? $chunk;
+                $chunk = preg_replace('/\\\\[0-7]{1,3}/', ' ', $chunk) ?? $chunk;
+                return $chunk;
+            }, $matches[0]);
+            return trim(preg_replace('/\s+/', ' ', implode(' ', $chunks)) ?? '');
         }
         if ($ext === 'docx' && class_exists('ZipArchive')) {
             $zip = new ZipArchive();
@@ -87,6 +151,330 @@ if (!function_exists('portal_extract_submission_text')) {
             }
         }
         return '';
+    }
+}
+
+if (!function_exists('portal_integrity_normalize_text')) {
+    function portal_integrity_normalize_text(string $text): string
+    {
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        return trim(preg_replace('/\s+/', ' ', $text) ?? $text);
+    }
+}
+
+if (!function_exists('portal_supported_submission_extensions')) {
+    function portal_supported_submission_extensions(): array
+    {
+        return ['doc', 'docx', 'pdf', 'txt'];
+    }
+}
+
+if (!function_exists('portal_supported_submission_hint')) {
+    function portal_supported_submission_hint(): string
+    {
+        return 'DOC, DOCX, PDF, or TXT';
+    }
+}
+
+if (!function_exists('portal_integrity_words')) {
+    function portal_integrity_words(string $text): array
+    {
+        $text = strtolower(portal_integrity_normalize_text($text));
+        preg_match_all("/[a-z0-9]+(?:'[a-z0-9]+)?/i", $text, $matches);
+        return $matches[0] ?? [];
+    }
+}
+
+if (!function_exists('portal_integrity_shingles')) {
+    function portal_integrity_shingles(array $words, int $size = 5): array
+    {
+        $count = count($words);
+        if ($count < $size) {
+            return [];
+        }
+
+        $shingles = [];
+        for ($i = 0; $i <= $count - $size; $i++) {
+            $shingles[implode(' ', array_slice($words, $i, $size))] = true;
+        }
+        return $shingles;
+    }
+}
+
+if (!function_exists('portal_integrity_level')) {
+    function portal_integrity_level(?float $score): string
+    {
+        if ($score === null) return 'pending';
+        if ($score >= 35.0) return 'high';
+        if ($score >= 15.0) return 'medium';
+        return 'low';
+    }
+}
+
+if (!function_exists('portal_integrity_receipt_number')) {
+    function portal_integrity_receipt_number(int $courseId, int $itemId, int $userId): string
+    {
+        return 'RIEO-' . date('Ymd-His') . '-' . $courseId . '-' . $itemId . '-' . $userId . '-' . strtoupper(bin2hex(random_bytes(3)));
+    }
+}
+
+if (!function_exists('portal_integrity_check_similarity')) {
+    function portal_integrity_check_similarity(PDO $db, string $text, int $courseId, int $itemId, int $userId): array
+    {
+        $cleanText = portal_integrity_normalize_text($text);
+        $words = portal_integrity_words($cleanText);
+        $wordCount = count($words);
+        $submissionShingles = portal_integrity_shingles($words);
+
+        if ($wordCount < 25 || empty($submissionShingles)) {
+            return [
+                'status' => 'no_text',
+                'score' => null,
+                'word_count' => $wordCount,
+                'report' => json_encode([
+                    'engine' => 'native_institutional_v1',
+                    'status' => 'no_text',
+                    'score' => null,
+                    'level' => 'pending',
+                    'summary' => 'Not enough readable text was available to produce a similarity report.',
+                    'scope' => [
+                        'institutional_database' => 'checked',
+                        'global_web' => 'not_configured',
+                        'academic_journals' => 'not_configured',
+                    ],
+                    'matches' => [],
+                    'highlights' => [],
+                ], JSON_UNESCAPED_SLASHES),
+            ];
+        }
+
+        $sources = [];
+        $stmt = $db->prepare(
+            "SELECT cs.submission_text, cs.filename, cs.submitted_at,
+                    u.name AS student_name, c.full_title AS course_title, cfi.title AS slot_title
+             FROM course_submissions cs
+             JOIN users u ON u.id = cs.user_id
+             JOIN courses c ON c.id = cs.course_id
+             JOIN course_folder_items cfi ON cfi.id = cs.item_id
+             WHERE cs.submission_text != ''
+               AND NOT (cs.item_id = ? AND cs.user_id = ?)
+             ORDER BY cs.submitted_at DESC
+             LIMIT 80"
+        );
+        $stmt->execute([$itemId, $userId]);
+        foreach ($stmt->fetchAll() as $source) {
+            $sources[] = [
+                'label' => trim($source['student_name'] . ' - ' . $source['slot_title'] . ' (' . $source['course_title'] . ')'),
+                'text' => (string) $source['submission_text'],
+                'type' => 'institutional submission',
+                'date' => (string) $source['submitted_at'],
+            ];
+        }
+
+        $materialStmt = $db->prepare(
+            "SELECT cfi.title, cfi.description, cfi.file_path, cfi.file_name, c.full_title AS course_title
+             FROM course_folder_items cfi
+             JOIN courses c ON c.id = cfi.course_id
+             WHERE cfi.type = 'document'
+               AND (cfi.description != '' OR cfi.file_path != '')
+             ORDER BY cfi.created_at DESC
+             LIMIT 40"
+        );
+        $materialStmt->execute();
+        foreach ($materialStmt->fetchAll() as $material) {
+            $materialText = (string) $material['description'];
+            if ($material['file_path'] !== '') {
+                $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $material['file_path'];
+                if (is_file($abs)) {
+                    $materialText .= "\n" . portal_extract_submission_text($abs, (string) $material['file_name']);
+                }
+            }
+            $materialText = portal_integrity_normalize_text($materialText);
+            if ($materialText !== '') {
+                $sources[] = [
+                    'label' => trim($material['title'] . ' (' . $material['course_title'] . ')'),
+                    'text' => $materialText,
+                    'type' => 'institutional material',
+                    'date' => '',
+                ];
+            }
+        }
+
+        $matches = [];
+        $allMatchedPhrases = [];
+        foreach ($sources as $source) {
+            $sourceWords = portal_integrity_words($source['text']);
+            $sourceShingles = portal_integrity_shingles($sourceWords);
+            if (empty($sourceShingles)) {
+                continue;
+            }
+            $overlap = array_intersect_key($submissionShingles, $sourceShingles);
+            if (empty($overlap)) {
+                continue;
+            }
+
+            $sourceScore = round((count($overlap) / count($submissionShingles)) * 100, 1);
+            if ($sourceScore <= 0) {
+                continue;
+            }
+
+            $phrases = array_slice(array_keys($overlap), 0, 8);
+            $allMatchedPhrases = array_merge($allMatchedPhrases, $phrases);
+            $matches[] = [
+                'source' => $source['label'],
+                'type' => $source['type'],
+                'score' => $sourceScore,
+                'matched_phrases' => $phrases,
+                'snippet' => substr(portal_integrity_normalize_text($source['text']), 0, 260),
+            ];
+        }
+
+        usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
+        $matches = array_slice($matches, 0, 5);
+        $score = !empty($matches) ? (float) $matches[0]['score'] : 0.0;
+        $highlights = array_values(array_unique(array_slice($allMatchedPhrases, 0, 16)));
+        $level = portal_integrity_level($score);
+
+        return [
+            'status' => 'checked',
+            'score' => $score,
+            'word_count' => $wordCount,
+            'report' => json_encode([
+                'engine' => 'native_institutional_v1',
+                'status' => 'checked',
+                'score' => $score,
+                'level' => $level,
+                'summary' => empty($matches)
+                    ? 'No meaningful overlap was found in the institutional database.'
+                    : 'Potential overlap was found against institutional sources.',
+                'scope' => [
+                    'institutional_database' => 'checked',
+                    'global_web' => 'not_configured',
+                    'academic_journals' => 'not_configured',
+                ],
+                'matches' => $matches,
+                'highlights' => $highlights,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ];
+    }
+}
+
+if (!function_exists('portal_integrity_report_data')) {
+    function portal_integrity_report_data(array $submission): array
+    {
+        $raw = (string) ($submission['similarity_report'] ?? '');
+        if ($raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        $score = isset($submission['similarity_score']) && $submission['similarity_score'] !== null
+            ? (float) $submission['similarity_score']
+            : null;
+        return [
+            'status' => (string) ($submission['similarity_status'] ?? ''),
+            'score' => $score,
+            'level' => portal_integrity_level($score),
+            'summary' => 'No originality report is available yet.',
+            'matches' => [],
+            'highlights' => [],
+            'scope' => [
+                'institutional_database' => 'pending',
+                'global_web' => 'not_configured',
+                'academic_journals' => 'not_configured',
+            ],
+        ];
+    }
+}
+
+if (!function_exists('portal_render_integrity_report')) {
+    function portal_render_integrity_report(array $submission, bool $showAi): string
+    {
+        $report = portal_integrity_report_data($submission);
+        $score = isset($report['score']) && $report['score'] !== null ? (float) $report['score'] : null;
+        $level = portal_integrity_level($score);
+        $matches = is_array($report['matches'] ?? null) ? $report['matches'] : [];
+        $highlights = is_array($report['highlights'] ?? null) ? $report['highlights'] : [];
+        $scope = is_array($report['scope'] ?? null) ? $report['scope'] : [];
+        $receipt = (string) ($submission['receipt_number'] ?? '');
+        $wordCount = (int) ($submission['text_word_count'] ?? 0);
+        $checkedAt = (string) ($submission['similarity_checked_at'] ?? '');
+
+        ob_start();
+        ?>
+        <div class="integrity-report integrity-report--<?= portal_escape($level) ?>">
+            <div class="integrity-report-head">
+                <div>
+                    <p class="eyebrow">Originality receipt</p>
+                    <h4><?= $receipt !== '' ? portal_escape($receipt) : 'Receipt pending' ?></h4>
+                    <p>
+                        <?= portal_escape((string) ($report['summary'] ?? 'No originality report is available yet.')) ?>
+                        <?php if ($checkedAt !== ''): ?>
+                            <span>Checked <?= portal_escape(date('j M Y H:i', strtotime($checkedAt))) ?></span>
+                        <?php endif; ?>
+                    </p>
+                </div>
+                <div class="integrity-score">
+                    <strong><?= $score !== null ? portal_escape((string) round($score, 1)) . '%' : '--' ?></strong>
+                    <span>Similarity</span>
+                </div>
+            </div>
+
+            <div class="integrity-meter" aria-hidden="true">
+                <span style="width: <?= $score !== null ? min(100, max(0, (float) $score)) : 0 ?>%;"></span>
+            </div>
+
+            <div class="integrity-meta-grid">
+                <span>Words checked: <strong><?= $wordCount ?></strong></span>
+                <span>Institutional DB: <strong><?= portal_escape((string) ($scope['institutional_database'] ?? 'pending')) ?></strong></span>
+                <span>Global web: <strong><?= portal_escape((string) ($scope['global_web'] ?? 'not_configured')) ?></strong></span>
+                <span>Journals: <strong><?= portal_escape((string) ($scope['academic_journals'] ?? 'not_configured')) ?></strong></span>
+            </div>
+
+            <?php if (!empty($matches)): ?>
+                <div class="integrity-matches">
+                    <?php foreach ($matches as $match): ?>
+                        <article class="integrity-match">
+                            <strong><?= portal_escape((string) ($match['source'] ?? 'Institutional source')) ?></strong>
+                            <span><?= portal_escape((string) ($match['type'] ?? 'source')) ?> &middot; <?= portal_escape((string) round((float) ($match['score'] ?? 0), 1)) ?>% overlap</span>
+                            <?php if (($match['snippet'] ?? '') !== ''): ?>
+                                <p><?= portal_escape((string) $match['snippet']) ?></p>
+                            <?php endif; ?>
+                        </article>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!empty($highlights)): ?>
+                <div class="integrity-highlights" aria-label="Highlighted overlapping phrases">
+                    <?php foreach (array_slice($highlights, 0, 10) as $phrase): ?>
+                        <mark><?= portal_escape((string) $phrase) ?></mark>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($showAi): ?>
+                <div class="integrity-ai-panel">
+                    <strong>Teacher-only AI detection</strong>
+                    <span>
+                        <?= portal_escape((string) ($submission['ai_status'] ?? 'not checked')) ?>
+                        <?php if (($submission['ai_score'] ?? null) !== null): ?>
+                            &middot; <?= portal_escape((string) round((float) $submission['ai_score'], 1)) ?>% confidence
+                        <?php endif; ?>
+                    </span>
+                    <?php if (($submission['ai_report'] ?? '') !== ''): ?>
+                        <details>
+                            <summary>Raw AI report</summary>
+                            <pre><?= portal_escape((string) $submission['ai_report']) ?></pre>
+                        </details>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
+        return trim((string) ob_get_clean());
     }
 }
 
@@ -186,6 +574,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             default => 'Upload failed due to an unknown error.',
         };
     };
+
+    if ($action === 'accept_integrity_eula' && portal_can_manage_course($courseId)) {
+        $db->prepare(
+            "INSERT OR IGNORE INTO integrity_eula_acceptances (user_id, version)
+             VALUES (?, ?)"
+        )->execute([(int) $me['id'], $integrityEulaVersion]);
+
+        $_SESSION['course_flash'] = ['success', 'Integrity tool EULA accepted for this account.'];
+    }
 
     // ── AJAX: reorder folders (JSON, exits immediately) ──────────────────────
     if ($action === 'reorder_folders' && portal_can_manage_course($courseId)) {
@@ -393,10 +790,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $createItemError = $uploadErrorMessage($fileError);
                 } elseif (!in_array($ext, portal_supported_upload_extensions(), true)) {
                     $createItemError = 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.';
-                } elseif (!portal_upload_mime_ok((string) ($_FILES['file']['tmp_name'] ?? ''), $ext)) {
-                    $createItemError = 'This file content does not match its extension. Please upload a genuine document.';
                 } elseif ($fileSize <= 0) {
                     $createItemError = 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.';
+                } elseif (!portal_upload_mime_ok((string) ($_FILES['file']['tmp_name'] ?? ''), $ext)) {
+                    $createItemError = 'This file content does not match its extension. Please upload a genuine document.';
                 } elseif ($fileSize > $maxUploadBytes) {
                     $createItemError = 'File is too large. Maximum allowed size is 40 MB.';
                 } else {
@@ -742,27 +1139,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
         $slotChk->execute([$itemId, $courseId]);
         $slot = $slotChk->fetch();
-        if ($slot && isset($_FILES['submission_file'])) {
+        if ($slot) {
+            $pastedText = portal_integrity_normalize_text((string) ($_POST['submission_text'] ?? ''));
             $subError = (int) ($_FILES['submission_file']['error'] ?? UPLOAD_ERR_NO_FILE);
-            $subSize = (int) ($_FILES['submission_file']['size'] ?? 0);
-            $ext = strtolower(pathinfo((string) ($_FILES['submission_file']['name'] ?? ''), PATHINFO_EXTENSION));
+            $hasFile = $subError !== UPLOAD_ERR_NO_FILE;
+            $subSize = $hasFile ? (int) ($_FILES['submission_file']['size'] ?? 0) : 0;
+            $originalName = $hasFile ? substr((string) ($_FILES['submission_file']['name'] ?? ''), 0, 255) : 'pasted-text-submission.txt';
+            $ext = $hasFile ? strtolower(pathinfo($originalName, PATHINFO_EXTENSION)) : 'txt';
             $deadlineTs = $slot['submission_deadline'] !== '' ? strtotime((string) $slot['submission_deadline']) : false;
+            $processEditSeconds = max(0, min(86400, (int) ($_POST['process_edit_seconds'] ?? 0)));
+            $processPasteEvents = max(0, min(1000, (int) ($_POST['process_paste_events'] ?? 0)));
+            $processPastedChars = max(0, min(1000000, (int) ($_POST['process_pasted_chars'] ?? 0)));
 
-            if ($subError !== UPLOAD_ERR_OK) {
-                $_SESSION['course_flash'] = ['error', $uploadErrorMessage($subError)];
-            } elseif ($deadlineTs !== false && time() > $deadlineTs) {
+            if ($deadlineTs !== false && time() > $deadlineTs) {
                 $_SESSION['course_flash'] = ['error', 'This submission deadline has passed. Ask your teacher if you need an extension.'];
-            } elseif (!in_array($ext, portal_supported_upload_extensions(), true)) {
-                $_SESSION['course_flash'] = ['error', 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.'];
-            } elseif (!portal_upload_mime_ok((string) ($_FILES['submission_file']['tmp_name'] ?? ''), $ext)) {
-                $_SESSION['course_flash'] = ['error', 'This file content does not match its extension. Please upload a genuine document.'];
-            } elseif ($subSize <= 0) {
+            } elseif (!$hasFile && $pastedText === '') {
+                $_SESSION['course_flash'] = ['error', 'Upload a document or paste your submission text before submitting.'];
+            } elseif ($hasFile && $subError !== UPLOAD_ERR_OK) {
+                $_SESSION['course_flash'] = ['error', $uploadErrorMessage($subError)];
+            } elseif ($hasFile && !in_array($ext, portal_supported_submission_extensions(), true)) {
+                $_SESSION['course_flash'] = ['error', 'Unsupported file type. Use ' . portal_supported_submission_hint() . '.'];
+            } elseif ($hasFile && $subSize <= 0) {
                 $_SESSION['course_flash'] = ['error', 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.'];
-            } elseif ($subSize > $maxUploadBytes) {
+            } elseif ($hasFile && !portal_upload_mime_ok((string) ($_FILES['submission_file']['tmp_name'] ?? ''), $ext)) {
+                $_SESSION['course_flash'] = ['error', 'This file content does not match its extension. Please upload a genuine document.'];
+            } elseif ($hasFile && $subSize > $maxUploadBytes) {
                 $_SESSION['course_flash'] = ['error', 'File is too large. Maximum allowed size is 40 MB.'];
             } else {
                 $uid = (int) $me['id'];
-                // Remove old file if re-submitting
                 $prevStmt = $db->prepare(
                     "SELECT filepath FROM course_submissions WHERE item_id = ? AND user_id = ?"
                 );
@@ -772,35 +1176,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . $prev['filepath'];
                     if (is_file($abs)) @unlink($abs);
                 }
+
                 $dir = portal_uploads_base() . DIRECTORY_SEPARATOR . 'submissions'
                      . DIRECTORY_SEPARATOR . $itemId . DIRECTORY_SEPARATOR . $uid;
                 if (!is_dir($dir)) mkdir($dir, 0755, true);
-                $safe    = bin2hex(random_bytes(16)) . '.' . $ext;
+
+                $safe = bin2hex(random_bytes(16)) . '.' . $ext;
+                $savedAbs = $dir . DIRECTORY_SEPARATOR . $safe;
                 $relPath = 'submissions' . DIRECTORY_SEPARATOR . $itemId
                          . DIRECTORY_SEPARATOR . $uid . DIRECTORY_SEPARATOR . $safe;
-                if (move_uploaded_file($_FILES['submission_file']['tmp_name'],
-                    $dir . DIRECTORY_SEPARATOR . $safe)
-                ) {
+                $saved = false;
+
+                if ($hasFile) {
+                    $saved = move_uploaded_file((string) $_FILES['submission_file']['tmp_name'], $savedAbs);
+                } else {
+                    $saved = file_put_contents($savedAbs, $pastedText) !== false;
+                    $subSize = is_file($savedAbs) ? (int) filesize($savedAbs) : 0;
+                }
+
+                if ($saved) {
+                    $fileText = $hasFile ? portal_extract_submission_text($savedAbs, $originalName) : '';
+                    $combinedText = portal_integrity_normalize_text(trim($pastedText . "\n\n" . $fileText));
+                    if ($combinedText !== '' && function_exists('mb_substr')) {
+                        $combinedText = mb_substr($combinedText, 0, 200000);
+                    } elseif ($combinedText !== '') {
+                        $combinedText = substr($combinedText, 0, 200000);
+                    }
+                    $receiptNumber = portal_integrity_receipt_number($courseId, $itemId, $uid);
+                    $fileHash = is_file($savedAbs) ? hash_file('sha256', $savedAbs) : '';
+                    $similarity = portal_integrity_check_similarity($db, $combinedText, $courseId, $itemId, $uid);
+
                     $db->prepare(
                         "INSERT INTO course_submissions
-                         (item_id, course_id, user_id, filename, filepath, filesize)
-                         VALUES (?,?,?,?,?,?)
+                         (item_id, course_id, user_id, filename, filepath, filesize,
+                          receipt_number, file_sha256, submission_text, text_word_count,
+                          similarity_status, similarity_score, similarity_report, similarity_checked_at,
+                          process_edit_seconds, process_paste_events, process_pasted_chars)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?,?)
                          ON CONFLICT(item_id, user_id) DO UPDATE
                          SET filename=excluded.filename, filepath=excluded.filepath,
                              filesize=excluded.filesize, submitted_at=datetime('now'),
+                             receipt_number=excluded.receipt_number,
+                             file_sha256=excluded.file_sha256,
+                             submission_text=excluded.submission_text,
+                             text_word_count=excluded.text_word_count,
+                             similarity_status=excluded.similarity_status,
+                             similarity_score=excluded.similarity_score,
+                             similarity_report=excluded.similarity_report,
+                             similarity_checked_at=datetime('now'),
+                             process_edit_seconds=excluded.process_edit_seconds,
+                             process_paste_events=excluded.process_paste_events,
+                             process_pasted_chars=excluded.process_pasted_chars,
                              score=NULL, feedback='', marked_at='', marked_by=NULL,
                              ai_status='', ai_score=NULL, ai_report='', ai_checked_at=''"
                     )->execute([
                         $itemId, $courseId, $uid,
-                        substr((string) $_FILES['submission_file']['name'], 0, 255),
+                        $originalName,
                         $relPath,
-                        (int) $_FILES['submission_file']['size'],
+                        $subSize,
+                        $receiptNumber,
+                        $fileHash,
+                        $combinedText,
+                        (int) $similarity['word_count'],
+                        $similarity['status'],
+                        $similarity['score'],
+                        $similarity['report'],
+                        $processEditSeconds,
+                        $processPasteEvents,
+                        $processPastedChars,
                     ]);
 
+                    $subIdStmt = $db->prepare("SELECT id FROM course_submissions WHERE item_id = ? AND user_id = ?");
+                    $subIdStmt->execute([$itemId, $uid]);
+                    $submissionId = (int) ($subIdStmt->fetchColumn() ?: 0);
+
                     if (!empty($slot['submission_ai_detection'])) {
-                        $savedName = substr((string) $_FILES['submission_file']['name'], 0, 255);
-                        $text = portal_extract_submission_text($dir . DIRECTORY_SEPARATOR . $safe, $savedName);
-                        $ai = portal_zero_gpt_detection($text);
+                        $ai = portal_zero_gpt_detection($combinedText);
                         $db->prepare(
                             "UPDATE course_submissions
                              SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
@@ -813,18 +1264,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $uid,
                         ]);
                     }
-                    $_SESSION['course_flash'] = ['success', 'Submission uploaded successfully.'];
+
+                    if ($submissionId > 0) {
+                        $db->prepare(
+                            "INSERT INTO course_submission_versions
+                             (submission_id, item_id, course_id, user_id, filename, filesize, file_sha256,
+                              text_word_count, receipt_number, similarity_status, similarity_score,
+                              process_edit_seconds, process_paste_events, process_pasted_chars)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                        )->execute([
+                            $submissionId,
+                            $itemId,
+                            $courseId,
+                            $uid,
+                            $originalName,
+                            $subSize,
+                            $fileHash,
+                            (int) $similarity['word_count'],
+                            $receiptNumber,
+                            $similarity['status'],
+                            $similarity['score'],
+                            $processEditSeconds,
+                            $processPasteEvents,
+                            $processPastedChars,
+                        ]);
+                    }
+
+                    $_SESSION['course_flash'] = ['success', 'Submission received. Receipt: ' . $receiptNumber];
                 } else {
                     $_SESSION['course_flash'] = ['error', 'Upload failed while saving your submission. Please try again.'];
                 }
             }
         } else {
-            $_SESSION['course_flash'] = ['error', 'Please choose a file before submitting.'];
+            $_SESSION['course_flash'] = ['error', 'Submission slot not found.'];
         }
     }
 
     $rBase = 'course.php?course=' . urlencode($slug);
-    if ($action === 'mark_submission') {
+    if (in_array($action, ['mark_submission', 'accept_integrity_eula'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
         // Rebuild courses.meeting from current slots so the hero banner stays in sync
@@ -979,6 +1456,39 @@ if (portal_can_manage_course($courseId)) {
     $_gradeStmt->execute([$courseId, (int) $_me['id']]);
 }
 $submissionGradebook = $_gradeStmt->fetchAll();
+
+$submissionVersions = [];
+if (portal_can_manage_course($courseId)) {
+    $_versionStmt = $_db->prepare(
+        "SELECT csv.*, u.name AS student_name, u.initials AS student_initials
+         FROM course_submission_versions csv
+         JOIN users u ON u.id = csv.user_id
+         WHERE csv.course_id = ?
+         ORDER BY csv.submitted_at DESC"
+    );
+    $_versionStmt->execute([$courseId]);
+} else {
+    $_versionStmt = $_db->prepare(
+        "SELECT * FROM course_submission_versions
+         WHERE course_id = ? AND user_id = ?
+         ORDER BY submitted_at DESC"
+    );
+    $_versionStmt->execute([$courseId, (int) $_me['id']]);
+}
+foreach ($_versionStmt->fetchAll() as $_version) {
+    $submissionVersions[(int) $_version['submission_id']][] = $_version;
+}
+
+$integrityEulaAcceptedAt = '';
+if (portal_can_manage_course($courseId)) {
+    $_eulaStmt = $_db->prepare(
+        "SELECT accepted_at FROM integrity_eula_acceptances
+         WHERE user_id = ? AND version = ?
+         LIMIT 1"
+    );
+    $_eulaStmt->execute([(int) $_me['id'], $integrityEulaVersion]);
+    $integrityEulaAcceptedAt = (string) ($_eulaStmt->fetchColumn() ?: '');
+}
 
 // Class schedule
 $_schStmt = $_db->prepare(
@@ -1475,7 +1985,7 @@ ob_start();
                                                         ?>
                                                         <div class="submission-slot-meta">
                                                             <span>Deadline: <strong><?= portal_escape($deadlineText) ?></strong></span>
-                                                            <?php if (!empty($item['submission_ai_detection'])): ?>
+                                                            <?php if (portal_can_manage_course($courseId) && !empty($item['submission_ai_detection'])): ?>
                                                                 <span>AI detection on</span>
                                                             <?php endif; ?>
                                                             <?php if ($deadlinePassed): ?>
@@ -1488,6 +1998,7 @@ ob_start();
                                                             <div class="submission-list">
                                                                 <p class="submission-list-head"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
                                                                 <?php foreach ($subs as $sub): ?>
+                                                                <?php $subVersions = $submissionVersions[(int)$sub['id']] ?? []; ?>
                                                                 <div class="submission-row">
                                                                     <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
                                                                     <div class="submission-row-info">
@@ -1502,6 +2013,9 @@ ob_start();
                                                                         <?php endif; ?>
                                                                         <?php if ($sub['score'] !== null): ?>
                                                                             <span class="sub-mark">Marked: <?= (int)$sub['score'] ?>/100</span>
+                                                                        <?php endif; ?>
+                                                                        <?php if (($sub['receipt_number'] ?? '') !== ''): ?>
+                                                                            <span class="sub-receipt">Receipt: <?= portal_escape($sub['receipt_number']) ?></span>
                                                                         <?php endif; ?>
                                                                     </div>
                                                                     <form method="POST" class="sub-mark-form">
@@ -1520,6 +2034,23 @@ ob_start();
                                                                             <?= portal_icon('trash', 'icon-sm') ?>
                                                                         </button>
                                                                     </form>
+                                                                    <div class="submission-row-report">
+                                                                        <?= portal_render_integrity_report($sub, true) ?>
+                                                                        <?php if (!empty($subVersions)): ?>
+                                                                            <details class="process-history">
+                                                                                <summary>Version history and process visibility</summary>
+                                                                                <div class="process-history-list">
+                                                                                    <?php foreach (array_slice($subVersions, 0, 5) as $version): ?>
+                                                                                        <div class="process-history-item">
+                                                                                            <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
+                                                                                            <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min edit time &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
+                                                                                            <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
+                                                                                        </div>
+                                                                                    <?php endforeach; ?>
+                                                                                </div>
+                                                                            </details>
+                                                                        <?php endif; ?>
+                                                                    </div>
                                                                 </div>
                                                                 <?php endforeach; ?>
                                                             </div>
@@ -1528,15 +2059,34 @@ ob_start();
                                                             <?php endif; ?>
                                                         <?php else: ?>
                                                             <?php $mySub = $mySubmissions[(int)$item['id']] ?? null; ?>
+                                                            <?php $myVersions = $mySub ? ($submissionVersions[(int)$mySub['id']] ?? []) : []; ?>
                                                             <?php if ($mySub): ?>
                                                                 <div class="my-submission">
                                                                     <?= portal_icon('file', 'icon-xs') ?>
                                                                     <span>Submitted: <strong><?= portal_escape($mySub['filename']) ?></strong></span>
                                                                     <span class="sub-date"><?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?></span>
+                                                                    <?php if (($mySub['receipt_number'] ?? '') !== ''): ?>
+                                                                        <span class="sub-receipt">Receipt: <?= portal_escape($mySub['receipt_number']) ?></span>
+                                                                    <?php endif; ?>
                                                                     <?php if ($mySub['score'] !== null): ?>
                                                                         <span class="sub-mark"><?= (int)$mySub['score'] ?>/100</span>
                                                                     <?php endif; ?>
                                                                 </div>
+                                                                <?= portal_render_integrity_report($mySub, false) ?>
+                                                                <?php if (!empty($myVersions)): ?>
+                                                                    <details class="process-history">
+                                                                        <summary>Your submission history</summary>
+                                                                        <div class="process-history-list">
+                                                                            <?php foreach (array_slice($myVersions, 0, 5) as $version): ?>
+                                                                                <div class="process-history-item">
+                                                                                    <strong><?= portal_escape(date('j M Y H:i', strtotime((string) $version['submitted_at']))) ?></strong>
+                                                                                    <span><?= (int) $version['text_word_count'] ?> words &middot; <?= (int) round(((int) $version['process_edit_seconds']) / 60) ?> min editing &middot; <?= (int) $version['process_paste_events'] ?> paste event<?= (int) $version['process_paste_events'] === 1 ? '' : 's' ?></span>
+                                                                                    <span>Receipt <?= portal_escape((string) $version['receipt_number']) ?></span>
+                                                                                </div>
+                                                                            <?php endforeach; ?>
+                                                                        </div>
+                                                                    </details>
+                                                                <?php endif; ?>
                                                             <?php endif; ?>
                                                             <?php if ($deadlinePassed): ?>
                                                                 <p class="sub-empty">This submission slot is closed.</p>
@@ -1545,9 +2095,16 @@ ob_start();
                                                                     <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                                                     <input type="hidden" name="action" value="submit_work">
                                                                     <input type="hidden" name="item_id" value="<?= (int) $item['id'] ?>">
+                                                                    <input type="hidden" name="process_edit_seconds" value="0">
+                                                                    <input type="hidden" name="process_paste_events" value="0">
+                                                                    <input type="hidden" name="process_pasted_chars" value="0">
                                                                     <label class="submit-file-label">
-                                                                        <input type="file" name="submission_file" accept=".docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp" required>
-                                                                        <span class="submit-hint"><?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB</span>
+                                                                        <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt">
+                                                                        <span class="submit-hint"><?= portal_escape(portal_supported_submission_hint()) ?> - max 40 MB. You can also paste text below.</span>
+                                                                    </label>
+                                                                    <label class="submit-file-label">
+                                                                        <span class="submit-hint">Paste submission text</span>
+                                                                        <textarea name="submission_text" rows="5" maxlength="200000" placeholder="Paste your submission text here if you are not uploading a file."></textarea>
                                                                     </label>
                                                                     <button type="submit" class="button button--sm"><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
                                                                 </form>
@@ -1616,7 +2173,7 @@ ob_start();
                                             <div class="folder-form-row item-file-group">
                                                 <label class="folder-form-label">
                                                     <span>Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
-                                                    <input type="file" name="file" accept=".docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp">
+                                                    <input type="file" name="file" accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp">
                                                 </label>
                                                 <label class="folder-form-label item-url-group">
                                                     <span>Or paste URL <small>(optional)</small></span>
@@ -1969,7 +2526,7 @@ ob_start();
                                 <div class="forum-topic-row-avatar course-staff-avatar"><?= portal_escape($topic['author_initials']) ?></div>
                                 <div class="forum-topic-row-info">
                                     <strong><?= portal_escape($topic['title']) ?></strong>
-                                    <span>by <?= portal_escape($topic['author_name']) ?> · <?= portal_escape(date('j M Y', strtotime($topic['created_at']))) ?></span>
+                                    <span>by <?= portal_escape($topic['author_name']) ?> &middot; <?= portal_escape(date('j M Y', strtotime($topic['created_at']))) ?></span>
                                 </div>
                                 <span class="chip"><?= (int)$topic['reply_count'] ?> <?= (int)$topic['reply_count'] === 1 ? 'reply' : 'replies' ?></span>
                             </a>
@@ -1988,6 +2545,26 @@ ob_start();
                         <span class="chip"><?= count($submissionGradebook) ?> submission<?= count($submissionGradebook) === 1 ? '' : 's' ?></span>
                     </div>
 
+                    <?php if (portal_can_manage_course($courseId)): ?>
+                        <article class="integrity-eula-panel">
+                            <div>
+                                <p class="eyebrow">Integrity tool EULA</p>
+                                <h3><?= $integrityEulaAcceptedAt !== '' ? 'Accepted' : 'Action needed before external providers' ?></h3>
+                                <p>Native institutional checks are active. Global web and academic journal checks will require provider credentials and accepted provider terms.</p>
+                                <?php if ($integrityEulaAcceptedAt !== ''): ?>
+                                    <span>Accepted <?= portal_escape(date('j M Y H:i', strtotime($integrityEulaAcceptedAt))) ?></span>
+                                <?php endif; ?>
+                            </div>
+                            <?php if ($integrityEulaAcceptedAt === ''): ?>
+                                <form method="POST">
+                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="accept_integrity_eula">
+                                    <button type="submit" class="button button--sm">Accept EULA</button>
+                                </form>
+                            <?php endif; ?>
+                        </article>
+                    <?php endif; ?>
+
                     <div class="deadline-list">
                         <?php if (empty($submissionGradebook)): ?>
                             <article class="deadline-item">
@@ -2004,21 +2581,17 @@ ob_start();
                                         <p class="eyebrow">
                                             <?= $grade['score'] !== null ? 'Marked' : 'Awaiting mark' ?>
                                             <?php if (portal_can_manage_course($courseId) && isset($grade['student_name'])): ?>
-                                                · <?= portal_escape($grade['student_name']) ?>
+                                                &middot; <?= portal_escape($grade['student_name']) ?>
                                             <?php endif; ?>
                                         </p>
                                         <h3><?= portal_escape($grade['slot_title']) ?></h3>
                                         <p>
                                             Submitted <?= portal_escape(date('j M Y H:i', strtotime($grade['submitted_at']))) ?>
                                             <?php if (($grade['feedback'] ?? '') !== ''): ?>
-                                                · <?= portal_escape($grade['feedback']) ?>
+                                                &middot; <?= portal_escape($grade['feedback']) ?>
                                             <?php endif; ?>
                                         </p>
-                                        <?php if (($grade['ai_status'] ?? '') !== ''): ?>
-                                            <p class="grade-ai-note">
-                                                AI check: <?= portal_escape($grade['ai_status']) ?><?= $grade['ai_score'] !== null ? ' (' . portal_escape((string) round((float)$grade['ai_score'], 1)) . '%)' : '' ?>
-                                            </p>
-                                        <?php endif; ?>
+                                        <?= portal_render_integrity_report($grade, portal_can_manage_course($courseId)) ?>
                                     </div>
                                     <div class="resource-score">
                                         <strong><?= $grade['score'] !== null ? (int)$grade['score'] . '/100' : '--/100' ?></strong>
@@ -2729,6 +3302,33 @@ ob_start();
                     : 'Students cannot download — click to enable';
                 if (settingsCb) settingsCb.checked = !willEnable;
             });
+        });
+    });
+
+    document.querySelectorAll('.submit-work-form').forEach(form => {
+        const startedAt = Date.now();
+        const textArea = form.querySelector('textarea[name="submission_text"]');
+        const editField = form.querySelector('input[name="process_edit_seconds"]');
+        const pasteField = form.querySelector('input[name="process_paste_events"]');
+        const pastedCharsField = form.querySelector('input[name="process_pasted_chars"]');
+        let pasteEvents = 0;
+        let pastedChars = 0;
+
+        if (textArea) {
+            textArea.addEventListener('paste', e => {
+                pasteEvents += 1;
+                pastedChars += (e.clipboardData?.getData('text') || '').length;
+                if (pasteField) pasteField.value = String(pasteEvents);
+                if (pastedCharsField) pastedCharsField.value = String(pastedChars);
+            });
+        }
+
+        form.addEventListener('submit', () => {
+            if (editField) {
+                editField.value = String(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+            }
+            if (pasteField) pasteField.value = String(pasteEvents);
+            if (pastedCharsField) pastedCharsField.value = String(pastedChars);
         });
     });
 

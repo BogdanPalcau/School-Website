@@ -148,7 +148,50 @@ $_pdo->exec("
         ai_score     REAL,
         ai_report    TEXT    NOT NULL DEFAULT '',
         ai_checked_at TEXT   NOT NULL DEFAULT '',
+        receipt_number TEXT NOT NULL DEFAULT '',
+        file_sha256  TEXT NOT NULL DEFAULT '',
+        submission_text TEXT NOT NULL DEFAULT '',
+        text_word_count INTEGER NOT NULL DEFAULT 0,
+        similarity_status TEXT NOT NULL DEFAULT '',
+        similarity_score REAL,
+        similarity_report TEXT NOT NULL DEFAULT '',
+        similarity_checked_at TEXT NOT NULL DEFAULT '',
+        process_edit_seconds INTEGER NOT NULL DEFAULT 0,
+        process_paste_events INTEGER NOT NULL DEFAULT 0,
+        process_pasted_chars INTEGER NOT NULL DEFAULT 0,
+        eula_accepted_at TEXT NOT NULL DEFAULT '',
         UNIQUE(item_id, user_id)
+    )
+");
+
+$_pdo->exec("
+    CREATE TABLE IF NOT EXISTS course_submission_versions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        submission_id INTEGER REFERENCES course_submissions(id) ON DELETE CASCADE,
+        item_id      INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
+        course_id    INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        filename     TEXT NOT NULL DEFAULT '',
+        filesize     INTEGER NOT NULL DEFAULT 0,
+        file_sha256  TEXT NOT NULL DEFAULT '',
+        text_word_count INTEGER NOT NULL DEFAULT 0,
+        receipt_number TEXT NOT NULL DEFAULT '',
+        similarity_status TEXT NOT NULL DEFAULT '',
+        similarity_score REAL,
+        process_edit_seconds INTEGER NOT NULL DEFAULT 0,
+        process_paste_events INTEGER NOT NULL DEFAULT 0,
+        process_pasted_chars INTEGER NOT NULL DEFAULT 0,
+        submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+");
+
+$_pdo->exec("
+    CREATE TABLE IF NOT EXISTS integrity_eula_acceptances (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        version     TEXT NOT NULL,
+        accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, version)
     )
 ");
 
