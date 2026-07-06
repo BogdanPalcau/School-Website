@@ -1109,9 +1109,132 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
     }
 }
 
+if (!function_exists('portal_site_settings_reload')) {
+    function portal_site_settings_reload(): void
+    {
+        $GLOBALS['portal_site_settings_cache'] = null;
+    }
+}
+
+if (!function_exists('portal_site_setting_get')) {
+    function portal_site_setting_get(string $key, string $default = ''): string
+    {
+        if (!isset($GLOBALS['portal_site_settings_cache']) || $GLOBALS['portal_site_settings_cache'] === null) {
+            $cache = [];
+            try {
+                $rows = portal_db()->query("SELECT setting_key, setting_value FROM portal_site_settings")->fetchAll();
+                foreach ($rows as $row) {
+                    $cache[(string) $row['setting_key']] = (string) $row['setting_value'];
+                }
+            } catch (\PDOException $e) {
+                $cache = [];
+            }
+            $GLOBALS['portal_site_settings_cache'] = $cache;
+        }
+
+        $cache = $GLOBALS['portal_site_settings_cache'];
+        return $cache[$key] ?? $default;
+    }
+}
+
+if (!function_exists('portal_site_setting_set')) {
+    function portal_site_setting_set(string $key, string $value): void
+    {
+        portal_db()->prepare(
+            "INSERT INTO portal_site_settings (setting_key, setting_value, updated_at)
+             VALUES (?, ?, datetime('now'))
+             ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value = excluded.setting_value,
+                updated_at = datetime('now')"
+        )->execute([$key, $value]);
+        portal_site_settings_reload();
+    }
+}
+
+if (!function_exists('portal_site_setting_has')) {
+    function portal_site_setting_has(string $key): bool
+    {
+        return portal_site_setting_get($key, '') !== '';
+    }
+}
+
+if (!function_exists('portal_external_ai_policy')) {
+    /** @return 'disabled'|'site_wide'|'per_module' */
+    function portal_external_ai_policy(): string
+    {
+        $policy = portal_site_setting_get('external_ai_policy', 'disabled');
+        return in_array($policy, ['disabled', 'site_wide', 'per_module'], true) ? $policy : 'disabled';
+    }
+}
+
+if (!function_exists('portal_course_external_ai_enabled')) {
+    function portal_course_external_ai_enabled(int $courseId): bool
+    {
+        if ($courseId <= 0) {
+            return false;
+        }
+        $stmt = portal_db()->prepare("SELECT external_ai_detection FROM courses WHERE id = ?");
+        $stmt->execute([$courseId]);
+        return (int) ($stmt->fetchColumn() ?: 0) === 1;
+    }
+}
+
+if (!function_exists('portal_external_ai_configured')) {
+    function portal_external_ai_configured(): bool
+    {
+        return portal_zero_gpt_api_key() !== '';
+    }
+}
+
+if (!function_exists('portal_external_ai_should_run')) {
+    /**
+     * Whether ZeroGPT should run for a submission.
+     *
+     * @param array<string, mixed> $context item row or submission context with course_id and optional submission_ai_detection
+     */
+    function portal_external_ai_should_run(array $context): bool
+    {
+        if (!portal_external_ai_configured()) {
+            return false;
+        }
+
+        $policy = portal_external_ai_policy();
+        if ($policy === 'disabled') {
+            return false;
+        }
+
+        $courseId = (int) ($context['course_id'] ?? 0);
+
+        if ($policy === 'site_wide') {
+            return true;
+        }
+
+        // per_module — course must be enabled by admin
+        if (!portal_course_external_ai_enabled($courseId)) {
+            return false;
+        }
+
+        // Within enabled modules, teachers opt in per submission slot.
+        return !empty($context['submission_ai_detection']);
+    }
+}
+
+if (!function_exists('portal_show_submission_external_ai_option')) {
+    function portal_show_submission_external_ai_option(int $courseId): bool
+    {
+        return portal_external_ai_configured()
+            && portal_external_ai_policy() === 'per_module'
+            && portal_course_external_ai_enabled($courseId);
+    }
+}
+
 if (!function_exists('portal_zero_gpt_api_key')) {
     function portal_zero_gpt_api_key(): string
     {
+        $fromDb = portal_site_setting_get('zerogpt_api_key', '');
+        if ($fromDb !== '') {
+            return $fromDb;
+        }
         return trim((string) getenv('ZEROGPT_API_KEY'));
     }
 }
@@ -1183,7 +1306,7 @@ if (!function_exists('portal_zero_gpt_detection')) {
     function portal_zero_gpt_detection(string $text): array
     {
         if (portal_zero_gpt_api_key() === '') {
-            return ['status' => 'not_configured', 'score' => null, 'report' => 'AI detection needs ZEROGPT_API_KEY in a .env file at the project root.'];
+            return ['status' => 'not_configured', 'score' => null, 'report' => 'External AI detection is disabled. An admin can enable it in Admin → External AI detection.'];
         }
         if ($text === '') {
             return ['status' => 'no_text', 'score' => null, 'report' => 'No readable text could be extracted from this submission for AI detection.'];
@@ -1519,7 +1642,10 @@ if (!function_exists('portal_integrity_check_similarity')) {
 
         $webScope = 'not_configured';
         $webMatches = [];
-        $web = portal_zero_gpt_plagiarism($cleanText);
+        $web = ['status' => 'not_configured', 'score' => null, 'report' => '', 'matches' => []];
+        if ($submissionContext !== null && portal_external_ai_should_run($submissionContext)) {
+            $web = portal_zero_gpt_plagiarism($cleanText);
+        }
         if ($web['status'] === 'checked' && ($web['score'] !== null || $web['matches'] !== [])) {
             $webScope = 'checked';
             $webMatches = $web['matches'];
@@ -1529,7 +1655,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
             $matches = array_merge($webMatches, $institutionalMatches);
             usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
             $matches = array_slice($matches, 0, 6);
-        } elseif (portal_zero_gpt_api_key() !== '') {
+        } elseif ($submissionContext !== null && portal_external_ai_should_run($submissionContext)) {
             $webScope = 'unavailable';
         }
 
@@ -1850,9 +1976,11 @@ if (!function_exists('portal_integrity_summary_cards')) {
             default  => 'good',
         };
 
-        $keyConfigured = portal_zero_gpt_api_key() !== '';
+        $keyConfigured = portal_external_ai_configured();
+        $policy = portal_external_ai_policy();
         $extStatus = (string) ($submission['ai_status'] ?? '');
         $extScore  = ($submission['ai_score'] ?? null) !== null ? (float) $submission['ai_score'] : null;
+        $extDisabled = !$keyConfigured || $policy === 'disabled';
 
         $editSeconds = (int) ($submission['process_edit_seconds'] ?? 0);
         $pasteEvents = (int) ($submission['process_paste_events'] ?? 0);
@@ -1959,7 +2087,7 @@ if (!function_exists('portal_integrity_summary_cards')) {
             <div class="rvw-card rvw-card--flat" data-static="1">
                 <div class="rvw-card-head">
                     <span class="rvw-card-label">External AI detection</span>
-                    <?php if (!$keyConfigured): ?>
+                    <?php if ($extDisabled): ?>
                         <span class="rvw-card-value rvw-card-value--text rvw-card-value--muted">Disabled</span>
                     <?php elseif ($extScore !== null): ?>
                         <span class="rvw-card-value"><?= portal_escape((string) round($extScore, 0)) ?>%</span>
@@ -1984,35 +2112,104 @@ if (!function_exists('portal_render_submission_review')) {
     {
         $subId       = (int) $submission['id'];
         $filename    = (string) ($submission['filename'] ?? '');
+        $ext         = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         $isImage     = portal_submission_is_image($filename);
         $text        = (string) ($submission['submission_text'] ?? '');
-        $studentName = (string) ($submission['student_name'] ?? 'You');
-        $submittedAt = (string) ($submission['submitted_at'] ?? '');
         $score       = $submission['score'] ?? null;
         $feedback    = (string) ($submission['feedback'] ?? '');
-        $annKind     = $isImage ? 'image' : 'text';
+
+        // Preview strategy (browser-side loaders in course.php mirror public/view.php)
+        if ($isImage) {
+            $previewMode = 'image';
+            $annKind     = 'image';
+        } elseif ($ext === 'pdf') {
+            $previewMode = 'pdf';
+            $annKind     = 'text';
+        } elseif ($ext === 'docx') {
+            $previewMode = 'docx';
+            $annKind     = 'text';
+        } elseif ($ext === 'xlsx') {
+            $previewMode = 'xlsx';
+            $annKind     = 'text';
+        } elseif (in_array($ext, ['ppt', 'pptx', 'pps', 'ppsx'], true)) {
+            $previewMode = 'pptx';
+            $annKind     = 'text';
+        } elseif ($ext === 'txt') {
+            $previewMode = 'txt';
+            $annKind     = 'text';
+        } elseif (in_array($ext, ['doc', 'odp', 'odt', 'ods', 'pot', 'potx'], true)) {
+            $previewMode = 'office';
+            $annKind     = 'text';
+        } elseif (trim($text) !== '') {
+            $previewMode = 'text';
+            $annKind     = 'text';
+        } else {
+            $previewMode = 'none';
+            $annKind     = 'text';
+        }
 
         ob_start();
         ?>
-        <div class="rvw-shell" data-submission-id="<?= $subId ?>" data-kind="<?= $annKind ?>" data-can-annotate="<?= $isTeacher ? '1' : '0' ?>">
+        <div class="rvw-shell"
+             data-submission-id="<?= $subId ?>"
+             data-preview-mode="<?= portal_escape($previewMode) ?>"
+             data-preview-ext="<?= portal_escape($ext) ?>"
+             data-kind="<?= $annKind ?>"
+             data-can-annotate="<?= $isTeacher ? '1' : '0' ?>">
             <div class="rvw-main">
                 <div class="rvw-main-toolbar">
-                    <span class="rvw-file"><?= portal_icon($isImage ? 'file' : 'file', 'icon-xs') ?><?= portal_escape($filename) ?></span>
-                    <a href="download.php?sub=<?= $subId ?>" class="rvw-download">Download</a>
+                    <span class="rvw-file"><?= portal_icon('file', 'icon-xs') ?><?= portal_escape($filename) ?></span>
+                    <a href="download.php?sub=<?= $subId ?>" class="rvw-download" target="_blank" rel="noopener">Download</a>
                 </div>
                 <div class="rvw-doc">
-                    <?php if ($isImage): ?>
+                    <?php if ($previewMode === 'image'): ?>
                         <div class="rvw-image-wrap" data-image-layer>
                             <img src="download.php?sub=<?= $subId ?>&amp;view=1" alt="<?= portal_escape($filename) ?>" class="rvw-image">
                             <div class="rvw-pins" data-pins></div>
                         </div>
-                    <?php elseif (trim($text) !== ''): ?>
-                        <div class="rvw-text" data-doc-text><?= portal_escape($text) ?></div>
+                    <?php elseif ($previewMode === 'pdf'): ?>
+                        <iframe class="rvw-iframe"
+                                src="download.php?sub=<?= $subId ?>&amp;view=1"
+                                title="<?= portal_escape($filename) ?>"></iframe>
+                    <?php elseif ($previewMode === 'docx'): ?>
+                        <div class="rvw-docx-scroll">
+                            <div class="rvw-docx-paper docx-content" data-preview-mount>
+                                <p class="rvw-doc-loading">Loading document…</p>
+                            </div>
+                        </div>
+                    <?php elseif ($previewMode === 'xlsx'): ?>
+                        <div class="rvw-docx-scroll" data-preview-mount>
+                            <p class="rvw-doc-loading">Loading spreadsheet…</p>
+                        </div>
+                    <?php elseif ($previewMode === 'pptx'): ?>
+                        <div class="rvw-docx-scroll" data-preview-mount>
+                            <p class="rvw-doc-loading">Loading presentation…</p>
+                        </div>
+                    <?php elseif ($previewMode === 'txt'): ?>
+                        <div class="rvw-docx-scroll">
+                            <div class="rvw-docx-paper" data-preview-mount>
+                                <p class="rvw-doc-loading">Loading…</p>
+                            </div>
+                        </div>
+                    <?php elseif ($previewMode === 'office'): ?>
+                        <iframe class="rvw-iframe"
+                                src="preview.php?sub=<?= $subId ?>"
+                                title="<?= portal_escape($filename) ?>"></iframe>
+                    <?php elseif ($previewMode === 'text'): ?>
+                        <div class="rvw-text" data-annotate-surface><?= portal_escape($text) ?></div>
                     <?php else: ?>
                         <div class="rvw-doc-empty">
-                            <p>No inline preview is available for this file type.</p>
+                            <p>No preview is available for this file type.</p>
                             <a href="download.php?sub=<?= $subId ?>" class="button button--sm">Download to view</a>
                         </div>
+                    <?php endif; ?>
+                    <?php if ($isTeacher && trim($text) !== '' && in_array($previewMode, ['pdf', 'office'], true)): ?>
+                        <details class="rvw-text-layer-toggle">
+                            <summary>Show extracted text (for text annotations)</summary>
+                            <div class="rvw-text-layer" data-annotate-surface><?= portal_escape($text) ?></div>
+                        </details>
+                    <?php elseif (trim($text) !== '' && in_array($previewMode, ['pdf', 'office'], true)): ?>
+                        <div class="rvw-text-layer" data-annotate-surface hidden><?= portal_escape($text) ?></div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -2022,18 +2219,40 @@ if (!function_exists('portal_render_submission_review')) {
                 <section class="rvw-panel">
                     <h4 class="rvw-panel-title">Grade</h4>
                     <?php if ($isTeacher): ?>
-                        <form method="POST" class="rvw-grade-form">
-                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                            <input type="hidden" name="action" value="mark_submission">
-                            <input type="hidden" name="submission_id" value="<?= $subId ?>">
-                            <div class="rvw-grade-row">
-                                <input type="number" name="score" min="0" max="100" value="<?= $score !== null ? (int) $score : '' ?>" placeholder="0–100">
-                                <span class="rvw-grade-max">/ 100</span>
+                        <div class="rvw-grade-block" data-grade-block>
+                            <div class="rvw-grade-view<?= $score !== null ? ' is-visible' : '' ?>">
+                                <div class="rvw-grade-posted">
+                                    <div class="rvw-grade-posted-head">
+                                        <span class="rvw-grade-saved-icon" aria-hidden="true">✓</span>
+                                        <div class="rvw-grade-posted-score">
+                                            <p class="rvw-grade-saved-label">Grade posted</p>
+                                            <span class="rvw-grade-big" data-grade-score-display><?= $score !== null ? (int) $score : '' ?><small>/100</small></span>
+                                        </div>
+                                    </div>
+                                    <div class="rvw-feedback-box<?= $feedback !== '' ? ' is-visible' : '' ?>" data-grade-feedback-view>
+                                        <p class="rvw-feedback-box-label">General feedback</p>
+                                        <p class="rvw-feedback-box-text" data-grade-feedback-text><?= portal_escape($feedback) ?></p>
+                                    </div>
+                                    <p class="rvw-grade-no-feedback<?= $feedback === '' ? ' is-visible' : '' ?>" data-grade-no-feedback>No general feedback provided.</p>
+                                </div>
+                                <button type="button" class="button button--sm button--ghost rvw-grade-edit">Edit grade</button>
                             </div>
-                            <label class="rvw-feedback-label">General feedback</label>
-                            <textarea name="feedback" rows="4" maxlength="2000" placeholder="Overall feedback for this submission"><?= portal_escape($feedback) ?></textarea>
-                            <button type="submit" class="button button--sm">Save grade &amp; feedback</button>
-                        </form>
+                            <form method="POST" class="rvw-grade-form<?= $score !== null ? '' : ' is-visible' ?>" data-grade-form>
+                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                <input type="hidden" name="action" value="mark_submission">
+                                <input type="hidden" name="submission_id" value="<?= $subId ?>">
+                                <div class="rvw-grade-row">
+                                    <input type="number" name="score" min="0" max="100" value="<?= $score !== null ? (int) $score : '' ?>" placeholder="0–100" required>
+                                    <span class="rvw-grade-max">/ 100</span>
+                                </div>
+                                <label class="rvw-feedback-label">General feedback</label>
+                                <textarea name="feedback" rows="4" maxlength="2000" placeholder="Overall feedback for this submission"><?= portal_escape($feedback) ?></textarea>
+                                <div class="rvw-grade-form-actions">
+                                    <button type="submit" class="button button--sm" data-grade-submit>Save grade &amp; feedback</button>
+                                    <button type="button" class="button button--sm button--ghost rvw-grade-cancel<?= $score !== null ? ' is-visible' : '' ?>">Cancel</button>
+                                </div>
+                            </form>
+                        </div>
                     <?php else: ?>
                         <div class="rvw-grade-display">
                             <?php if ($score !== null): ?>
@@ -2043,9 +2262,9 @@ if (!function_exists('portal_render_submission_review')) {
                             <?php endif; ?>
                         </div>
                         <?php if ($feedback !== ''): ?>
-                            <div class="rvw-feedback-read">
-                                <p class="rvw-panel-sub">Teacher feedback</p>
-                                <p><?= portal_escape($feedback) ?></p>
+                            <div class="rvw-feedback-box is-visible">
+                                <p class="rvw-feedback-box-label">Teacher feedback</p>
+                                <p class="rvw-feedback-box-text"><?= portal_escape($feedback) ?></p>
                             </div>
                         <?php endif; ?>
                     <?php endif; ?>
@@ -2151,7 +2370,10 @@ if (!function_exists('portal_rerun_submission_integrity')) {
             $submissionId,
         ]);
 
-        if ($runAi && (!empty($submission['submission_ai_detection']) || portal_zero_gpt_api_key() !== '')) {
+        if ($runAi && portal_external_ai_should_run([
+            'course_id' => (int) ($submission['course_id'] ?? 0),
+            'submission_ai_detection' => (int) ($submission['submission_ai_detection'] ?? 0),
+        ])) {
             $ai = portal_zero_gpt_detection($text);
             $db->prepare(
                 "UPDATE course_submissions

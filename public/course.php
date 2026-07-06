@@ -21,6 +21,10 @@ if (!portal_can_access_course((int) $course['id'])) {
     portal_redirect('courses.php');
 }
 
+$courseId = (int) $course['id'];
+$showExternalAiSlotOption = portal_show_submission_external_ai_option($courseId);
+$externalAiSiteWide = portal_external_ai_configured() && portal_external_ai_policy() === 'site_wide';
+
 // ── CSRF token ────────────────────────────────────────────────────────────────
 if (empty($_SESSION['_csrf'])) {
     $_SESSION['_csrf'] = bin2hex(random_bytes(32));
@@ -565,7 +569,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?
                      WHERE id = ? AND course_id = ?"
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
+                if (portal_is_fetch_request()) {
+                    portal_json_response([
+                        'ok'            => true,
+                        'submission_id' => $subId,
+                        'score'         => $score,
+                        'feedback'      => $feedback,
+                    ]);
+                }
                 $_SESSION['course_flash'] = ['success', 'Submission marked.'];
+            } elseif (portal_is_fetch_request()) {
+                portal_json_response(['ok' => false, 'error' => 'Submission not found.'], 404);
             }
 
         } elseif ($action === 'save_annotation' && portal_can_manage_course($courseId)) {
@@ -799,6 +813,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Student: submit work to a submission slot ─────────────────────────────
     if ($action === 'submit_work') {
+        $submitJsonExit = static function (bool $ok, array $data = [], string $error = ''): void {
+            if (!portal_is_fetch_request()) {
+                return;
+            }
+            portal_json_response($ok ? array_merge(['ok' => true], $data) : ['ok' => false, 'error' => $error]);
+        };
+
         $itemId = (int) ($_POST['item_id'] ?? 0);
         $slotChk = $db->prepare(
             "SELECT id, submission_deadline, submission_ai_detection
@@ -821,18 +842,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($deadlineTs !== false && time() > $deadlineTs) {
                 $_SESSION['course_flash'] = ['error', 'This submission deadline has passed. Ask your teacher if you need an extension.'];
+                $submitJsonExit(false, [], 'This submission deadline has passed. Ask your teacher if you need an extension.');
             } elseif (!$hasFile && $pastedText === '') {
                 $_SESSION['course_flash'] = ['error', 'Upload a document or paste your submission text before submitting.'];
+                $submitJsonExit(false, [], 'Upload a document or paste your submission text before submitting.');
             } elseif ($hasFile && $subError !== UPLOAD_ERR_OK) {
-                $_SESSION['course_flash'] = ['error', $uploadErrorMessage($subError)];
+                $msg = $uploadErrorMessage($subError);
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
             } elseif ($hasFile && !in_array($ext, portal_supported_submission_extensions(), true)) {
-                $_SESSION['course_flash'] = ['error', 'Unsupported file type. Use ' . portal_supported_submission_hint() . '.'];
+                $msg = 'Unsupported file type. Use ' . portal_supported_submission_hint() . '.';
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
             } elseif ($hasFile && $subSize <= 0) {
                 $_SESSION['course_flash'] = ['error', 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.'];
+                $submitJsonExit(false, [], 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.');
             } elseif ($hasFile && !portal_upload_mime_ok((string) ($_FILES['submission_file']['tmp_name'] ?? ''), $ext)) {
                 $_SESSION['course_flash'] = ['error', 'This file content does not match its extension. Please upload a genuine document.'];
+                $submitJsonExit(false, [], 'This file content does not match its extension. Please upload a genuine document.');
             } elseif ($hasFile && $subSize > $maxUploadBytes) {
                 $_SESSION['course_flash'] = ['error', 'File is too large. Maximum allowed size is 40 MB.'];
+                $submitJsonExit(false, [], 'File is too large. Maximum allowed size is 40 MB.');
             } else {
                 $uid = (int) $me['id'];
                 $prevStmt = $db->prepare(
@@ -876,6 +906,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ? portal_extract_submission_file_metadata($savedAbs, $originalName)
                         : ['available' => false, 'format' => $hasFile ? $ext : 'txt'];
                     $submissionContext = [
+                        'course_id' => $courseId,
+                        'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
                         'process_edit_seconds' => $processEditSeconds,
                         'process_paste_events' => $processPasteEvents,
                         'process_pasted_chars' => $processPastedChars,
@@ -948,7 +980,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         );
                     }
 
-                    if (!empty($slot['submission_ai_detection']) || portal_zero_gpt_api_key() !== '') {
+                    if (portal_external_ai_should_run([
+                        'course_id' => $courseId,
+                        'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
+                    ])) {
                         $ai = portal_zero_gpt_detection($combinedText);
                         $db->prepare(
                             "UPDATE course_submissions
@@ -989,16 +1024,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $_SESSION['course_flash'] = ['success', 'Submission received. Receipt: ' . $receiptNumber];
+
+                    $submittedAt = '';
+                    if ($submissionId > 0) {
+                        $subAtStmt = $db->prepare("SELECT submitted_at FROM course_submissions WHERE id = ?");
+                        $subAtStmt->execute([$submissionId]);
+                        $submittedAt = (string) ($subAtStmt->fetchColumn() ?: '');
+                    }
+                    $submitJsonExit(true, [
+                        'submission_id'      => $submissionId,
+                        'item_id'            => $itemId,
+                        'filename'           => $originalName,
+                        'submitted_at'       => $submittedAt,
+                        'submitted_at_label' => $submittedAt !== '' ? date('j M Y H:i', strtotime($submittedAt)) : '',
+                        'receipt_number'     => $receiptNumber,
+                        'is_resubmit'        => (bool) $prev,
+                        'message'            => 'Submission received. Receipt: ' . $receiptNumber,
+                    ]);
                 } else {
                     $_SESSION['course_flash'] = ['error', 'Upload failed while saving your submission. Please try again.'];
+                    $submitJsonExit(false, [], 'Upload failed while saving your submission. Please try again.');
                 }
             }
         } else {
             $_SESSION['course_flash'] = ['error', 'Submission slot not found.'];
+            $submitJsonExit(false, [], 'Submission slot not found.');
         }
     }
 
     $rBase = 'course.php?course=' . urlencode($slug);
+    if (portal_is_fetch_request() && in_array($action, ['mark_submission', 'submit_work'], true)) {
+        portal_json_response(['ok' => false, 'error' => 'Unexpected response.'], 500);
+    }
     if (in_array($action, ['mark_submission', 'accept_integrity_eula'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
@@ -1691,10 +1748,14 @@ ob_start();
                                                                             <span>Deadline</span>
                                                                             <input type="datetime-local" name="submission_deadline" required value="<?= portal_escape($itemDeadlineValue) ?>">
                                                                         </label>
+                                                                        <?php if ($showExternalAiSlotOption): ?>
                                                                         <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                                             <input type="checkbox" name="submission_ai_detection" value="1" <?= !empty($item['submission_ai_detection']) ? 'checked' : '' ?>>
-                                                                            Use AI detection <small style="font-weight:400">(ZeroGPT)</small>
+                                                                            External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
                                                                         </label>
+                                                                        <?php elseif ($externalAiSiteWide): ?>
+                                                                        <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
+                                                                        <?php endif; ?>
                                                                     </div>
                                                                 <?php endif; ?>
                                                                 <?php if ($item['type'] === 'document' && $item['file_path'] !== ''): ?>
@@ -1721,6 +1782,7 @@ ob_start();
                                                         ?>
                                                         <div class="sub-slot-card"
                                                              data-sub-modal="<?= portal_escape($modalId) ?>"
+                                                             data-item-id="<?= (int) $item['id'] ?>"
                                                              role="button"
                                                              tabindex="0"
                                                              aria-label="Open submission details for <?= portal_escape($item['title']) ?>">
@@ -1733,19 +1795,19 @@ ob_start();
                                                                     </span>
                                                                 </div>
                                                             <?php else: ?>
-                                                                <div class="sub-slot-card-row">
+                                                                <div class="sub-slot-card-row" data-sub-card-row>
                                                                     <?php if ($mySub): ?>
-                                                                        <span class="sub-slot-file">
+                                                                        <span class="sub-slot-file" data-sub-card-file>
                                                                             <?= portal_icon('file', 'icon-xs') ?>
                                                                             <span><?= portal_escape($mySub['filename']) ?></span>
                                                                         </span>
                                                                         <?php if ($mySub['score'] !== null): ?>
-                                                                            <span class="sub-slot-status sub-slot-status--graded"><?= (int)$mySub['score'] ?>%</span>
+                                                                            <span class="sub-slot-status sub-slot-status--graded" data-sub-card-status><?= (int)$mySub['score'] ?>%</span>
                                                                         <?php else: ?>
-                                                                            <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
+                                                                            <span class="sub-slot-status sub-slot-status--pending" data-sub-card-status>Not graded</span>
                                                                         <?php endif; ?>
                                                                     <?php else: ?>
-                                                                        <span class="sub-slot-file sub-slot-file--empty">
+                                                                        <span class="sub-slot-file sub-slot-file--empty" data-sub-card-file>
                                                                             <?= portal_icon('upload', 'icon-xs') ?>
                                                                             <span><?= $deadlinePassed ? 'No submission' : 'Not submitted yet' ?></span>
                                                                         </span>
@@ -1753,15 +1815,18 @@ ob_start();
                                                                 </div>
                                                             <?php endif; ?>
                                                             <?php if (!portal_can_manage_course($courseId) && $mySub): ?>
-                                                            <p class="sub-slot-card-meta">
+                                                            <p class="sub-slot-card-meta" data-sub-card-meta>
                                                                 Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?>
                                                             </p>
+                                                            <?php elseif (!portal_can_manage_course($courseId)): ?>
+                                                            <p class="sub-slot-card-meta is-hidden" data-sub-card-meta></p>
                                                             <?php endif; ?>
                                                         </div>
 
                                                         <?php ob_start(); ?>
                                                         <div id="<?= portal_escape($modalId) ?>"
                                                              class="sub-slot-overlay"
+                                                             data-item-id="<?= (int) $item['id'] ?>"
                                                              hidden
                                                              role="dialog"
                                                              aria-modal="true"
@@ -1781,7 +1846,7 @@ ob_start();
                                                                     <?php if (!empty($subs)): ?>
                                                                         <p class="sub-modal-count"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
                                                                         <?php foreach ($subs as $sub): ?>
-                                                                        <article class="sub-modal-entry sub-modal-entry--row">
+                                                                        <article class="sub-modal-entry sub-modal-entry--row" data-submission-id="<?= (int) $sub['id'] ?>">
                                                                             <div class="sub-modal-entry-who">
                                                                                 <div class="course-staff-avatar sub-avatar"><?= portal_escape($sub['student_initials']) ?></div>
                                                                                 <div>
@@ -1812,37 +1877,38 @@ ob_start();
                                                                     <?php endif; ?>
 
                                                                 <?php else: ?>
-                                                                    <?php if ($mySub): ?>
-                                                                    <div class="sub-modal-mine">
+                                                                    <div class="sub-modal-student" data-student-sub-modal>
+                                                                    <div class="sub-modal-mine<?= $mySub ? ' is-visible' : '' ?>" data-sub-mine>
                                                                         <div class="sub-modal-mine-info">
-                                                                            <span class="sub-slot-file"><?= portal_icon('file', 'icon-xs') ?><?= portal_escape($mySub['filename']) ?></span>
-                                                                            <span class="sub-modal-mine-meta">Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?></span>
+                                                                            <span class="sub-slot-file" data-sub-filename><?= portal_icon('file', 'icon-xs') ?><span><?= $mySub ? portal_escape($mySub['filename']) : '' ?></span></span>
+                                                                            <span class="sub-modal-mine-meta" data-sub-date><?= $mySub ? 'Submitted ' . portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) : '' ?></span>
                                                                         </div>
                                                                         <div class="sub-modal-mine-end">
-                                                                            <?php if ($mySub['score'] !== null): ?>
-                                                                                <span class="sub-modal-grade sub-modal-grade--marked"><?= (int)$mySub['score'] ?><small>/100</small></span>
+                                                                            <span class="sub-modal-grade<?= ($mySub && $mySub['score'] !== null) ? ' sub-modal-grade--marked' : ' sub-modal-grade--pending' ?>" data-sub-grade-badge><?php if ($mySub && $mySub['score'] !== null): ?><?= (int)$mySub['score'] ?><small>/100</small><?php else: ?>Not graded<?php endif; ?></span>
+                                                                            <?php if ($mySub): ?>
+                                                                            <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$mySub['id'] ?>" data-sub-review-btn>Open review</button>
                                                                             <?php else: ?>
-                                                                                <span class="sub-modal-grade sub-modal-grade--pending">Not graded</span>
+                                                                            <button type="button" class="button button--sm is-hidden" data-review-open="" data-sub-review-btn>Open review</button>
                                                                             <?php endif; ?>
-                                                                            <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$mySub['id'] ?>">Open review</button>
                                                                         </div>
                                                                     </div>
-                                                                    <?php endif; ?>
+                                                                    <div class="sub-submit-success is-hidden" data-sub-success role="status"></div>
 
                                                                     <?php if ($deadlinePassed): ?>
                                                                         <?php if (!$mySub): ?>
                                                                             <p class="sub-empty sub-empty--closed">This submission slot is closed.</p>
                                                                         <?php endif; ?>
                                                                     <?php else: ?>
-                                                                    <section class="sub-modal-section sub-modal-section--submit">
-                                                                        <h4 class="sub-modal-section-title"><?= $mySub ? 'Re-submit work' : 'Submit work' ?></h4>
-                                                                        <form method="POST" enctype="multipart/form-data" class="submit-work-form submit-work-form--modal">
+                                                                    <section class="sub-modal-section sub-modal-section--submit" data-sub-submit-section>
+                                                                        <h4 class="sub-modal-section-title" data-sub-submit-title><?= $mySub ? 'Re-submit work' : 'Submit work' ?></h4>
+                                                                        <form method="POST" enctype="multipart/form-data" class="submit-work-form submit-work-form--modal" data-item-id="<?= (int) $item['id'] ?>">
                                                                             <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                                                             <input type="hidden" name="action" value="submit_work">
                                                                             <input type="hidden" name="item_id" value="<?= (int) $item['id'] ?>">
                                                                             <input type="hidden" name="process_edit_seconds" value="0">
                                                                             <input type="hidden" name="process_paste_events" value="0">
                                                                             <input type="hidden" name="process_pasted_chars" value="0">
+                                                                            <div class="sub-submit-error" data-sub-error role="alert"></div>
                                                                             <label class="submit-file-label">
                                                                                 <input type="file" name="submission_file" accept=".doc,.docx,.pdf,.txt,.png,.jpg,.jpeg,.gif,.webp">
                                                                                 <span class="submit-hint"><?= portal_escape(portal_supported_submission_hint()) ?> — max 40 MB</span>
@@ -1851,10 +1917,11 @@ ob_start();
                                                                                 <span class="submit-hint">Or paste your text</span>
                                                                                 <textarea name="submission_text" rows="6" maxlength="200000" placeholder="Paste your work here if you are not uploading a file."></textarea>
                                                                             </label>
-                                                                            <button type="submit" class="button"><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
+                                                                            <button type="submit" class="button" data-sub-submit-btn><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
                                                                         </form>
                                                                     </section>
                                                                     <?php endif; ?>
+                                                                    </div>
                                                                 <?php endif; ?>
                                                                 </div>
                                                             </div>
@@ -1978,10 +2045,14 @@ ob_start();
                                                     <span>Deadline</span>
                                                     <input type="datetime-local" name="submission_deadline">
                                                 </label>
+                                                <?php if ($showExternalAiSlotOption): ?>
                                                 <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                     <input type="checkbox" name="submission_ai_detection" value="1">
-                                                    Use AI detection <small style="font-weight:400">(ZeroGPT API key in .env)</small>
+                                                    External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
                                                 </label>
+                                                <?php elseif ($externalAiSiteWide): ?>
+                                                <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
+                                                <?php endif; ?>
                                             </div>
                                             <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                 <input type="checkbox" name="allow_download" value="1">
@@ -2337,7 +2408,7 @@ ob_start();
                             <div>
                                 <p class="eyebrow">Integrity tool EULA</p>
                                 <h3><?= $integrityEulaAcceptedAt !== '' ? 'Accepted' : 'Action needed before external providers' ?></h3>
-                                <p>Built-in checks now include: school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past dissertations or exemplar work. Optional ZeroGPT adds external AI and web plagiarism checks via <code>.env</code>.</p>
+                                <p>Built-in checks include school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past work. Optional ZeroGPT external AI detection can be configured by an admin in <strong>Admin → External AI detection</strong>.</p>
                                 <?php if ($integrityEulaAcceptedAt !== ''): ?>
                                     <span>Accepted <?= portal_escape(date('j M Y H:i', strtotime($integrityEulaAcceptedAt))) ?></span>
                                 <?php endif; ?>
@@ -3022,14 +3093,147 @@ ob_start();
             });
         }
 
-        form.addEventListener('submit', () => {
+        form.addEventListener('submit', async e => {
+            e.preventDefault();
             if (editField) {
                 editField.value = String(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
             }
             if (pasteField) pasteField.value = String(pasteEvents);
             if (pastedCharsField) pastedCharsField.value = String(pastedChars);
+
+            const btn = form.querySelector('[data-sub-submit-btn]') || form.querySelector('button[type="submit"]');
+            const origLabel = btn ? btn.textContent : '';
+            const errEl = form.querySelector('[data-sub-error]');
+            if (errEl) {
+                errEl.textContent = '';
+                errEl.classList.remove('is-visible');
+            }
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Submitting…';
+            }
+
+            try {
+                const res = await fetch(window.location.pathname + window.location.search, {
+                    method: 'POST',
+                    body: new FormData(form),
+                    headers: { 'X-Requested-With': 'fetch' }
+                });
+                const data = await res.json();
+                if (!data.ok) {
+                    const msg = data.error || 'Submission failed.';
+                    if (errEl) {
+                        errEl.textContent = msg;
+                        errEl.classList.add('is-visible');
+                    } else {
+                        alert(msg);
+                    }
+                    return;
+                }
+                handleSubmitSuccess(form, data);
+            } catch (_) {
+                const msg = 'Could not submit. Please try again.';
+                if (errEl) {
+                    errEl.textContent = msg;
+                    errEl.classList.add('is-visible');
+                } else {
+                    alert(msg);
+                }
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = origLabel;
+                }
+            }
         });
     });
+
+    function escapeHtmlText(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function handleSubmitSuccess(form, data) {
+        const itemId = data.item_id;
+        const card = document.querySelector('.sub-slot-card[data-item-id="' + itemId + '"]');
+        const modal = form.closest('.sub-slot-overlay')
+            || document.querySelector('.sub-slot-overlay[data-item-id="' + itemId + '"]');
+
+        if (card) {
+            const row = card.querySelector('[data-sub-card-row]');
+            if (row) {
+                row.innerHTML = '<span class="sub-slot-file" data-sub-card-file><span>'
+                    + escapeHtmlText(data.filename) + '</span></span>'
+                    + '<span class="sub-slot-status sub-slot-status--pending" data-sub-card-status>Not graded</span>';
+            }
+            const meta = card.querySelector('[data-sub-card-meta]');
+            if (meta) {
+                meta.textContent = 'Submitted ' + (data.submitted_at_label || '');
+                meta.classList.remove('is-hidden');
+                meta.classList.add('is-visible');
+            }
+            card.classList.add('sub-slot-card--flash');
+            window.setTimeout(() => card.classList.remove('sub-slot-card--flash'), 1200);
+        }
+
+        if (modal) {
+            const mine = modal.querySelector('[data-sub-mine]');
+            if (mine) {
+                mine.classList.add('is-visible');
+                const fnSpan = mine.querySelector('[data-sub-filename] span');
+                if (fnSpan) fnSpan.textContent = data.filename || '';
+                const dateEl = mine.querySelector('[data-sub-date]');
+                if (dateEl) dateEl.textContent = 'Submitted ' + (data.submitted_at_label || '');
+                const badge = mine.querySelector('[data-sub-grade-badge]');
+                if (badge) {
+                    badge.className = 'sub-modal-grade sub-modal-grade--pending';
+                    badge.textContent = 'Not graded';
+                }
+                const reviewBtn = mine.querySelector('[data-sub-review-btn]');
+                if (reviewBtn && data.submission_id) {
+                    reviewBtn.dataset.reviewOpen = 'rvw-' + data.submission_id;
+                    reviewBtn.classList.remove('is-hidden');
+                }
+            }
+
+            const success = modal.querySelector('[data-sub-success]');
+            if (success) {
+                success.innerHTML = '<span class="sub-submit-success-icon" aria-hidden="true">✓</span>'
+                    + escapeHtmlText(data.message || 'Submission received.');
+                success.classList.add('is-visible');
+                window.setTimeout(() => success.classList.remove('is-visible'), 6000);
+            }
+
+            const title = modal.querySelector('[data-sub-submit-title]');
+            if (title) title.textContent = 'Re-submit work';
+            const submitBtn = form.querySelector('[data-sub-submit-btn]');
+            if (submitBtn) submitBtn.textContent = 'Re-submit';
+            form.reset();
+
+            const section = form.closest('[data-sub-submit-section]');
+            if (section) {
+                section.classList.add('sub-modal-section--done');
+                window.setTimeout(() => section.classList.remove('sub-modal-section--done'), 1200);
+            }
+        }
+
+        const shell = document.querySelector('.rvw-shell[data-submission-id="' + data.submission_id + '"]');
+        if (shell) {
+            delete shell.dataset.previewLoaded;
+            const mount = shell.querySelector('[data-preview-mount]');
+            if (mount) {
+                mount.innerHTML = '<p class="rvw-doc-loading">Loading document…</p>';
+            }
+            clearAnnotateBaseIfExists(shell);
+        }
+    }
+
+    function clearAnnotateBaseIfExists(shell) {
+        const surface = shell.querySelector('[data-preview-mount]') || shell.querySelector('[data-annotate-surface]');
+        if (!surface) return;
+        delete surface.dataset.annotateBaseStored;
+        delete surface.dataset.baseHtml;
+        delete surface.dataset.baseText;
+    }
 
     // ── Turnitin-style submission review (all users) ────────────────────────
     (function initReview() {
@@ -3081,11 +3285,14 @@ ob_start();
             }, 200);
         }
 
-        document.querySelectorAll('[data-review-open]').forEach(btn => {
-            btn.addEventListener('click', e => {
-                e.stopPropagation();
-                openReviewOverlay(document.getElementById(btn.dataset.reviewOpen));
-            });
+        document.addEventListener('click', e => {
+            const btn = e.target.closest('[data-review-open]');
+            if (!btn || !btn.dataset.reviewOpen) return;
+            e.stopPropagation();
+            const overlay = document.getElementById(btn.dataset.reviewOpen);
+            openReviewOverlay(overlay);
+            const shell = overlay?.querySelector('.rvw-shell');
+            if (shell) loadSubmissionPreview(shell);
         });
         document.querySelectorAll('.rvw-overlay .rvw-close').forEach(btn => {
             btn.addEventListener('click', () => closeReviewOverlay(btn.closest('.rvw-overlay')));
@@ -3098,6 +3305,102 @@ ob_start();
             const pop = document.querySelector('.rvw-popover');
             if (pop) { pop.remove(); return; }
             if (openReview) closeReviewOverlay(openReview);
+        });
+
+        function showGradeView(block) {
+            const view = block.querySelector('.rvw-grade-view');
+            const form = block.querySelector('[data-grade-form]');
+            if (view) view.classList.add('is-visible');
+            if (form) form.classList.remove('is-visible');
+        }
+
+        function showGradeEdit(block) {
+            const view = block.querySelector('.rvw-grade-view');
+            const form = block.querySelector('[data-grade-form]');
+            if (view) view.classList.remove('is-visible');
+            if (form) form.classList.add('is-visible');
+        }
+
+        function applyGradePosted(block, score, feedback) {
+            const scoreEl = block.querySelector('[data-grade-score-display]');
+            if (scoreEl) scoreEl.innerHTML = String(score) + '<small>/100</small>';
+            const fbView = block.querySelector('[data-grade-feedback-view]');
+            const fbText = block.querySelector('[data-grade-feedback-text]');
+            const noFb = block.querySelector('[data-grade-no-feedback]');
+            if (feedback) {
+                if (fbText) fbText.textContent = feedback;
+                fbView?.classList.add('is-visible');
+                noFb?.classList.remove('is-visible');
+            } else {
+                fbView?.classList.remove('is-visible');
+                noFb?.classList.add('is-visible');
+            }
+            const posted = block.querySelector('.rvw-grade-posted');
+            posted?.classList.add('is-posted-flash');
+            window.setTimeout(() => posted?.classList.remove('is-posted-flash'), 1200);
+            showGradeView(block);
+            block.querySelector('.rvw-grade-cancel')?.classList.add('is-visible');
+        }
+
+        function updateGradeBadges(subId, score) {
+            const entry = document.querySelector('.sub-modal-entry[data-submission-id="' + subId + '"]');
+            const grade = entry?.querySelector('.sub-modal-grade');
+            if (grade) {
+                grade.className = 'sub-modal-grade sub-modal-grade--marked';
+                grade.innerHTML = String(score) + '<small>/100</small>';
+            }
+            const shell = document.querySelector('.rvw-shell[data-submission-id="' + subId + '"]');
+            if (shell && shell.dataset.canAnnotate !== '1') {
+                const display = shell.querySelector('.rvw-grade-display');
+                const big = shell.querySelector('.rvw-grade-big');
+                const pending = shell.querySelector('.rvw-grade-pending');
+                if (display && !big) {
+                    display.innerHTML = '<span class="rvw-grade-big">' + String(score) + '<small>/100</small></span>';
+                } else if (big) {
+                    big.innerHTML = String(score) + '<small>/100</small>';
+                }
+                if (pending) pending.remove();
+            }
+        }
+
+        document.querySelectorAll('[data-grade-block]').forEach(block => {
+            const form = block.querySelector('[data-grade-form]');
+            block.querySelector('.rvw-grade-edit')?.addEventListener('click', () => showGradeEdit(block));
+            block.querySelector('.rvw-grade-cancel')?.addEventListener('click', () => showGradeView(block));
+            if (!form) return;
+            form.addEventListener('submit', async e => {
+                e.preventDefault();
+                const btn = form.querySelector('[data-grade-submit]');
+                const orig = btn ? btn.textContent : '';
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Saving…';
+                }
+                try {
+                    const res = await fetch(window.location.pathname + window.location.search, {
+                        method: 'POST',
+                        body: new FormData(form),
+                        headers: { 'X-Requested-With': 'fetch' }
+                    });
+                    const data = await res.json();
+                    if (data.ok) {
+                        applyGradePosted(block, data.score, data.feedback);
+                        const shell = block.closest('.rvw-shell');
+                        if (shell?.dataset.submissionId) {
+                            updateGradeBadges(shell.dataset.submissionId, data.score);
+                        }
+                    } else {
+                        alert(data.error || 'Could not save grade.');
+                    }
+                } catch (_) {
+                    alert('Could not save grade.');
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = orig;
+                    }
+                }
+            });
         });
 
         function postAction(params) {
@@ -3128,6 +3431,214 @@ ob_start();
             document.querySelectorAll('.rvw-popover').forEach(p => p.remove());
         }
 
+        function clearAnnotateBase(surface) {
+            if (!surface) return;
+            delete surface.dataset.annotateBaseStored;
+            delete surface.dataset.baseHtml;
+            delete surface.dataset.baseText;
+        }
+
+        function getAnnotateSurface(shell) {
+            const mode = shell.dataset.previewMode || '';
+            const mount = shell.querySelector('[data-preview-mount]');
+            if (mount && (mode === 'docx' || mode === 'txt')) {
+                if (mount.querySelector('.rvw-doc-loading')) return null;
+                if (mount.textContent.trim()) return mount;
+            }
+            const plain = shell.querySelector('.rvw-text[data-annotate-surface]');
+            if (plain) return plain;
+            if (mode === 'pdf' || mode === 'office') {
+                const layer = shell.querySelector('.rvw-text-layer[data-annotate-surface]');
+                if (layer) return layer;
+            }
+            return null;
+        }
+
+        function findTextPosition(root, charIndex) {
+            let offset = 0;
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const len = node.textContent.length;
+                if (offset + len >= charIndex) {
+                    return { node, offset: charIndex - offset };
+                }
+                offset += len;
+            }
+            return null;
+        }
+
+        function wrapRangeInSurface(root, start, end, annId, badgeNum, onClick) {
+            const startPos = findTextPosition(root, start);
+            const endPos = findTextPosition(root, end);
+            if (!startPos || !endPos) return;
+
+            // Collect every text node spanned by the range first (read-only pass)
+            // so a highlight that crosses paragraph/block boundaries never ends up
+            // nesting a block element (e.g. <p>) inside the inline <mark>, which
+            // corrupts the layout. Each text node gets its own <mark> instead.
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const spanned = [];
+            let node;
+            let collecting = false;
+            while ((node = walker.nextNode())) {
+                if (node === startPos.node) collecting = true;
+                if (collecting) spanned.push(node);
+                if (node === endPos.node) break;
+            }
+            if (!spanned.length) return;
+
+            const marks = [];
+            spanned.forEach(n => {
+                const from = (n === startPos.node) ? startPos.offset : 0;
+                const to = (n === endPos.node) ? endPos.offset : n.textContent.length;
+                if (to <= from) return;
+                const range = document.createRange();
+                range.setStart(n, from);
+                range.setEnd(n, to);
+                const mark = document.createElement('mark');
+                mark.className = 'rvw-hl';
+                mark.dataset.ann = annId;
+                try {
+                    range.surroundContents(mark);
+                    marks.push(mark);
+                } catch (_) { /* skip nodes that can't be wrapped cleanly */ }
+            });
+
+            if (!marks.length) return;
+            if (badgeNum) {
+                const badge = document.createElement('sup');
+                badge.className = 'rvw-hl-badge';
+                badge.textContent = String(badgeNum);
+                badge.setAttribute('aria-hidden', 'true');
+                marks[marks.length - 1].appendChild(badge);
+            }
+            marks.forEach(mark => mark.addEventListener('click', onClick));
+        }
+
+        function storeAnnotateBase(surface) {
+            if (!surface || surface.dataset.annotateBaseStored === '1') return;
+            if (surface.querySelector('p, h1, h2, h3, pre, table, li')) {
+                surface.dataset.baseHtml = surface.innerHTML;
+            } else {
+                surface.dataset.baseText = surface.textContent;
+            }
+            surface.dataset.annotateBaseStored = '1';
+        }
+
+        function restoreAnnotateBase(surface) {
+            if (!surface) return;
+            if (surface.dataset.baseHtml != null) {
+                surface.innerHTML = surface.dataset.baseHtml;
+            } else if (surface.dataset.baseText != null) {
+                surface.textContent = surface.dataset.baseText;
+            }
+        }
+
+        async function loadSubmissionPreview(shell) {
+            if (!shell || shell.dataset.previewLoaded === '1') return;
+
+            const mode = shell.dataset.previewMode || '';
+            const subId = shell.dataset.submissionId || '';
+            const mount = shell.querySelector('[data-preview-mount]');
+            const docEl = shell.querySelector('.rvw-doc');
+
+            if (docEl && docEl.querySelector('.rvw-iframe')) {
+                docEl.classList.add('rvw-doc--iframe');
+            }
+
+            if (!mount || !subId) {
+                if (mode === 'pdf' || mode === 'office') {
+                    shell.dataset.previewLoaded = '1';
+                }
+                return;
+            }
+
+            const url = 'download.php?sub=' + encodeURIComponent(subId) + '&view=1';
+            const showErr = msg => {
+                mount.innerHTML = '<p class="rvw-doc-error">' + escapeHtml(msg) + '</p>';
+            };
+
+            try {
+                if (mode === 'docx') {
+                    if (typeof mammoth === 'undefined') {
+                        showErr('Document preview library failed to load. Please refresh the page.');
+                        return;
+                    }
+                    const resp = await fetch(url);
+                    if (!resp.ok) {
+                        showErr('Could not load document.');
+                        return;
+                    }
+                    const buf = await resp.arrayBuffer();
+                    const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+                    mount.innerHTML = result.value || '<p class="rvw-doc-empty-msg">This document appears to be empty.</p>';
+                } else if (mode === 'xlsx') {
+                    if (typeof XLSX === 'undefined') {
+                        showErr('Spreadsheet preview library failed to load. Please refresh the page.');
+                        return;
+                    }
+                    const resp = await fetch(url);
+                    if (!resp.ok) {
+                        showErr('Could not load spreadsheet.');
+                        return;
+                    }
+                    const buf = await resp.arrayBuffer();
+                    const wb = XLSX.read(buf, { type: 'array' });
+                    const sheetName = wb.SheetNames[0];
+                    const sheet = sheetName ? wb.Sheets[sheetName] : null;
+                    if (!sheet) {
+                        showErr('Could not read this workbook.');
+                        return;
+                    }
+                    mount.innerHTML = '<div class="viewer-sheet-head">Sheet: ' + escapeHtml(sheetName) + '</div>'
+                        + renderSheetToTable(sheet);
+                } else if (mode === 'pptx') {
+                    const resp = await fetch(url);
+                    if (!resp.ok) {
+                        showErr('Could not load presentation.');
+                        return;
+                    }
+                    const buf = await resp.arrayBuffer();
+                    const slides = await extractPptxSlides(buf);
+                    if (!slides.length) {
+                        showErr('Could not read slide text from this presentation.');
+                        return;
+                    }
+                    mount.innerHTML = slides.map((lines, idx) => {
+                        const safeLines = lines.length
+                            ? lines.map(line => '<li>' + escapeHtml(line) + '</li>').join('')
+                            : '<li><em>(No text content found on this slide)</em></li>';
+                        return '<section class="pptx-slide">'
+                            + '<h4>Slide ' + (idx + 1) + '</h4>'
+                            + '<ul>' + safeLines + '</ul>'
+                            + '</section>';
+                    }).join('');
+                } else if (mode === 'txt') {
+                    const resp = await fetch(url);
+                    if (!resp.ok) {
+                        showErr('Could not load file.');
+                        return;
+                    }
+                    const content = await resp.text();
+                    mount.innerHTML = '<pre class="rvw-txt-pre">' + escapeHtml(content) + '</pre>';
+                } else {
+                    return;
+                }
+                const surface = getAnnotateSurface(shell);
+                if (surface) {
+                    clearAnnotateBase(surface);
+                    storeAnnotateBase(surface);
+                }
+                shell.dispatchEvent(new CustomEvent('rvw-preview-loaded'));
+                // Also call render directly in case the event listener isn't ready yet
+                if (typeof shell._rvwRender === 'function') shell._rvwRender();
+                shell.dataset.previewLoaded = '1';
+            } catch (_) {
+                showErr('Could not load preview.');
+            }
+        }
+
         document.querySelectorAll('.rvw-shell').forEach(shell => {
             const subId = shell.dataset.submissionId;
             const canAnnotate = shell.dataset.canAnnotate === '1';
@@ -3136,32 +3647,37 @@ ob_start();
             try { annotations = JSON.parse((dataEl && dataEl.textContent) || '[]'); } catch (_) { annotations = []; }
 
             const commentsEl = shell.querySelector('[data-comments]');
-            const textEl = shell.querySelector('[data-doc-text]');
-            const rawText = textEl ? textEl.textContent : '';
             const imageWrap = shell.querySelector('[data-image-layer]');
             const pinsEl = shell.querySelector('[data-pins]');
 
+            const docEl = shell.querySelector('.rvw-doc');
+            if (docEl && docEl.querySelector('.rvw-iframe')) {
+                docEl.classList.add('rvw-doc--iframe');
+            }
+
+            const plainSurface = shell.querySelector('.rvw-text[data-annotate-surface]');
+            if (plainSurface) storeAnnotateBase(plainSurface);
+
             function render() {
                 renderComments();
-                if (textEl) renderHighlights();
+                renderHighlights();
                 if (pinsEl) renderPins();
             }
 
             function renderHighlights() {
-                const ranges = annotations
+                const surface = getAnnotateSurface(shell);
+                if (!surface) return;
+                storeAnnotateBase(surface);
+                restoreAnnotateBase(surface);
+                // Sort by position to assign sequential badge numbers
+                const textAnns = annotations
                     .filter(a => a.anchor_type === 'text' && a.range_start != null && a.range_end != null && a.range_end > a.range_start)
                     .sort((a, b) => a.range_start - b.range_start);
-                let html = '', cursor = 0;
-                ranges.forEach(a => {
-                    if (a.range_start < cursor) return;
-                    html += escapeHtml(rawText.slice(cursor, a.range_start));
-                    html += '<mark class="rvw-hl" data-ann="' + a.id + '">' + escapeHtml(rawText.slice(a.range_start, a.range_end)) + '</mark>';
-                    cursor = a.range_end;
-                });
-                html += escapeHtml(rawText.slice(cursor));
-                textEl.innerHTML = html;
-                textEl.querySelectorAll('mark.rvw-hl').forEach(m => {
-                    m.addEventListener('click', () => focusComment(parseInt(m.dataset.ann, 10)));
+                // Apply in reverse order so earlier wraps don't shift later offsets
+                const reversed = textAnns.slice().sort((a, b) => b.range_start - a.range_start);
+                reversed.forEach(a => {
+                    const idx = textAnns.indexOf(a); // sequential index in doc order
+                    wrapRangeInSurface(surface, a.range_start, a.range_end, String(a.id), idx + 1, () => focusComment(a.id));
                 });
             }
 
@@ -3193,11 +3709,19 @@ ob_start();
                     commentsEl.appendChild(p);
                     return;
                 }
+                // Sequential badge numbers match highlight badges in the document
+                const textAnnsOrdered = annotations
+                    .filter(a => a.anchor_type === 'text' && a.range_start != null)
+                    .sort((a, b) => a.range_start - b.range_start);
                 annotations.forEach(a => {
                     const card = document.createElement('div');
                     card.className = 'rvw-comment';
                     card.dataset.ann = a.id;
                     let inner = '';
+                    const badgeIdx = textAnnsOrdered.indexOf(a);
+                    if (badgeIdx >= 0) {
+                        inner += '<span class="rvw-comment-num" aria-hidden="true">' + (badgeIdx + 1) + '</span>';
+                    }
                     if (a.quote) inner += '<p class="rvw-comment-quote">\u201C' + escapeHtml(a.quote) + '\u201D</p>';
                     inner += '<p class="rvw-comment-body">' + escapeHtml(a.comment) + '</p>';
                     inner += '<div class="rvw-comment-meta"><span class="rvw-comment-author">' + escapeHtml(a.author || '') + '</span>';
@@ -3228,12 +3752,40 @@ ob_start();
 
             function focusComment(id) {
                 shell.querySelectorAll('.rvw-comment--active').forEach(el => el.classList.remove('rvw-comment--active'));
-                shell.querySelectorAll('mark.rvw-hl--active').forEach(el => el.classList.remove('rvw-hl--active'));
+                shell.querySelectorAll('mark.rvw-hl--active').forEach(el => {
+                    el.classList.remove('rvw-hl--active');
+                    el.classList.remove('rvw-hl--pulse');
+                });
                 shell.querySelectorAll('.rvw-pin--active').forEach(el => el.classList.remove('rvw-pin--active'));
+
                 const card = commentsEl.querySelector('.rvw-comment[data-ann="' + id + '"]');
-                if (card) { card.classList.add('rvw-comment--active'); card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
-                const mark = shell.querySelector('mark.rvw-hl[data-ann="' + id + '"]');
-                if (mark) mark.classList.add('rvw-hl--active');
+                if (card) {
+                    card.classList.add('rvw-comment--active');
+                    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+
+                const marks = shell.querySelectorAll('mark.rvw-hl[data-ann="' + id + '"]');
+                if (marks.length) {
+                    const mark = marks[0];
+                    marks.forEach(m => m.classList.add('rvw-hl--active'));
+                    // Scroll the document pane to the highlighted text
+                    const scrollContainer = shell.querySelector('.rvw-docx-scroll') || shell.querySelector('.rvw-doc');
+                    if (scrollContainer) {
+                        const markRect = mark.getBoundingClientRect();
+                        const containerRect = scrollContainer.getBoundingClientRect();
+                        const offset = (markRect.top - containerRect.top) + scrollContainer.scrollTop
+                                     - (scrollContainer.clientHeight / 2) + (markRect.height / 2);
+                        scrollContainer.scrollTo({ top: offset, behavior: 'smooth' });
+                    } else {
+                        mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                    }
+                    // Pulse animation to draw the eye
+                    marks.forEach(m => {
+                        m.classList.add('rvw-hl--pulse');
+                        m.addEventListener('animationend', () => m.classList.remove('rvw-hl--pulse'), { once: true });
+                    });
+                }
+
                 const pin = shell.querySelector('.rvw-pin[data-ann="' + id + '"]');
                 if (pin) pin.classList.add('rvw-pin--active');
             }
@@ -3300,21 +3852,29 @@ ob_start();
                 });
             }
 
-            if (canAnnotate && textEl) {
-                textEl.addEventListener('mouseup', () => {
-                    const sel = window.getSelection();
-                    if (!sel || sel.isCollapsed) return;
-                    const range = sel.getRangeAt(0);
-                    if (!textEl.contains(range.startContainer) || !textEl.contains(range.endContainer)) return;
-                    const start = offsetInNode(textEl, range.startContainer, range.startOffset);
-                    const end = offsetInNode(textEl, range.endContainer, range.endOffset);
-                    if (end <= start) return;
-                    const rect = range.getBoundingClientRect();
-                    const quote = rawText.slice(start, end);
-                    sel.removeAllRanges();
-                    openComposer({ anchor_type: 'text', start, end, quote, x: rect.left, y: rect.bottom + 8 });
+            if (canAnnotate && docEl) {
+                docEl.addEventListener('mouseup', () => {
+                    window.setTimeout(() => {
+                        const surface = getAnnotateSurface(shell);
+                        if (!surface) return;
+                        const sel = window.getSelection();
+                        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+                        const range = sel.getRangeAt(0);
+                        if (!surface.contains(range.startContainer) || !surface.contains(range.endContainer)) return;
+                        const start = offsetInNode(surface, range.startContainer, range.startOffset);
+                        const end = offsetInNode(surface, range.endContainer, range.endOffset);
+                        if (end <= start) return;
+                        const quote = sel.toString().trim();
+                        if (!quote) return;
+                        const rect = range.getBoundingClientRect();
+                        sel.removeAllRanges();
+                        openComposer({ anchor_type: 'text', start, end, quote, x: rect.left, y: rect.bottom + 8 });
+                    }, 10);
                 });
             }
+
+            shell.addEventListener('rvw-preview-loaded', () => render());
+            shell._rvwRender = render;
 
             if (canAnnotate && imageWrap) {
                 const img = imageWrap.querySelector('img');

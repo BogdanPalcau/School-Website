@@ -120,6 +120,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         portal_redirect('admin.php' . ($targetId ? '?enroll=' . $targetId : ''));
     }
+
+    if ($action === 'save_integrity_settings') {
+        $policy = (string) ($_POST['external_ai_policy'] ?? 'disabled');
+        if (!in_array($policy, ['disabled', 'site_wide', 'per_module'], true)) {
+            $policy = 'disabled';
+        }
+
+        portal_site_setting_set('external_ai_policy', $policy);
+
+        $apiKey = trim((string) ($_POST['zerogpt_api_key'] ?? ''));
+        if ($apiKey !== '') {
+            portal_site_setting_set('zerogpt_api_key', $apiKey);
+        }
+
+        $clearKey = isset($_POST['clear_zerogpt_api_key']) && $_POST['clear_zerogpt_api_key'] === '1';
+        if ($clearKey) {
+            portal_site_setting_set('zerogpt_api_key', '');
+        }
+
+        $pdo->exec('UPDATE courses SET external_ai_detection = 0');
+        if ($policy === 'per_module') {
+            $courseIds = array_map('intval', (array) ($_POST['external_ai_courses'] ?? []));
+            $upd = $pdo->prepare('UPDATE courses SET external_ai_detection = 1 WHERE id = ?');
+            foreach ($courseIds as $cid) {
+                if ($cid > 0) {
+                    $upd->execute([$cid]);
+                }
+            }
+        }
+
+        $_SESSION['admin_flash'] = ['success', 'External AI detection settings saved.'];
+        portal_redirect('admin.php#integrity-settings');
+    }
 }
 
 // ── Read flash ─────────────────────────────────────────────────────────────────
@@ -145,6 +178,12 @@ $stats = [
     'total_courses'     => count($allCourses),
     'total_enrollments' => (int) $pdo->query("SELECT COUNT(*) FROM enrollments")->fetchColumn(),
 ];
+
+$integrityPolicy   = portal_external_ai_policy();
+$integrityKeySet   = portal_site_setting_has('zerogpt_api_key') || trim((string) getenv('ZEROGPT_API_KEY')) !== '';
+$integrityCourses  = $pdo->query(
+    "SELECT id, title, code, external_ai_detection FROM courses ORDER BY title ASC"
+)->fetchAll();
 
 $page_title   = 'Admin | ' . portal_school_name();
 $active_page  = 'admin';
@@ -377,6 +416,71 @@ ob_start();
             </div>
         </article>
 
+        <article class="card-shell" id="integrity-settings">
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Integrity</p>
+                    <h3 class="card-title">External AI detection</h3>
+                    <p>Configure ZeroGPT for optional external AI checks on student submissions.</p>
+                </div>
+                <span class="chip<?= $integrityKeySet ? '' : ' chip--muted' ?>"><?= $integrityKeySet ? 'API key set' : 'No API key' ?></span>
+            </div>
+
+            <form method="post" action="admin.php#integrity-settings" class="admin-integrity-form">
+                <?= portal_csrf_field() ?>
+                <input type="hidden" name="action" value="save_integrity_settings">
+
+                <label class="admin-field">
+                    <span>ZeroGPT API key</span>
+                    <input type="password" name="zerogpt_api_key" autocomplete="new-password"
+                           placeholder="<?= $integrityKeySet ? 'Leave blank to keep current key' : 'Paste your ZeroGPT API key' ?>">
+                    <?php if ($integrityKeySet): ?>
+                    <label class="admin-checkbox-inline">
+                        <input type="checkbox" name="clear_zerogpt_api_key" value="1">
+                        Remove saved API key
+                    </label>
+                    <?php endif; ?>
+                    <small class="admin-field-hint">Stored securely in the site database. You can still use <code>.env</code> as a fallback if no key is saved here.</small>
+                </label>
+
+                <fieldset class="admin-policy-fieldset">
+                    <legend>When should external AI detection run?</legend>
+                    <label class="admin-radio">
+                        <input type="radio" name="external_ai_policy" value="disabled"<?= $integrityPolicy === 'disabled' ? ' checked' : '' ?>>
+                        <span><strong>Disabled</strong> — never call ZeroGPT (internal checks still run).</span>
+                    </label>
+                    <label class="admin-radio">
+                        <input type="radio" name="external_ai_policy" value="site_wide"<?= $integrityPolicy === 'site_wide' ? ' checked' : '' ?>>
+                        <span><strong>Site-wide</strong> — run for every submission when an API key is configured.</span>
+                    </label>
+                    <label class="admin-radio">
+                        <input type="radio" name="external_ai_policy" value="per_module"<?= $integrityPolicy === 'per_module' ? ' checked' : '' ?>>
+                        <span><strong>Selected modules only</strong> — enable specific courses below; teachers opt in per assignment.</span>
+                    </label>
+                </fieldset>
+
+                <div class="admin-ai-modules" id="admin-ai-modules"<?= $integrityPolicy === 'per_module' ? '' : ' hidden' ?>>
+                    <p class="admin-field-hint">Choose which modules can use external AI detection. Teachers must also tick “External AI detection” on each submission slot.</p>
+                    <div class="admin-enroll-grid">
+                        <?php foreach ($integrityCourses as $ic): ?>
+                        <?php $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1; ?>
+                        <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
+                            <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
+                            <div class="admin-enroll-text">
+                                <strong><?= portal_escape((string) $ic['title']) ?></strong>
+                                <span><?= portal_escape((string) $ic['code']) ?></span>
+                            </div>
+                        </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
+                <div class="button-row">
+                    <button type="submit" class="button">Save integrity settings</button>
+                </div>
+            </form>
+        </article>
+
         <article class="card-shell">
             <div class="section-head">
                 <div>
@@ -406,6 +510,20 @@ ob_start();
 
     </div>
 </section>
+<script>
+(function () {
+    const modules = document.getElementById('admin-ai-modules');
+    if (!modules) return;
+    function syncModules() {
+        const sel = document.querySelector('input[name="external_ai_policy"]:checked');
+        modules.hidden = !sel || sel.value !== 'per_module';
+    }
+    document.querySelectorAll('input[name="external_ai_policy"]').forEach(radio => {
+        radio.addEventListener('change', syncModules);
+    });
+    syncModules();
+})();
+</script>
 <?php
 $page_content = ob_get_clean();
 

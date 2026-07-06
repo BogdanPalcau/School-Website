@@ -940,6 +940,20 @@ if (!function_exists('portal_run_migrations')) {
                 $db->exec($sql);
             }
         }
+
+        // ── Site-wide settings (admin) ─────────────────────────────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS portal_site_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+
+        $courseCols = array_column($db->query("PRAGMA table_info(courses)")->fetchAll(), 'name');
+        if (!in_array('external_ai_detection', $courseCols, true)) {
+            $db->exec("ALTER TABLE courses ADD COLUMN external_ai_detection INTEGER NOT NULL DEFAULT 0");
+        }
     }
 }
 
@@ -989,6 +1003,23 @@ if (!function_exists('portal_enabled_tab_keys')) {
         $stmt = $db->prepare("SELECT tab_key FROM course_tab_settings WHERE course_id = ? AND enabled = 1");
         $stmt->execute([$courseId]);
         return $stmt->fetchAll(PDO::FETCH_COLUMN);
+    }
+}
+
+if (!function_exists('portal_is_fetch_request')) {
+    function portal_is_fetch_request(): bool
+    {
+        return strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'fetch';
+    }
+}
+
+if (!function_exists('portal_json_response')) {
+    function portal_json_response(array $payload, int $code = 200): never
+    {
+        http_response_code($code);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
     }
 }
 
