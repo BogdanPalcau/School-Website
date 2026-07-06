@@ -1593,10 +1593,8 @@ ob_start();
 
                                                     <?php if ($item['type'] === 'submission'): ?>
                                                         <?php
-                                                            $deadlineText = $item['submission_deadline'] !== ''
-                                                                ? date('j M Y H:i', strtotime((string) $item['submission_deadline']))
-                                                                : 'No deadline set';
-                                                            $deadlinePassed = $item['submission_deadline'] !== '' && time() > strtotime((string) $item['submission_deadline']);
+                                                            $deadlineInfo = portal_submission_deadline_info((string) $item['submission_deadline']);
+                                                            $deadlinePassed = $deadlineInfo['passed'];
                                                             $modalId = 'sub-slot-modal-' . (int) $item['id'];
                                                             if (portal_can_manage_course($courseId)) {
                                                                 $subs = $slotSubmissions[(int)$item['id']] ?? [];
@@ -1609,15 +1607,13 @@ ob_start();
                                                              role="button"
                                                              tabindex="0"
                                                              aria-label="Open submission details for <?= portal_escape($item['title']) ?>">
+                                                            <?= portal_render_submission_deadline((string) $item['submission_deadline']) ?>
                                                             <?php if (portal_can_manage_course($courseId)): ?>
                                                                 <div class="sub-slot-card-row">
                                                                     <span class="sub-slot-file">
                                                                         <?= portal_icon('upload', 'icon-xs') ?>
                                                                         <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
                                                                     </span>
-                                                                    <?php if ($deadlinePassed): ?>
-                                                                        <span class="sub-slot-status sub-slot-status--closed">Closed</span>
-                                                                    <?php endif; ?>
                                                                 </div>
                                                             <?php else: ?>
                                                                 <div class="sub-slot-card-row">
@@ -1639,12 +1635,11 @@ ob_start();
                                                                     <?php endif; ?>
                                                                 </div>
                                                             <?php endif; ?>
+                                                            <?php if (!portal_can_manage_course($courseId) && $mySub): ?>
                                                             <p class="sub-slot-card-meta">
-                                                                Due <?= portal_escape($deadlineText) ?>
-                                                                <?php if (!portal_can_manage_course($courseId) && $mySub): ?>
-                                                                    &middot; Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?>
-                                                                <?php endif; ?>
+                                                                Submitted <?= portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) ?>
                                                             </p>
+                                                            <?php endif; ?>
                                                         </div>
 
                                                         <?php ob_start(); ?>
@@ -1659,13 +1654,7 @@ ob_start();
                                                                     <div class="sub-slot-dialog-heading">
                                                                         <p class="eyebrow">Submission</p>
                                                                         <h3 id="<?= portal_escape($modalId) ?>-title"><?= portal_escape($item['title']) ?></h3>
-                                                                        <p class="sub-slot-dialog-meta">
-                                                                            <?php if ($deadlinePassed): ?>
-                                                                                Closed &middot; due <?= portal_escape($deadlineText) ?>
-                                                                            <?php else: ?>
-                                                                                Due <?= portal_escape($deadlineText) ?>
-                                                                            <?php endif; ?>
-                                                                        </p>
+                                                                        <?= portal_render_submission_deadline((string) $item['submission_deadline'], 'sub-slot-deadline--header') ?>
                                                                     </div>
                                                                     <button type="button" class="sub-slot-dialog-close" aria-label="Close">&times;</button>
                                                                 </header>

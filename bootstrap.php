@@ -120,6 +120,83 @@ if (!function_exists('portal_supported_upload_hint')) {
     }
 }
 
+if (!function_exists('portal_submission_deadline_info')) {
+    /**
+     * @return array{has_deadline: bool, text: string, state: string, passed: bool, timestamp?: int}
+     */
+    function portal_submission_deadline_info(string $deadlineRaw): array
+    {
+        if (trim($deadlineRaw) === '') {
+            return [
+                'has_deadline' => false,
+                'text' => 'No deadline set',
+                'state' => 'none',
+                'passed' => false,
+            ];
+        }
+
+        $ts = strtotime($deadlineRaw);
+        if ($ts === false) {
+            return [
+                'has_deadline' => false,
+                'text' => 'No deadline set',
+                'state' => 'none',
+                'passed' => false,
+            ];
+        }
+
+        $passed = time() > $ts;
+        $text = date('j M Y H:i', $ts);
+        if ($passed) {
+            return [
+                'has_deadline' => true,
+                'text' => $text,
+                'state' => 'closed',
+                'passed' => true,
+                'timestamp' => $ts,
+            ];
+        }
+
+        $hoursLeft = ($ts - time()) / 3600;
+
+        return [
+            'has_deadline' => true,
+            'text' => $text,
+            'state' => $hoursLeft <= 48 ? 'soon' : 'open',
+            'passed' => false,
+            'timestamp' => $ts,
+        ];
+    }
+}
+
+if (!function_exists('portal_render_submission_deadline')) {
+    function portal_render_submission_deadline(string $deadlineRaw, string $modifier = ''): string
+    {
+        $info = portal_submission_deadline_info($deadlineRaw);
+        $classes = 'sub-slot-deadline sub-slot-deadline--' . $info['state'];
+        if ($modifier !== '') {
+            $classes .= ' ' . $modifier;
+        }
+
+        ob_start();
+        ?>
+        <div class="<?= portal_escape($classes) ?>">
+            <span class="sub-slot-deadline-icon"><?= portal_icon('clock', 'icon-xs') ?></span>
+            <span class="sub-slot-deadline-body">
+                <span class="sub-slot-deadline-label">Due date</span>
+                <strong class="sub-slot-deadline-value"><?= portal_escape($info['text']) ?></strong>
+            </span>
+            <?php if ($info['passed']): ?>
+                <span class="sub-slot-deadline-tag sub-slot-deadline-tag--closed">Closed</span>
+            <?php elseif ($info['state'] === 'soon'): ?>
+                <span class="sub-slot-deadline-tag sub-slot-deadline-tag--soon">Due soon</span>
+            <?php endif; ?>
+        </div>
+        <?php
+        return trim((string) ob_get_clean());
+    }
+}
+
 // ── Database ──────────────────────────────────────────────────────────────────
 
 if (!function_exists('portal_db')) {
