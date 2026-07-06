@@ -254,6 +254,80 @@ if (!function_exists('portal_integrity_words')) {
     }
 }
 
+if (!function_exists('portal_integrity_stopwords')) {
+    /** @return array<string, true> */
+    function portal_integrity_stopwords(): array
+    {
+        static $stopwords = null;
+        if ($stopwords !== null) {
+            return $stopwords;
+        }
+        $list = [
+            'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are',
+            "aren't", 'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both',
+            'but', 'by', "can't", 'cannot', 'could', "couldn't", 'did', "didn't", 'do', 'does', "doesn't",
+            'doing', "don't", 'down', 'during', 'each', 'few', 'for', 'from', 'further', 'had', "hadn't",
+            'has', "hasn't", 'have', "haven't", 'having', 'he', "he'd", "he'll", "he's", 'her', 'here',
+            "here's", 'hers', 'herself', 'him', 'himself', 'his', 'how', "how's", 'i', "i'd", "i'll", "i'm",
+            "i've", 'if', 'in', 'into', 'is', "isn't", 'it', "it's", 'its', 'itself', "let's", 'me', 'more',
+            'most', "mustn't", 'my', 'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 'only', 'or',
+            'other', 'ought', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', "shan't", 'she',
+            "she'd", "she'll", "she's", 'should', "shouldn't", 'so', 'some', 'such', 'than', 'that', "that's",
+            'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', "there's", 'these', 'they',
+            "they'd", "they'll", "they're", "they've", 'this', 'those', 'through', 'to', 'too', 'under',
+            'until', 'up', 'very', 'was', "wasn't", 'we', "we'd", "we'll", "we're", "we've", 'were',
+            "weren't", 'what', "what's", 'when', "when's", 'where', "where's", 'which', 'while', 'who',
+            "who's", 'whom', 'why', "why's", 'with', "won't", 'would', "wouldn't", 'you', "you'd", "you'll",
+            "you're", "you've", 'your', 'yours', 'yourself', 'yourselves',
+        ];
+        $stopwords = array_fill_keys($list, true);
+        return $stopwords;
+    }
+}
+
+if (!function_exists('portal_integrity_content_words')) {
+    /**
+     * Words with stopwords removed — used for meaning-based overlap so common
+     * function words ("the", "and", "is") do not inflate similarity scores.
+     *
+     * @return string[]
+     */
+    function portal_integrity_content_words(string $text): array
+    {
+        $stopwords = portal_integrity_stopwords();
+        $out = [];
+        foreach (portal_integrity_words($text) as $word) {
+            if (mb_strlen($word) < 3) {
+                continue;
+            }
+            if (isset($stopwords[$word])) {
+                continue;
+            }
+            $out[] = $word;
+        }
+        return $out;
+    }
+}
+
+if (!function_exists('portal_integrity_strip_quotes')) {
+    /**
+     * Remove quoted spans so properly cited material does not count against the
+     * student's similarity score. Handles straight and curly quotation marks and
+     * common block-quote lead-ins.
+     */
+    function portal_integrity_strip_quotes(string $text): string
+    {
+        // Double quotes: "..." “...” «...»
+        $patterns = [
+            '/"[^"]{0,600}"/u',
+            '/\x{201C}[^\x{201D}]{0,600}\x{201D}/u',
+            '/\x{00AB}[^\x{00BB}]{0,600}\x{00BB}/u',
+        ];
+        $stripped = preg_replace($patterns, ' ', $text);
+        return is_string($stripped) ? $stripped : $text;
+    }
+}
+
 if (!function_exists('portal_integrity_sentences')) {
     function portal_integrity_sentences(string $text, int $minLen = 45): array
     {
@@ -343,8 +417,12 @@ if (!function_exists('portal_integrity_pair_score')) {
                 }
             }
 
-            $subSet = array_fill_keys($submissionWords, true);
-            $srcSet = array_fill_keys($sourceWords, true);
+            // Meaning-based overlap uses content words only (stopwords removed) so
+            // ubiquitous function words do not inflate the score.
+            $subContent = portal_integrity_content_words($submissionText);
+            $srcContent = portal_integrity_content_words($sourceText);
+            $subSet = array_fill_keys($subContent !== [] ? $subContent : $submissionWords, true);
+            $srcSet = array_fill_keys($srcContent !== [] ? $srcContent : $sourceWords, true);
             $intersection = array_intersect_key($subSet, $srcSet);
             $union = $subSet + $srcSet;
             if ($union !== []) {
@@ -352,7 +430,7 @@ if (!function_exists('portal_integrity_pair_score')) {
                 if ($jaccard > $bestScore) {
                     $bestScore = $jaccard;
                     $bestPhrases = array_slice(array_keys($intersection), 0, 8);
-                    $bestMethod = 'word-jaccard';
+                    $bestMethod = 'content-word-jaccard';
                 }
             }
             if ($srcSet !== []) {
@@ -913,6 +991,35 @@ if (!function_exists('portal_extract_submission_file_metadata')) {
     }
 }
 
+if (!function_exists('portal_integrity_names_match')) {
+    /**
+     * Loose name comparison for author-vs-submitter checks. Treats names as a
+     * match if either is contained in the other, or they share a given/family
+     * name token — this avoids false mismatches from "J. Smith" vs "John Smith"
+     * while still catching a genuinely different person.
+     */
+    function portal_integrity_names_match(string $a, string $b): bool
+    {
+        $norm = static function (string $s): string {
+            $s = strtolower(trim($s));
+            $s = preg_replace('/[^a-z0-9\s]/', ' ', $s) ?? $s;
+            return trim(preg_replace('/\s+/', ' ', $s) ?? $s);
+        };
+        $a = $norm($a);
+        $b = $norm($b);
+        if ($a === '' || $b === '') {
+            return true; // nothing to compare → don't flag
+        }
+        if ($a === $b || str_contains($a, $b) || str_contains($b, $a)) {
+            return true;
+        }
+        $at = array_filter(explode(' ', $a), static fn(string $t): bool => mb_strlen($t) >= 2);
+        $bt = array_filter(explode(' ', $b), static fn(string $t): bool => mb_strlen($t) >= 2);
+        $shared = array_intersect($at, $bt);
+        return count($shared) >= 1;
+    }
+}
+
 if (!function_exists('portal_integrity_process_review')) {
     /**
      * @return array{score: float, level: string, signals: string[]}
@@ -979,15 +1086,49 @@ if (!function_exists('portal_integrity_process_review')) {
                 }
             }
 
-            if (($fileMeta['author'] ?? '') !== '') {
-                $signals[] = 'Document author in file metadata: ' . (string) $fileMeta['author'] . '.';
+            // Revision count: a substantial document saved only once is a strong
+            // marker of paste-and-submit (Office increments this on every save).
+            if (isset($fileMeta['revision']) && $fileMeta['revision'] !== null) {
+                $revision = (int) $fileMeta['revision'];
+                if ($wordCount >= 400 && $revision <= 1) {
+                    $score += 24;
+                    $signals[] = 'Document was saved only once (revision ' . $revision . ') despite ' . $wordCount . ' words — consistent with paste-and-submit.';
+                } elseif ($wordCount >= 250 && $revision <= 2) {
+                    $score += 12;
+                    $signals[] = 'Very few document revisions (' . $revision . ') for this amount of text.';
+                }
             }
-            if (($fileMeta['last_modified_by'] ?? '') !== ''
-                && ($fileMeta['last_modified_by'] ?? '') !== ($fileMeta['author'] ?? '')) {
-                $signals[] = 'Last modified by: ' . (string) $fileMeta['last_modified_by'] . '.';
+
+            // Author-name mismatch: the file's embedded author differs from the
+            // student who submitted it.
+            $studentName = trim((string) ($submission['student_name'] ?? ''));
+            $docAuthor = trim((string) ($fileMeta['author'] ?? ''));
+            $lastModBy = trim((string) ($fileMeta['last_modified_by'] ?? ''));
+            if ($studentName !== '' && $docAuthor !== '' && !portal_integrity_names_match($studentName, $docAuthor)) {
+                $score += 18;
+                $signals[] = 'Document author (' . $docAuthor . ') does not match the submitting student (' . $studentName . ').';
+            } elseif ($docAuthor !== '') {
+                $signals[] = 'Document author in file metadata: ' . $docAuthor . '.';
+            }
+            if ($lastModBy !== '' && $lastModBy !== $docAuthor) {
+                if ($studentName !== '' && !portal_integrity_names_match($studentName, $lastModBy)) {
+                    $score += 8;
+                }
+                $signals[] = 'Last modified by: ' . $lastModBy . '.';
             }
             if (($fileMeta['application'] ?? '') !== '') {
                 $signals[] = 'Created/edited with: ' . (string) $fileMeta['application'] . '.';
+            }
+
+            // Edit-time contradiction: the portal recorded a real editing session
+            // but the file's own metadata reports essentially no editing time.
+            $portalEditSeconds = max(0, (int) ($submission['process_edit_seconds'] ?? 0));
+            if ($fileEditMinutes !== null
+                && $fileEditMinutes === 0
+                && $portalEditSeconds < 30
+                && $wordCount >= 300) {
+                $score += 14;
+                $signals[] = 'Neither the file metadata nor the editing session shows meaningful time spent writing this document.';
             }
         }
 
@@ -1054,7 +1195,9 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
 
         $signals = [];
         $score = 0.0;
+        $lower = strtolower($text);
 
+        // 1. Sentence-length uniformity (coefficient of variation) + burstiness.
         $lengths = array_map(static fn(string $s): int => mb_strlen($s), $sentences);
         $avg = array_sum($lengths) / count($lengths);
         $variance = 0.0;
@@ -1064,11 +1207,15 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
         $variance /= count($lengths);
         $stdDev = sqrt($variance);
         $cv = $avg > 0 ? $stdDev / $avg : 0.0;
-        if ($cv < 0.28) {
-            $score += 22;
-            $signals[] = 'Sentence lengths are unusually uniform (common in generated text).';
+        if ($cv < 0.22) {
+            $score += 24;
+            $signals[] = 'Sentence lengths are extremely uniform (a strong marker of generated text).';
+        } elseif ($cv < 0.30) {
+            $score += 14;
+            $signals[] = 'Sentence lengths are quite uniform (common in generated text).';
         }
 
+        // 2. Vocabulary diversity (type-token ratio).
         $uniqueRatio = count(array_unique($words)) / $wordCount;
         if ($uniqueRatio < 0.38) {
             $score += 18;
@@ -1077,19 +1224,77 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
             $score -= 5;
         }
 
-        $transitionCount = 0;
-        $transitions = ['furthermore', 'moreover', 'however', 'therefore', 'additionally', 'consequently', 'in conclusion', 'it is important to note'];
-        $lower = strtolower($text);
-        foreach ($transitions as $transition) {
-            if (str_contains($lower, $transition)) {
-                $transitionCount++;
+        // 3. Hedging / template phrasing frequently over-produced by LLMs.
+        $aiPhrases = [
+            'furthermore', 'moreover', 'however', 'therefore', 'additionally', 'consequently',
+            'in conclusion', 'it is important to note', 'it is worth noting', 'it is essential to',
+            'plays a crucial role', 'plays a vital role', 'plays a significant role',
+            'in today\'s world', 'in the modern world', 'in the realm of', 'a myriad of',
+            'it is important to understand', 'delve into', 'delving into', 'navigating the',
+            'a testament to', 'when it comes to', 'first and foremost', 'in summary',
+            'to summarize', 'overall', 'notably', 'importantly', 'ultimately',
+            'this essay will', 'this paper will', 'in this essay', 'in this paper',
+        ];
+        $phraseHits = [];
+        foreach ($aiPhrases as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                $phraseHits[] = $phrase;
             }
         }
-        if ($transitionCount >= 5) {
-            $score += 12;
-            $signals[] = 'Frequent template-style transition phrases detected.';
+        $phraseCount = count($phraseHits);
+        if ($phraseCount >= 8) {
+            $score += 22;
+            $signals[] = 'Very frequent AI-style hedging/transition phrases (' . $phraseCount . ' distinct).';
+        } elseif ($phraseCount >= 5) {
+            $score += 13;
+            $signals[] = 'Frequent template-style transition phrases detected (' . $phraseCount . ' distinct).';
+        } elseif ($phraseCount >= 3) {
+            $score += 6;
         }
 
+        // 4. First-person voice — AI academic prose rarely uses "I / my / we".
+        preg_match_all('/\b(i|my|me|mine|myself|we|our|us)\b/i', $lower, $fpMatches);
+        $firstPersonRatio = count($fpMatches[0]) / $wordCount;
+        if ($firstPersonRatio < 0.002 && $wordCount >= 200) {
+            $score += 10;
+            $signals[] = 'Almost no first-person voice across a long text (typical of generated prose).';
+        }
+
+        // 5. Sentence-initial word diversity — AI often opens sentences the same way.
+        $initials = [];
+        foreach ($sentences as $sentence) {
+            if (preg_match('/^\s*([a-z]+)/i', $sentence, $m)) {
+                $initials[] = strtolower($m[1]);
+            }
+        }
+        if (count($initials) >= 6) {
+            $initialDiversity = count(array_unique($initials)) / count($initials);
+            if ($initialDiversity < 0.5) {
+                $score += 12;
+                $signals[] = 'Many sentences begin with the same few words (repetitive AI-style structure).';
+            }
+        }
+
+        // 6. Paragraph-length uniformity.
+        $paragraphs = array_values(array_filter(array_map('trim', preg_split('/\n{2,}|\r\n\r\n/', $text) ?: []), static fn(string $p): bool => $p !== ''));
+        if (count($paragraphs) >= 4) {
+            $paraLengths = array_map(static fn(string $p): int => count(portal_integrity_words($p)), $paragraphs);
+            $paraAvg = array_sum($paraLengths) / count($paraLengths);
+            if ($paraAvg > 0) {
+                $paraVar = 0.0;
+                foreach ($paraLengths as $pl) {
+                    $paraVar += ($pl - $paraAvg) ** 2;
+                }
+                $paraVar /= count($paraLengths);
+                $paraCv = sqrt($paraVar) / $paraAvg;
+                if ($paraCv < 0.20) {
+                    $score += 10;
+                    $signals[] = 'Paragraphs are unusually equal in length (regular AI-style structure).';
+                }
+            }
+        }
+
+        // 7. Comma density (list-like generated prose).
         $commaDensity = substr_count($lower, ',') / max(1, $wordCount);
         if ($commaDensity > 0.14) {
             $score += 8;
@@ -1105,6 +1310,12 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
             'score' => $score,
             'level' => portal_integrity_level($score),
             'signals' => $signals,
+            'metrics' => [
+                'sentence_length_cv' => round($cv, 3),
+                'type_token_ratio' => round($uniqueRatio, 3),
+                'ai_phrase_hits' => $phraseCount,
+                'first_person_ratio' => round($firstPersonRatio, 4),
+            ],
         ];
     }
 }
@@ -1447,8 +1658,15 @@ if (!function_exists('portal_integrity_check_similarity')) {
         ?array $submissionContext = null
     ): array {
         $cleanText = portal_integrity_normalize_text($text);
+        // Score against a quote-stripped copy so properly cited passages don't
+        // count as the student's own overlap. Display/report still use full text.
+        $scoringText = portal_integrity_normalize_text(portal_integrity_strip_quotes($cleanText));
+        if ($scoringText === '') {
+            $scoringText = $cleanText;
+        }
         $words = portal_integrity_words($cleanText);
         $wordCount = count($words);
+        $scoringWordCount = count(portal_integrity_words($scoringText));
 
         if ($wordCount < 25) {
             return [
@@ -1605,7 +1823,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $matches = [];
         $allMatchedPhrases = [];
         foreach ($sources as $source) {
-            $pair = portal_integrity_pair_score($cleanText, $source['text']);
+            $pair = portal_integrity_pair_score($scoringText, $source['text']);
             if ($pair['score'] <= 0) {
                 continue;
             }
@@ -1627,7 +1845,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
 
         $fingerprint = portal_integrity_fingerprint_matches(
             $db,
-            $cleanText,
+            $scoringText,
             $submissionId !== null ? 'submission' : null,
             $submissionId
         );
@@ -1638,6 +1856,18 @@ if (!function_exists('portal_integrity_check_similarity')) {
             $institutionalMatches = array_merge($fingerprint['sources'], $institutionalMatches);
             usort($institutionalMatches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
             $institutionalMatches = array_slice($institutionalMatches, 0, 6);
+        }
+
+        // Length-aware calibration: short submissions naturally overlap more on
+        // shingles/word sets, so dampen their native similarity score to avoid
+        // false "high" flags on brief answers. Full weight kicks in around 300+
+        // scoring words.
+        $lengthConfidence = min(1.0, $scoringWordCount / 300);
+        if ($scoringWordCount < 300 && $score > 0) {
+            // Blend toward a floor so genuine 100% duplicates still read high,
+            // but a 40-word answer that shares phrasing isn't over-penalised.
+            $dampened = $score * (0.55 + 0.45 * $lengthConfidence);
+            $score = round($dampened, 1);
         }
 
         $webScope = 'not_configured';
@@ -1701,6 +1931,11 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 'file_metadata' => $fileMetadata,
                 'process_review' => $processReview,
                 'heuristic_ai' => $heuristicAi,
+                'calibration' => [
+                    'scoring_word_count' => $scoringWordCount,
+                    'quotes_excluded' => $scoringWordCount < $wordCount,
+                    'length_confidence' => round($lengthConfidence, 2),
+                ],
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         ];
     }
@@ -1962,6 +2197,7 @@ if (!function_exists('portal_integrity_summary_cards')) {
         $processRev   = is_array($report['process_review'] ?? null) ? $report['process_review'] : null;
         $heuristicAi  = is_array($report['heuristic_ai'] ?? null) ? $report['heuristic_ai'] : null;
         $fileMeta     = is_array($report['file_metadata'] ?? null) ? $report['file_metadata'] : null;
+        $calibration  = is_array($report['calibration'] ?? null) ? $report['calibration'] : null;
 
         $aiChance    = $heuristicAi !== null && isset($heuristicAi['score']) ? (float) $heuristicAi['score'] : null;
         $processLevel = $processRev['level'] ?? 'low';
@@ -2018,6 +2254,12 @@ if (!function_exists('portal_integrity_summary_cards')) {
                             <?php else: ?>
                                 Some overlap with other sources was found.
                             <?php endif; ?>
+                        </p>
+                    <?php endif; ?>
+                    <?php if ($isTeacher && $calibration !== null): ?>
+                        <p class="rvw-card-calibration">
+                            <?php if (!empty($calibration['quotes_excluded'])): ?>Quoted passages were excluded from the score. <?php endif; ?>
+                            <?php if (($calibration['length_confidence'] ?? 1) < 1): ?>Short submission (<?= (int) ($calibration['scoring_word_count'] ?? 0) ?> words) — score dampened to reduce false positives.<?php endif; ?>
                         </p>
                     <?php endif; ?>
                 </div>
@@ -2309,9 +2551,10 @@ if (!function_exists('portal_rerun_submission_integrity')) {
     function portal_rerun_submission_integrity(PDO $db, int $submissionId, bool $runAi = true): bool
     {
         $stmt = $db->prepare(
-            "SELECT cs.*, cfi.submission_ai_detection
+            "SELECT cs.*, cfi.submission_ai_detection, u.name AS student_name
              FROM course_submissions cs
              JOIN course_folder_items cfi ON cfi.id = cs.item_id
+             LEFT JOIN users u ON u.id = cs.user_id
              WHERE cs.id = ?"
         );
         $stmt->execute([$submissionId]);

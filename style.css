@@ -7887,6 +7887,7 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 .rvw-card-body { padding: 0 14px 12px; font-size: 0.85rem; color: var(--text); display: grid; gap: 8px; }
 .rvw-card-note { margin: 0; color: var(--muted); }
 .rvw-card-note--soft { font-style: italic; font-size: 0.8rem; }
+.rvw-card-calibration { margin: 8px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.74rem; color: var(--muted); line-height: 1.45; }
 .rvw-evidence-title { margin: 4px 0 0; font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .rvw-evidence-list { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
 .rvw-source { border-top: 1px dashed var(--border); padding-top: 8px; }

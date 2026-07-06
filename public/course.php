@@ -912,6 +912,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'process_paste_events' => $processPasteEvents,
                         'process_pasted_chars' => $processPastedChars,
                         'file_metadata' => $fileMetadata,
+                        'student_name' => (string) ($me['name'] ?? ''),
                     ];
                     $similarity = portal_integrity_check_similarity(
                         $db,
