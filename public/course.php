@@ -3207,6 +3207,7 @@ ob_start();
                 const reviewBtn = mine.querySelector('[data-sub-review-btn]');
                 if (reviewBtn && data.submission_id) {
                     reviewBtn.dataset.reviewOpen = 'rvw-' + data.submission_id;
+                    reviewBtn.dataset.reviewRefresh = '1';
                     reviewBtn.classList.remove('is-hidden');
                 }
             }
@@ -3234,6 +3235,10 @@ ob_start();
 
         const shell = document.querySelector('.rvw-shell[data-submission-id="' + data.submission_id + '"]');
         if (shell) {
+            const staleOverlay = shell.closest('.rvw-overlay');
+            if (staleOverlay) {
+                staleOverlay.remove();
+            }
             delete shell.dataset.previewLoaded;
             const mount = shell.querySelector('[data-preview-mount]');
             if (mount) {
@@ -3314,6 +3319,10 @@ ob_start();
             const btn = e.target.closest('[data-review-open]');
             if (!btn || !btn.dataset.reviewOpen) return;
             e.stopPropagation();
+            if (btn.dataset.reviewRefresh === '1') {
+                reloadAndOpenReview(btn.dataset.reviewOpen);
+                return;
+            }
             const overlay = document.getElementById(btn.dataset.reviewOpen);
             if (!overlay) {
                 reloadAndOpenReview(btn.dataset.reviewOpen);

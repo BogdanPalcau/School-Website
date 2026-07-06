@@ -1140,9 +1140,9 @@ if (!function_exists('portal_integrity_document_context')) {
                 $storyArcHits++;
             }
         }
-        $isCreativeNarrative = !$isAcademicTechnical
+        $narrativeCandidate = !$isAcademicTechnical
             && (
-                ($dialogueCount >= 2 && $narrativeMarkerHits >= 3)
+                ($dialogueCount >= 2 && $dialogueRatio >= 0.015 && $narrativeMarkerHits >= 3)
                 || ($paragraphCount >= 6 && $storyArcHits >= 2)
                 || ($narrativeMarkerHits >= 6 && $wordCount >= 250)
             );
@@ -1167,9 +1167,9 @@ if (!function_exists('portal_integrity_document_context')) {
                 $genericStoryPhraseHits++;
             }
         }
-        $tidyResolution = $isCreativeNarrative
+        $tidyResolution = $narrativeCandidate
             && (bool) preg_match('/\b(from that day on|years later|for once|in the end|and somehow|where their friendship began)\b/i', $lower);
-        $archetypalContrast = $isCreativeNarrative
+        $archetypalContrast = $narrativeCandidate
             && (bool) preg_match('/\b(quiet|serious|thoughtful)\b.*\b(loud|cheerful|noisy|dreamer)\b|\b(loud|cheerful|noisy|dreamer)\b.*\b(quiet|serious|thoughtful)\b/is', $lower);
         $settingSpecificity = 0;
         foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may ', 'june', 'july', 'august', 'september', 'october', 'november', 'december'] as $marker) {
@@ -1185,7 +1185,141 @@ if (!function_exists('portal_integrity_document_context')) {
             ], true);
         }));
         $settingSpecificity += min(3, count($properNames));
-        $lowNarrativeSpecificity = $isCreativeNarrative && $wordCount >= 250 && $settingSpecificity <= 1;
+        $lowNarrativeSpecificity = $narrativeCandidate && $wordCount >= 250 && $settingSpecificity <= 1;
+
+        $sentencesForContext = portal_integrity_sentences($text, 25);
+        $definitionSentenceCount = 0;
+        foreach ($sentencesForContext as $sentence) {
+            if (preg_match('/\b(?:is|are|means|refers to|is known as|are known as|is called|are called)\b/i', $sentence)) {
+                $definitionSentenceCount++;
+            }
+        }
+        $definitionDensity = count($sentencesForContext) > 0 ? $definitionSentenceCount / count($sentencesForContext) : 0.0;
+        $expositoryScaffoldPhrases = [
+            'one of the most important',
+            'the basic idea is simple',
+            'this process',
+            'this means',
+            'this shows',
+            'this is why',
+            'therefore',
+            'however',
+            'although',
+            'the general word equation',
+            'the chemical equation',
+            'mainly takes place',
+            'plants need',
+            'can be divided into',
+            'the second stage',
+            'also known as',
+            'one of these factors',
+            'another factor',
+            'several factors',
+            'another important',
+            'is also the foundation',
+            'is also important',
+            'in addition',
+            'in conclusion',
+            'without',
+            'for example',
+            'over time',
+            'at that time',
+            'during the',
+            'one reason',
+            'the largest',
+            'the main reason',
+            'fossils are',
+            'fossil evidence',
+            'scientists still',
+            'scientists have',
+            'modern birds',
+            'this discovery',
+            'this connection',
+            'as a result',
+            'not only because',
+            'their story shows',
+            'studying',
+            'despite everything',
+            'many questions',
+        ];
+        $expositoryScaffoldHits = 0;
+        foreach ($expositoryScaffoldPhrases as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                $expositoryScaffoldHits++;
+            }
+        }
+        $genericExplainerPhrases = [
+            'is one of the most important',
+            'may sound complicated',
+            'the basic idea is simple',
+            'does not only help',
+            'life as we know it',
+            'comes from two parts',
+            'literally means',
+            'this means six',
+            'are well adapted for this job',
+            'three main things',
+            'once all these materials are available',
+            'can be divided into two main stages',
+            'is extremely important because',
+            'this shows how closely connected',
+            'foundation of most food chains',
+            'depend on photosynthesis directly',
+            'depend on photosynthesis indirectly',
+            'another important reason',
+            'several factors can affect',
+            'only up to a certain point',
+            'another factor may become limiting',
+            'not the same',
+            'these features show',
+            'feeding a growing world population',
+            'also play a huge role',
+            'although it may seem like a simple process',
+            'one of the main reasons life on earth is possible',
+            'some of the most fascinating',
+            'helps us understand',
+            'important clues about',
+            'came from greek',
+            'looked very different from today',
+            'evolved into many different',
+            'is divided into three main',
+            'one reason',
+            'for example',
+            'these features show',
+            'fossils are the main reason',
+            'a fossil is',
+            'over millions of years',
+            'carefully dig up and examine',
+            'especially useful because',
+            'for a long time',
+            'changed the way scientists understand',
+            'are actually considered',
+            'this means that',
+            'can be seen in features',
+            'one of the most famous events',
+            'was probably not the only problem',
+            'not only because',
+            'environmental changes can completely transform',
+            'also had a huge impact',
+            'many questions about',
+            'there is always more to learn',
+            'remind us that',
+        ];
+        $genericExplainerHits = 0;
+        foreach ($genericExplainerPhrases as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                $genericExplainerHits++;
+            }
+        }
+        $isEducationalExpository = !$isAcademicTechnical
+            && $wordCount >= 300
+            && (
+                $definitionSentenceCount >= 8
+                || $definitionDensity >= 0.32
+                || $expositoryScaffoldHits >= 7
+                || $genericExplainerHits >= 4
+            );
+        $isCreativeNarrative = $narrativeCandidate && !$isEducationalExpository;
 
         if ($wordCount < 500) {
             $styleDampening = 1.0;
@@ -1253,6 +1387,7 @@ if (!function_exists('portal_integrity_document_context')) {
             'is_long_document' => $isLongDocument,
             'is_academic_technical' => $isAcademicTechnical,
             'is_creative_narrative' => $isCreativeNarrative,
+            'is_educational_expository' => $isEducationalExpository,
             'has_citations' => $hasCitations,
             'academic_marker_hits' => $markerHits,
             'narrative_marker_hits' => $narrativeMarkerHits,
@@ -1264,6 +1399,10 @@ if (!function_exists('portal_integrity_document_context')) {
             'tidy_resolution' => $tidyResolution,
             'archetypal_contrast' => $archetypalContrast,
             'low_narrative_specificity' => $lowNarrativeSpecificity,
+            'definition_sentence_count' => $definitionSentenceCount,
+            'definition_density' => round($definitionDensity, 3),
+            'expository_scaffold_hits' => $expositoryScaffoldHits,
+            'generic_explainer_hits' => $genericExplainerHits,
             'style_dampening' => round($styleDampening, 3),
             'meta_author' => $metaAuthor,
             'meta_edit_minutes' => $metaEditMinutes,
@@ -1632,6 +1771,7 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
         $styleDampening = (float) $documentContext['style_dampening'];
         $isAcademicTechnical = !empty($documentContext['is_academic_technical']);
         $isCreativeNarrative = !empty($documentContext['is_creative_narrative']);
+        $isEducationalExpository = !empty($documentContext['is_educational_expository']);
         $positiveSignals = is_array($documentContext['positive_signals'] ?? null)
             ? $documentContext['positive_signals']
             : [];
@@ -1843,17 +1983,56 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
             $addRisk('low_narrative_specificity', 5, 'The story has a broad setting/timeline with few specific personal details.');
         }
 
-        $categoryCount = count($riskCategories);
-        if ($categoryCount < 2) {
-            $score = min($score, 14.0);
-        } elseif ($categoryCount < 3) {
-            $score = min($score, 34.0);
+        // 9. Educational/expository genericity. This catches textbook-like AI
+        // explainers that avoid dialogue and academic citations but follow a
+        // highly generic definition -> stages -> factors -> conclusion pattern.
+        $genericExplainerHits = (int) ($documentContext['generic_explainer_hits'] ?? 0);
+        $expositoryScaffoldHits = (int) ($documentContext['expository_scaffold_hits'] ?? 0);
+        $definitionDensity = (float) ($documentContext['definition_density'] ?? 0.0);
+        $definitionSentenceCount = (int) ($documentContext['definition_sentence_count'] ?? 0);
+        $expositorySignalCount = 0;
+        if ($isEducationalExpository && $genericExplainerHits >= 5) {
+            $expositorySignalCount++;
+            $addRisk(
+                'expository_genericity',
+                14,
+                'The explanation uses many generic textbook-style phrases often seen in generated educational summaries (' . $genericExplainerHits . ' matches).'
+            );
+        } elseif ($isEducationalExpository && $genericExplainerHits >= 2) {
+            $score += 5 * $styleDampening;
         }
+        if ($isEducationalExpository && $expositoryScaffoldHits >= 9) {
+            $expositorySignalCount++;
+            $addRisk(
+                'expository_scaffold',
+                12,
+                'The response follows a very regular definition, stages, factors, and conclusion structure.'
+            );
+        }
+        if ($isEducationalExpository && ($definitionDensity >= 0.34 || $definitionSentenceCount >= 12)) {
+            $expositorySignalCount++;
+            $addRisk(
+                'definition_density',
+                10,
+                'A high share of sentences are definition/explanation statements, giving the response a generic textbook tone.'
+            );
+        }
+
         $processRiskCount = ($processReview !== null && is_array($processReview['risk_signals'] ?? null))
             ? count($processReview['risk_signals'])
             : 0;
+        $categoryCount = count($riskCategories);
+        $combinedEvidenceCount = $categoryCount + min(2, $processRiskCount);
+        if ($combinedEvidenceCount < 2) {
+            $score = min($score, 14.0);
+        } elseif ($combinedEvidenceCount < 3) {
+            $score = min($score, 34.0);
+        }
         if ($isCreativeNarrative && $processRiskCount === 0) {
             $score = min($score, 34.0);
+        }
+        if ($isEducationalExpository && $processRiskCount === 0) {
+            $score = min($score, 44.0);
         }
 
         $score = max(0.0, min(100.0, round($score, 1)));
@@ -1862,6 +2041,9 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
         $positiveCount = count($positiveSignals);
         $strengthRank = ($categoryCount >= 4 || $score >= 35.0) ? 2 : (($categoryCount >= 2 || $score >= 15.0) ? 1 : 0);
         if ($isCreativeNarrative && $processRiskCount === 0) {
+            $strengthRank = min($strengthRank, 1);
+        }
+        if ($isEducationalExpository && $processRiskCount === 0) {
             $strengthRank = min($strengthRank, 1);
         }
         if ($positiveCount >= 3) {
@@ -1885,6 +2067,10 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
             $summary = 'Some generic creative-writing patterns were detected, but text alone is weak evidence. Review file metadata and process evidence before drawing conclusions.';
         } elseif ($isCreativeNarrative) {
             $summary = 'Low concern. The submission appears to be creative/narrative writing; generic story patterns alone are weak evidence.';
+        } elseif ($isEducationalExpository && $level === 'high') {
+            $summary = 'The response has a generic textbook-style explanation pattern that needs review. Text-only evidence is not proof of AI use, so compare it with file metadata and the student\'s normal work.';
+        } elseif ($isEducationalExpository) {
+            $summary = 'Some generic educational-explanation patterns were detected. Text-only evidence is not proof of AI use.';
         } elseif ($level === 'high') {
             $summary = 'Several writing-style patterns need teacher review. This is not proof of AI use.';
         } elseif ($level === 'medium') {
@@ -1915,11 +2101,17 @@ if (!function_exists('portal_integrity_heuristic_ai_review')) {
                 'paragraph_length_cv' => $paraCv !== null ? round($paraCv, 3) : null,
                 'comma_density' => round($commaDensity, 4),
                 'is_creative_narrative' => $isCreativeNarrative,
+                'is_educational_expository' => $isEducationalExpository,
                 'generic_story_phrase_hits' => $genericStoryHits,
                 'narrative_signal_count' => $narrativeSignalCount,
+                'generic_explainer_hits' => $genericExplainerHits,
+                'expository_scaffold_hits' => $expositoryScaffoldHits,
+                'definition_density' => round($definitionDensity, 3),
+                'expository_signal_count' => $expositorySignalCount,
                 'style_dampening' => $styleDampening,
                 'risk_categories' => $categoryCount,
                 'process_risk_signals' => $processRiskCount,
+                'combined_evidence_categories' => $combinedEvidenceCount,
             ],
             'document_context' => $documentContext,
             'signals' => $signals,
