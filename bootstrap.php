@@ -225,7 +225,40 @@ if (!function_exists('portal_sanitize_rich_text')) {
             $clean .= $dom->saveHTML($child);
         }
 
+        if (portal_rich_text_contains_dangerous_markup($body)) {
+            portal_log_security_event(
+                'unsafe_rich_text_removed',
+                'medium',
+                'Blocked unsafe HTML in submitted content'
+            );
+        }
+
         return $clean;
+    }
+}
+
+if (!function_exists('portal_rich_text_contains_dangerous_markup')) {
+    function portal_rich_text_contains_dangerous_markup(string $body): bool
+    {
+        if ($body === '') {
+            return false;
+        }
+
+        $lower = strtolower($body);
+        $needles = [
+            '<script', '<iframe', '<style', '<object', '<embed', '<svg', '<math',
+            '<form', '<input', '<button', '<textarea', '<meta', '<link', '<base',
+            'javascript:', 'vbscript:', 'data:text/html', 'onerror=', 'onclick=',
+            'onload=', 'onmouseover=', 'onfocus=',
+        ];
+
+        foreach ($needles as $needle) {
+            if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
@@ -619,6 +652,11 @@ if (!function_exists('portal_require_admin')) {
         portal_require_login();
 
         if (!portal_is_admin()) {
+            portal_log_security_event(
+                'unauthorised_admin_access',
+                'high',
+                'Blocked access to admin panel'
+            );
             portal_redirect('courses.php');
         }
     }
@@ -758,10 +796,23 @@ if (!function_exists('portal_verify_csrf')) {
     function portal_verify_csrf(): bool
     {
         $token = $_POST['_token'] ?? '';
-        return is_string($token)
+        $valid = is_string($token)
             && $token !== ''
             && !empty($_SESSION['_csrf'])
             && hash_equals((string) $_SESSION['_csrf'], $token);
+
+        if (
+            !$valid
+            && strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST'
+        ) {
+            portal_log_security_event(
+                'csrf_failed',
+                'high',
+                'Invalid or missing security token on form submission'
+            );
+        }
+
+        return $valid;
     }
 }
 
@@ -831,6 +882,307 @@ if (!function_exists('portal_login_clear_attempts')) {
                 ->prepare("DELETE FROM login_attempts WHERE ip = ?")
                 ->execute([$ip]);
         } catch (\PDOException $e) {}
+    }
+}
+
+// ── Security event logging ─────────────────────────────────────────────────────
+
+if (!function_exists('portal_show_developer_security')) {
+    function portal_show_developer_security(): bool
+    {
+        $flag = getenv('PORTAL_SHOW_DEVELOPER_SECURITY');
+
+        return $flag !== false && trim((string) $flag) === '1';
+    }
+}
+
+if (!function_exists('portal_security_request_route')) {
+    function portal_security_request_route(): string
+    {
+        $script = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+        if ($script === '') {
+            return 'unknown';
+        }
+
+        $query = (string) ($_SERVER['QUERY_STRING'] ?? '');
+        if ($query === '') {
+            return $script;
+        }
+
+        return $script . '?' . substr($query, 0, 120);
+    }
+}
+
+if (!function_exists('portal_security_sanitize_details')) {
+    function portal_security_sanitize_details(string $details): string
+    {
+        $details = trim($details);
+        if ($details === '') {
+            return '';
+        }
+
+        $details = preg_replace('/[A-Z]:\\\\[^\s]+/i', '[path]', $details) ?? $details;
+        $details = preg_replace('#/[a-z0-9_./-]+#i', '[path]', $details) ?? $details;
+
+        return substr($details, 0, 500);
+    }
+}
+
+if (!function_exists('portal_log_security_event')) {
+  /**
+   * @param 'info'|'low'|'medium'|'high' $severity
+   */
+    function portal_log_security_event(
+        string $eventType,
+        string $severity = 'info',
+        string $details = '',
+        ?int $userId = null
+    ): void {
+        try {
+            $allowedSeverity = ['info', 'low', 'medium', 'high'];
+            if (!in_array($severity, $allowedSeverity, true)) {
+                $severity = 'info';
+            }
+
+            $username = '';
+            if ($userId === null && portal_is_logged_in()) {
+                $user = portal_current_user();
+                $userId = (int) ($user['id'] ?? 0);
+                $username = (string) ($user['username'] ?? '');
+            } elseif ($userId !== null && $userId > 0) {
+                $found = portal_find_user_by_id($userId);
+                $username = $found ? (string) $found['username'] : '';
+            }
+
+            $ip = portal_client_ip();
+            $ua = substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255);
+            $route = portal_security_request_route();
+            $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+            $details = portal_security_sanitize_details($details);
+
+            portal_db()->prepare("
+                INSERT INTO security_events
+                    (event_type, severity, user_id, username, ip_address, user_agent, route, method, details)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            ")->execute([
+                substr($eventType, 0, 64),
+                $severity,
+                $userId !== null && $userId > 0 ? $userId : null,
+                substr($username, 0, 80),
+                substr($ip, 0, 64),
+                $ua,
+                substr($route, 0, 200),
+                substr($method, 0, 10),
+                $details,
+            ]);
+        } catch (\Throwable $e) {
+            // Never break the app if logging fails.
+        }
+    }
+}
+
+if (!function_exists('portal_log_blocked_upload')) {
+    function portal_log_blocked_upload(string $reason): void
+    {
+        $summary = 'Rejected upload';
+        $reason = trim($reason);
+        if ($reason !== '') {
+            if (str_contains($reason, 'does not match')) {
+                $summary = 'Rejected upload: invalid file content';
+            } elseif (str_contains($reason, 'Unsupported file type')) {
+                $summary = 'Rejected upload: invalid file type';
+            } elseif (str_contains($reason, 'too large')) {
+                $summary = 'Rejected upload: file too large';
+            } elseif (str_contains($reason, 'blocked the upload')) {
+                $summary = 'Rejected upload: blocked by server';
+            } else {
+                $summary = 'Rejected upload: ' . substr($reason, 0, 120);
+            }
+        }
+
+        portal_log_security_event('blocked_upload', 'medium', $summary);
+    }
+}
+
+if (!function_exists('portal_security_period_sql')) {
+    function portal_security_period_sql(string $period): string
+    {
+        return match ($period) {
+            '7d'  => "datetime('now', '-7 days')",
+            '30d' => "datetime('now', '-30 days')",
+            default => "datetime('now', '-1 day')",
+        };
+    }
+}
+
+if (!function_exists('portal_security_event_type_label')) {
+    function portal_security_event_type_label(string $eventType): string
+    {
+        return match ($eventType) {
+            'failed_login'               => 'Failed login',
+            'login_throttled'            => 'Login throttled',
+            'csrf_failed'                => 'CSRF blocked',
+            'unauthorised_admin_access'  => 'Admin access blocked',
+            'unauthorised_course_access' => 'Course access blocked',
+            'forbidden_download'         => 'Download blocked',
+            'blocked_upload'             => 'Upload blocked',
+            'unsafe_rich_text_removed'   => 'Unsafe content removed',
+            'role_changed'               => 'Role changed',
+            'user_deleted'               => 'User deleted',
+            'course_archived'            => 'Course archived',
+            'course_restored'            => 'Course restored',
+            default                      => ucwords(str_replace('_', ' ', $eventType)),
+        };
+    }
+}
+
+if (!function_exists('portal_security_dashboard_stats')) {
+    /**
+     * @return array<string, int>
+     */
+    function portal_security_dashboard_stats(string $period = '24h'): array
+    {
+        try {
+            $since = portal_security_period_sql($period);
+            $pdo = portal_db();
+
+            $countSince = static function (string $extraWhere = '') use ($pdo, $since): int {
+                $sql = "SELECT COUNT(*) FROM security_events WHERE created_at >= {$since}";
+                if ($extraWhere !== '') {
+                    $sql .= ' AND ' . $extraWhere;
+                }
+
+                return (int) $pdo->query($sql)->fetchColumn();
+            };
+
+            return [
+                'active_alerts'      => (int) $pdo->query(
+                    "SELECT COUNT(*) FROM security_events WHERE reviewed = 0 AND severity IN ('medium', 'high')"
+                )->fetchColumn(),
+                'failed_logins'      => $countSince("event_type = 'failed_login'"),
+                'blocked_access'     => $countSince("event_type IN ('unauthorised_admin_access', 'unauthorised_course_access', 'forbidden_download')"),
+                'blocked_uploads'    => $countSince("event_type = 'blocked_upload'"),
+                'unsafe_content'     => $countSince("event_type = 'unsafe_rich_text_removed'"),
+                'admin_actions'      => $countSince("event_type IN ('role_changed', 'user_deleted', 'course_archived', 'course_restored')"),
+                'csrf_failures'      => $countSince("event_type = 'csrf_failed'"),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'active_alerts'   => 0,
+                'failed_logins'   => 0,
+                'blocked_access'  => 0,
+                'blocked_uploads' => 0,
+                'unsafe_content'  => 0,
+                'admin_actions'   => 0,
+                'csrf_failures'   => 0,
+            ];
+        }
+    }
+}
+
+if (!function_exists('portal_security_events_filtered')) {
+    /**
+     * @return list<array<string, mixed>>
+     */
+    function portal_security_events_filtered(
+        string $period = '24h',
+        string $reviewed = 'all',
+        string $severity = 'all',
+        string $eventType = 'all',
+        int $limit = 100
+    ): array {
+        try {
+            $since = portal_security_period_sql($period);
+            $where = ["created_at >= {$since}"];
+            $params = [];
+
+            if ($reviewed === 'unreviewed') {
+                $where[] = 'reviewed = 0';
+            } elseif ($reviewed === 'reviewed') {
+                $where[] = 'reviewed = 1';
+            }
+
+            if ($severity !== 'all' && in_array($severity, ['info', 'low', 'medium', 'high'], true)) {
+                $where[] = 'severity = ?';
+                $params[] = $severity;
+            }
+
+            if ($eventType !== 'all' && $eventType !== '') {
+                $where[] = 'event_type = ?';
+                $params[] = $eventType;
+            }
+
+            $sql = 'SELECT * FROM security_events WHERE ' . implode(' AND ', $where)
+                . ' ORDER BY created_at DESC LIMIT ' . max(1, min($limit, 250));
+
+            $stmt = portal_db()->prepare($sql);
+            $stmt->execute($params);
+
+            return $stmt->fetchAll() ?: [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('portal_mark_security_event_reviewed')) {
+    function portal_mark_security_event_reviewed(int $eventId, int $reviewerId): bool
+    {
+        if ($eventId <= 0 || $reviewerId <= 0) {
+            return false;
+        }
+
+        try {
+            $stmt = portal_db()->prepare("
+                UPDATE security_events
+                SET reviewed = 1, reviewed_at = datetime('now'), reviewed_by = ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$reviewerId, $eventId]);
+
+            return $stmt->rowCount() > 0;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('portal_mark_security_events_reviewed_by_severity')) {
+    /**
+     * @param list<string> $severities
+     */
+    function portal_mark_security_events_reviewed_by_severity(array $severities, int $reviewerId): int
+    {
+        if ($reviewerId <= 0 || $severities === []) {
+            return 0;
+        }
+
+        $allowed = array_values(array_intersect($severities, ['info', 'low', 'medium', 'high']));
+        if ($allowed === []) {
+            return 0;
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($allowed), '?'));
+            $params = array_merge([$reviewerId], $allowed);
+            $stmt = portal_db()->prepare("
+                UPDATE security_events
+                SET reviewed = 1, reviewed_at = datetime('now'), reviewed_by = ?
+                WHERE reviewed = 0 AND severity IN ({$placeholders})
+            ");
+            $stmt->execute($params);
+
+            return $stmt->rowCount();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('portal_system_needs_developer_review')) {
+    function portal_system_needs_developer_review(): bool
+    {
+        return portal_db_is_in_webroot() || portal_db_security_warning() !== null;
     }
 }
 
@@ -1186,6 +1538,29 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, attempted_at)");
+
+        // ── Security activity log ──────────────────────────────────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS security_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type  TEXT    NOT NULL,
+                severity    TEXT    NOT NULL DEFAULT 'info'
+                                CHECK(severity IN ('info', 'low', 'medium', 'high')),
+                user_id     INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                username    TEXT    NOT NULL DEFAULT '',
+                ip_address  TEXT    NOT NULL DEFAULT '',
+                user_agent  TEXT    NOT NULL DEFAULT '',
+                route       TEXT    NOT NULL DEFAULT '',
+                method      TEXT    NOT NULL DEFAULT '',
+                details     TEXT    NOT NULL DEFAULT '',
+                reviewed    INTEGER NOT NULL DEFAULT 0,
+                reviewed_at TEXT    NOT NULL DEFAULT '',
+                reviewed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_security_events_reviewed ON security_events(reviewed, severity)");
 
         // ── Announcement read tracking ─────────────────────────────────────────
         $db->exec("

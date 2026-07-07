@@ -288,6 +288,28 @@ $_pdo->exec("
     )
 ");
 
+$_pdo->exec("
+    CREATE TABLE IF NOT EXISTS security_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type  TEXT    NOT NULL,
+        severity    TEXT    NOT NULL DEFAULT 'info'
+                        CHECK(severity IN ('info', 'low', 'medium', 'high')),
+        user_id     INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+        username    TEXT    NOT NULL DEFAULT '',
+        ip_address  TEXT    NOT NULL DEFAULT '',
+        user_agent  TEXT    NOT NULL DEFAULT '',
+        route       TEXT    NOT NULL DEFAULT '',
+        method      TEXT    NOT NULL DEFAULT '',
+        details     TEXT    NOT NULL DEFAULT '',
+        reviewed    INTEGER NOT NULL DEFAULT 0,
+        reviewed_at TEXT    NOT NULL DEFAULT '',
+        reviewed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
+");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at)");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_security_events_reviewed ON security_events(reviewed, severity)");
+
 // ── Seed: Bogdan (owner) ─────────────────────────────────────────────────────
 // No credentials are committed to source control. The initial owner password is
 // read from the PORTAL_OWNER_PASSWORD environment variable; if that is not set a

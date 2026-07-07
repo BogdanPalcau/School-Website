@@ -699,3 +699,161 @@ if (!function_exists('portal_group_courses_by_year')) {
         return $grouped;
     }
 }
+
+if (!function_exists('portal_valid_course_slug')) {
+    function portal_valid_course_slug(string $slug): bool
+    {
+        return (bool) preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $slug);
+    }
+}
+
+if (!function_exists('portal_valid_course_accent')) {
+    function portal_valid_course_accent(string $accent): bool
+    {
+        return (bool) preg_match('/^#[0-9a-fA-F]{6}$/', $accent);
+    }
+}
+
+if (!function_exists('portal_course_status_label')) {
+    function portal_course_status_label(string $status): string
+    {
+        return match ($status) {
+            'open'     => 'Open',
+            'draft'    => 'Draft',
+            'archived' => 'Archived',
+            default    => ucfirst($status),
+        };
+    }
+}
+
+if (!function_exists('portal_find_course_by_id')) {
+    function portal_find_course_by_id(int $id): ?array
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        $stmt = portal_db()->prepare('SELECT * FROM courses WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+
+        return $row ?: null;
+    }
+}
+
+if (!function_exists('portal_course_slug_taken')) {
+    function portal_course_slug_taken(string $slug, ?int $exceptId = null): bool
+    {
+        $sql = 'SELECT id FROM courses WHERE slug = ?';
+        $params = [$slug];
+        if ($exceptId !== null && $exceptId > 0) {
+            $sql .= ' AND id != ?';
+            $params[] = $exceptId;
+        }
+
+        $stmt = portal_db()->prepare($sql);
+        $stmt->execute($params);
+
+        return (bool) $stmt->fetchColumn();
+    }
+}
+
+if (!function_exists('portal_course_code_taken')) {
+    function portal_course_code_taken(string $code, ?int $exceptId = null): bool
+    {
+        $sql = 'SELECT id FROM courses WHERE code = ?';
+        $params = [$code];
+        if ($exceptId !== null && $exceptId > 0) {
+            $sql .= ' AND id != ?';
+            $params[] = $exceptId;
+        }
+
+        $stmt = portal_db()->prepare($sql);
+        $stmt->execute($params);
+
+        return (bool) $stmt->fetchColumn();
+    }
+}
+
+if (!function_exists('portal_admin_course_rows')) {
+    /**
+     * @return list<array<string, mixed>>
+     */
+    function portal_admin_course_rows(): array
+    {
+        $pdo = portal_db();
+
+        $rows = $pdo->query(
+            'SELECT * FROM courses ORDER BY year_group DESC, title ASC'
+        )->fetchAll();
+
+        $enrollCounts = [];
+        foreach ($pdo->query('SELECT course_id, COUNT(*) AS cnt FROM enrollments GROUP BY course_id') as $er) {
+            $enrollCounts[(int) $er['course_id']] = (int) $er['cnt'];
+        }
+
+        $staffCounts = [];
+        foreach ($pdo->query('SELECT course_id, COUNT(*) AS cnt FROM course_teachers GROUP BY course_id') as $sr) {
+            $staffCounts[(int) $sr['course_id']] = (int) $sr['cnt'];
+        }
+
+        $courses = [];
+        foreach ($rows as $row) {
+            $id = (int) $row['id'];
+            $row['id'] = $id;
+            $row['enrollment_count'] = $enrollCounts[$id] ?? 0;
+            $row['assigned_staff_count'] = $staffCounts[$id] ?? 0;
+            $courses[] = $row;
+        }
+
+        return $courses;
+    }
+}
+
+if (!function_exists('portal_course_deletion_blockers')) {
+    /**
+     * @return list<string>
+     */
+    function portal_course_deletion_blockers(int $courseId): array
+    {
+        if ($courseId <= 0) {
+            return ['Invalid course.'];
+        }
+
+        $pdo = portal_db();
+        $blockers = [];
+
+        $checks = [
+            ['enrollments', 'SELECT COUNT(*) FROM enrollments WHERE course_id = ?', 'student enrolments'],
+            ['submissions', 'SELECT COUNT(*) FROM course_submissions WHERE course_id = ?', 'submissions'],
+            ['discussions', 'SELECT COUNT(*) FROM course_discussion_topics WHERE course_id = ?', 'discussion topics'],
+            ['files', "SELECT COUNT(*) FROM course_folder_items WHERE course_id = ? AND file_path != ''", 'uploaded files'],
+            ['grades', 'SELECT COUNT(*) FROM course_submissions WHERE course_id = ? AND score IS NOT NULL', 'graded submissions'],
+        ];
+
+        foreach ($checks as [$key, $sql, $label]) {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$courseId]);
+            if ((int) $stmt->fetchColumn() > 0) {
+                $blockers[] = $label;
+            }
+        }
+
+        return $blockers;
+    }
+}
+
+if (!function_exists('portal_user_enrollment_counts')) {
+    /**
+     * @return array<int, int>
+     */
+    function portal_user_enrollment_counts(): array
+    {
+        $counts = [];
+        foreach (portal_db()->query('SELECT user_id, COUNT(*) AS cnt FROM enrollments GROUP BY user_id') as $row) {
+            $counts[(int) $row['user_id']] = (int) $row['cnt'];
+        }
+
+        return $counts;
+    }
+}

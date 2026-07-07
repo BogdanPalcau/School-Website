@@ -17,6 +17,11 @@ if ($course === null) {
 // This guard runs before any GET rendering or POST action handling, so a direct
 // URL to a course the user is not part of is rejected for every request method.
 if (!portal_can_access_course((int) $course['id'])) {
+    portal_log_security_event(
+        'unauthorised_course_access',
+        'medium',
+        'Blocked access to course: ' . substr((string) $course['slug'], 0, 80)
+    );
     $_SESSION['course_flash'] = ['error', 'You do not have access to that course.'];
     portal_redirect('courses.php');
 }
@@ -560,6 +565,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk = $db->prepare("SELECT id FROM course_folders WHERE id = ? AND course_id = ?");
             $chk->execute([$folderId, $courseId]);
             if ($createItemError !== null) {
+                if (
+                    str_contains($createItemError, 'Unsupported file type')
+                    || str_contains($createItemError, 'does not match')
+                    || str_contains($createItemError, 'too large')
+                    || str_contains($createItemError, 'blocked the upload')
+                ) {
+                    portal_log_blocked_upload($createItemError);
+                }
                 $_SESSION['course_flash'] = ['error', $createItemError];
             } elseif ($chk->fetch() && $title !== '') {
                 $allowDl = (isset($_POST['allow_download']) && $_POST['allow_download'] === '1') ? 1 : 0;
@@ -1035,21 +1048,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $submitJsonExit(false, [], 'Upload a document or paste your submission text before submitting.');
             } elseif ($hasFile && $subError !== UPLOAD_ERR_OK) {
                 $msg = $uploadErrorMessage($subError);
+                if (str_contains($msg, 'blocked')) {
+                    portal_log_blocked_upload($msg);
+                }
                 $_SESSION['course_flash'] = ['error', $msg];
                 $submitJsonExit(false, [], $msg);
             } elseif ($hasFile && !in_array($ext, portal_supported_submission_extensions(), true)) {
                 $msg = 'Unsupported file type. Use ' . portal_supported_submission_hint() . '.';
+                portal_log_blocked_upload($msg);
                 $_SESSION['course_flash'] = ['error', $msg];
                 $submitJsonExit(false, [], $msg);
             } elseif ($hasFile && $subSize <= 0) {
                 $_SESSION['course_flash'] = ['error', 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.'];
                 $submitJsonExit(false, [], 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.');
             } elseif ($hasFile && !portal_upload_mime_ok((string) ($_FILES['submission_file']['tmp_name'] ?? ''), $ext)) {
-                $_SESSION['course_flash'] = ['error', 'This file content does not match its extension. Please upload a genuine document.'];
-                $submitJsonExit(false, [], 'This file content does not match its extension. Please upload a genuine document.');
+                $msg = 'This file content does not match its extension. Please upload a genuine document.';
+                portal_log_blocked_upload($msg);
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
             } elseif ($hasFile && $subSize > $maxUploadBytes) {
-                $_SESSION['course_flash'] = ['error', 'File is too large. Maximum allowed size is 40 MB.'];
-                $submitJsonExit(false, [], 'File is too large. Maximum allowed size is 40 MB.');
+                $msg = 'File is too large. Maximum allowed size is 40 MB.';
+                portal_log_blocked_upload($msg);
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
             } elseif ($submissionTooShort) {
                 $msg = 'Your submission is too short (' . $precheckWordCount . ' word' . ($precheckWordCount === 1 ? '' : 's')
                      . '). Please write a more complete response of at least ' . $minWords . ' words before submitting.';

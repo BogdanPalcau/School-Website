@@ -10,13 +10,33 @@ $currentUser = portal_current_user();
 $isOwner     = portal_is_owner();
 $pdo         = portal_db();
 
-$flash = [];
+$adminSections = ['dashboard', 'users', 'courses', 'enrollments', 'integrity', 'security'];
+$section       = (string) ($_GET['section'] ?? 'dashboard');
+if (!in_array($section, $adminSections, true)) {
+    $section = 'dashboard';
+}
+
+$enrollTargetId = (int) ($_GET['enroll'] ?? 0);
+if ($enrollTargetId > 0 && !isset($_GET['section'])) {
+    $section = 'enrollments';
+}
+
+$editCourseId      = (int) ($_GET['edit'] ?? 0);
+$duplicateCourseId = (int) ($_GET['duplicate'] ?? 0);
+if ($editCourseId > 0 || $duplicateCourseId > 0) {
+    $section = 'courses';
+}
+
+$redirectSection = static function (string $targetSection, array $extra = []) use ($section): void {
+    $params = array_merge(['section' => $targetSection], $extra);
+    portal_redirect('admin.php?' . http_build_query($params));
+};
 
 // ── POST actions ──────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!portal_verify_csrf()) {
         $_SESSION['admin_flash'] = ['error', 'Your session expired. Please try that again.'];
-        portal_redirect('admin.php');
+        portal_redirect('admin.php?section=' . urlencode($section));
     }
 
     $action = (string) ($_POST['action'] ?? '');
@@ -34,7 +54,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $newRole = 'student';
         }
 
-        // Build initials from name
         $parts    = preg_split('/\s+/', $name) ?: [];
         $initials = strtoupper(substr($parts[0] ?? 'S', 0, 1) . substr($parts[1] ?? 'T', 0, 1));
 
@@ -58,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['admin_flash'] = ['error', $msg];
             }
         }
-        portal_redirect('admin.php');
+        $redirectSection('users');
     }
 
     if ($action === 'delete_user') {
@@ -74,10 +93,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($target['role'] === 'admin' && !$isOwner) {
             $_SESSION['admin_flash'] = ['error', 'Only the owner can delete admin accounts.'];
         } else {
-            $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$targetId]);
+            $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$targetId]);
+            portal_log_security_event(
+                'user_deleted',
+                'medium',
+                'Deleted account: ' . substr((string) $target['name'], 0, 80),
+                (int) $currentUser['id']
+            );
             $_SESSION['admin_flash'] = ['success', "Account for {$target['name']} deleted."];
         }
-        portal_redirect('admin.php');
+        $redirectSection('users');
     }
 
     if ($action === 'change_role' && $isOwner) {
@@ -94,10 +119,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!in_array($newRole, ['admin', 'supervisor', 'teacher', 'student'], true)) {
             $_SESSION['admin_flash'] = ['error', 'Invalid role.'];
         } else {
-            $pdo->prepare("UPDATE users SET role = ? WHERE id = ?")->execute([$newRole, $targetId]);
+            $pdo->prepare('UPDATE users SET role = ? WHERE id = ?')->execute([$newRole, $targetId]);
+            portal_log_security_event(
+                'role_changed',
+                'medium',
+                "{$target['name']}'s role changed to {$newRole}",
+                (int) $currentUser['id']
+            );
             $_SESSION['admin_flash'] = ['success', "{$target['name']}'s role updated to {$newRole}."];
         }
-        portal_redirect('admin.php');
+        $redirectSection('users');
     }
 
     if ($action === 'save_enrollments') {
@@ -108,17 +139,240 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$target) {
             $_SESSION['admin_flash'] = ['error', 'User not found.'];
         } else {
-            // Replace enrollments: delete all, re-insert selected
-            $pdo->prepare("DELETE FROM enrollments WHERE user_id = ?")->execute([$targetId]);
-            $stmtE = $pdo->prepare("INSERT OR IGNORE INTO enrollments (user_id, course_id) VALUES (?,?)");
+            $pdo->prepare('DELETE FROM enrollments WHERE user_id = ?')->execute([$targetId]);
+            $stmtE = $pdo->prepare('INSERT OR IGNORE INTO enrollments (user_id, course_id) VALUES (?,?)');
             foreach ($courseIds as $cid) {
                 if ($cid > 0) {
                     $stmtE->execute([$targetId, $cid]);
                 }
             }
-            $_SESSION['admin_flash'] = ['success', "Enrollments for {$target['name']} saved."];
+            $_SESSION['admin_flash'] = ['success', "Enrolments for {$target['name']} saved."];
         }
-        portal_redirect('admin.php' . ($targetId ? '?enroll=' . $targetId : ''));
+        $redirectSection('enrollments', ['enroll' => $targetId > 0 ? $targetId : null]);
+    }
+
+    if ($action === 'create_course') {
+        $title       = trim((string) ($_POST['title'] ?? ''));
+        $fullTitle   = trim((string) ($_POST['full_title'] ?? ''));
+        $code        = trim((string) ($_POST['code'] ?? ''));
+        $slug        = strtolower(trim((string) ($_POST['slug'] ?? '')));
+        $summary     = trim((string) ($_POST['summary'] ?? ''));
+        $yearGroup   = trim((string) ($_POST['year_group'] ?? '25/26'));
+        $term        = trim((string) ($_POST['term'] ?? 'Full year'));
+        $status      = (string) ($_POST['status'] ?? 'draft');
+        $statusLabel = trim((string) ($_POST['status_label'] ?? ''));
+        $accent      = trim((string) ($_POST['accent'] ?? '#c1202f'));
+        $meeting     = trim((string) ($_POST['meeting'] ?? 'TBA'));
+        $room        = trim((string) ($_POST['room'] ?? 'TBA'));
+        $notice      = trim((string) ($_POST['notice'] ?? ''));
+
+        if (!in_array($status, ['open', 'draft', 'archived'], true)) {
+            $status = 'draft';
+        }
+        if ($statusLabel === '') {
+            $statusLabel = portal_course_status_label($status);
+        }
+
+        if ($title === '' || $fullTitle === '' || $code === '') {
+            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
+        } elseif ($slug === '' || !portal_valid_course_slug($slug)) {
+            $_SESSION['admin_flash'] = ['error', 'Slug must use lowercase letters, numbers, and hyphens only.'];
+        } elseif (!portal_valid_course_accent($accent)) {
+            $_SESSION['admin_flash'] = ['error', 'Accent must be a valid hex colour like #c1202f.'];
+        } elseif (portal_course_slug_taken($slug)) {
+            $_SESSION['admin_flash'] = ['error', 'That slug is already in use.'];
+        } elseif (portal_course_code_taken($code)) {
+            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
+        } else {
+            try {
+                $pdo->prepare("
+                    INSERT INTO courses
+                        (slug, code, title, full_title, summary, year_group, term, status, status_label,
+                         accent, meeting, room, notice, student_count)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                ")->execute([
+                    $slug, $code, $title, $fullTitle, $summary, $yearGroup, $term,
+                    $status, $statusLabel, $accent, $meeting, $room, $notice,
+                ]);
+                $_SESSION['admin_flash'] = ['success', "Course “{$title}” created."];
+            } catch (\PDOException) {
+                $_SESSION['admin_flash'] = ['error', 'Could not create course. Check slug and code are unique.'];
+            }
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'update_course') {
+        $courseId    = (int) ($_POST['course_id'] ?? 0);
+        $course      = portal_find_course_by_id($courseId);
+        $title       = trim((string) ($_POST['title'] ?? ''));
+        $fullTitle   = trim((string) ($_POST['full_title'] ?? ''));
+        $code        = trim((string) ($_POST['code'] ?? ''));
+        $summary     = trim((string) ($_POST['summary'] ?? ''));
+        $yearGroup   = trim((string) ($_POST['year_group'] ?? ''));
+        $term        = trim((string) ($_POST['term'] ?? ''));
+        $status      = (string) ($_POST['status'] ?? 'draft');
+        $statusLabel = trim((string) ($_POST['status_label'] ?? ''));
+        $accent      = trim((string) ($_POST['accent'] ?? '#c1202f'));
+        $meeting     = trim((string) ($_POST['meeting'] ?? ''));
+        $room        = trim((string) ($_POST['room'] ?? ''));
+        $notice      = trim((string) ($_POST['notice'] ?? ''));
+
+        if (!$course) {
+            $_SESSION['admin_flash'] = ['error', 'Course not found.'];
+        } elseif ($title === '' || $fullTitle === '' || $code === '') {
+            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
+        } elseif (!in_array($status, ['open', 'draft', 'archived'], true)) {
+            $_SESSION['admin_flash'] = ['error', 'Invalid status.'];
+        } elseif (!portal_valid_course_accent($accent)) {
+            $_SESSION['admin_flash'] = ['error', 'Accent must be a valid hex colour like #c1202f.'];
+        } elseif (portal_course_code_taken($code, $courseId)) {
+            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
+        } else {
+            if ($statusLabel === '') {
+                $statusLabel = portal_course_status_label($status);
+            }
+            $pdo->prepare("
+                UPDATE courses SET
+                    title = ?, full_title = ?, code = ?, summary = ?, year_group = ?, term = ?,
+                    status = ?, status_label = ?, accent = ?, meeting = ?, room = ?, notice = ?
+                WHERE id = ?
+            ")->execute([
+                $title, $fullTitle, $code, $summary, $yearGroup, $term,
+                $status, $statusLabel, $accent, $meeting, $room, $notice, $courseId,
+            ]);
+            $_SESSION['admin_flash'] = ['success', "Course “{$title}” updated."];
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'archive_course') {
+        $courseId = (int) ($_POST['course_id'] ?? 0);
+        $courseRow = portal_find_course_by_id($courseId);
+        if (!$courseRow) {
+            $_SESSION['admin_flash'] = ['error', 'Course not found.'];
+        } else {
+            $pdo->prepare("UPDATE courses SET status = 'archived', status_label = 'Archived' WHERE id = ?")
+                ->execute([$courseId]);
+            portal_log_security_event(
+                'course_archived',
+                'info',
+                'Archived course: ' . substr((string) $courseRow['title'], 0, 80),
+                (int) $currentUser['id']
+            );
+            $_SESSION['admin_flash'] = ['success', 'Course archived. All data was kept.'];
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'restore_course') {
+        $courseId = (int) ($_POST['course_id'] ?? 0);
+        $courseRow = portal_find_course_by_id($courseId);
+        if (!$courseRow) {
+            $_SESSION['admin_flash'] = ['error', 'Course not found.'];
+        } else {
+            $pdo->prepare("UPDATE courses SET status = 'open', status_label = 'Open' WHERE id = ?")
+                ->execute([$courseId]);
+            portal_log_security_event(
+                'course_restored',
+                'info',
+                'Restored course: ' . substr((string) $courseRow['title'], 0, 80),
+                (int) $currentUser['id']
+            );
+            $_SESSION['admin_flash'] = ['success', 'Course restored and marked as open.'];
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'duplicate_course') {
+        $sourceId  = (int) ($_POST['source_course_id'] ?? 0);
+        $source    = portal_find_course_by_id($sourceId);
+        $title     = trim((string) ($_POST['title'] ?? ''));
+        $fullTitle = trim((string) ($_POST['full_title'] ?? ''));
+        $code      = trim((string) ($_POST['code'] ?? ''));
+        $slug      = strtolower(trim((string) ($_POST['slug'] ?? '')));
+
+        if (!$source) {
+            $_SESSION['admin_flash'] = ['error', 'Source course not found.'];
+        } elseif ($title === '' || $fullTitle === '' || $code === '') {
+            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
+        } elseif ($slug === '' || !portal_valid_course_slug($slug)) {
+            $_SESSION['admin_flash'] = ['error', 'Slug must use lowercase letters, numbers, and hyphens only.'];
+        } elseif (portal_course_slug_taken($slug)) {
+            $_SESSION['admin_flash'] = ['error', 'That slug is already in use.'];
+        } elseif (portal_course_code_taken($code)) {
+            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
+        } else {
+            try {
+                $pdo->prepare("
+                    INSERT INTO courses
+                        (slug, code, title, full_title, summary, year_group, term, status, status_label,
+                         accent, meeting, room, notice, student_count)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                ")->execute([
+                    $slug,
+                    $code,
+                    $title,
+                    $fullTitle,
+                    (string) $source['summary'],
+                    (string) $source['year_group'],
+                    (string) $source['term'],
+                    'draft',
+                    'Draft',
+                    (string) $source['accent'],
+                    (string) $source['meeting'],
+                    (string) $source['room'],
+                    (string) $source['notice'],
+                ]);
+                $_SESSION['admin_flash'] = ['success', "Course duplicated as “{$title}”."];
+            } catch (\PDOException) {
+                $_SESSION['admin_flash'] = ['error', 'Could not duplicate course.'];
+            }
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'delete_course' && $isOwner) {
+        $courseId = (int) ($_POST['course_id'] ?? 0);
+        $course   = portal_find_course_by_id($courseId);
+        if (!$course) {
+            $_SESSION['admin_flash'] = ['error', 'Course not found.'];
+        } else {
+            $blockers = portal_course_deletion_blockers($courseId);
+            if ($blockers !== []) {
+                $_SESSION['admin_flash'] = ['error', 'Cannot delete: course has ' . implode(', ', $blockers) . '. Archive instead.'];
+            } else {
+                $pdo->prepare('DELETE FROM courses WHERE id = ?')->execute([$courseId]);
+                $_SESSION['admin_flash'] = ['success', 'Empty course deleted permanently.'];
+            }
+        }
+        $redirectSection('courses');
+    }
+
+    if ($action === 'mark_security_event_reviewed') {
+        $eventId = (int) ($_POST['event_id'] ?? 0);
+        if (portal_mark_security_event_reviewed($eventId, (int) $currentUser['id'])) {
+            $_SESSION['admin_flash'] = ['success', 'Security event marked as reviewed.'];
+        } else {
+            $_SESSION['admin_flash'] = ['error', 'Could not update that security event.'];
+        }
+        $redirectSection('security', [
+            'sec_period'   => (string) ($_POST['sec_period'] ?? '24h'),
+            'sec_reviewed' => (string) ($_POST['sec_reviewed'] ?? 'all'),
+            'sec_severity' => (string) ($_POST['sec_severity'] ?? 'all'),
+            'sec_type'     => (string) ($_POST['sec_type'] ?? 'all'),
+        ]);
+    }
+
+    if ($action === 'mark_security_low_info_reviewed') {
+        $marked = portal_mark_security_events_reviewed_by_severity(['info', 'low'], (int) $currentUser['id']);
+        $_SESSION['admin_flash'] = ['success', $marked . ' low-priority event' . ($marked === 1 ? '' : 's') . ' marked reviewed.'];
+        $redirectSection('security', [
+            'sec_period'   => (string) ($_POST['sec_period'] ?? '24h'),
+            'sec_reviewed' => (string) ($_POST['sec_reviewed'] ?? 'all'),
+            'sec_severity' => (string) ($_POST['sec_severity'] ?? 'all'),
+            'sec_type'     => (string) ($_POST['sec_type'] ?? 'all'),
+        ]);
     }
 
     if ($action === 'save_integrity_settings') {
@@ -134,8 +388,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             portal_site_setting_set('zerogpt_api_key', $apiKey);
         }
 
-        $clearKey = isset($_POST['clear_zerogpt_api_key']) && $_POST['clear_zerogpt_api_key'] === '1';
-        if ($clearKey) {
+        if (isset($_POST['clear_zerogpt_api_key']) && $_POST['clear_zerogpt_api_key'] === '1') {
             portal_site_setting_set('zerogpt_api_key', '');
         }
 
@@ -143,8 +396,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($safeBrowsingKey !== '') {
             portal_site_setting_set('google_safe_browsing_api_key', $safeBrowsingKey);
         }
-        $clearSafeBrowsingKey = isset($_POST['clear_google_safe_browsing_api_key']) && $_POST['clear_google_safe_browsing_api_key'] === '1';
-        if ($clearSafeBrowsingKey) {
+        if (isset($_POST['clear_google_safe_browsing_api_key']) && $_POST['clear_google_safe_browsing_api_key'] === '1') {
             portal_site_setting_set('google_safe_browsing_api_key', '');
         }
 
@@ -160,23 +412,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $_SESSION['admin_flash'] = ['success', 'Integrity and link safety settings saved.'];
-        portal_redirect('admin.php#integrity-settings');
+        $redirectSection('integrity');
     }
+
+    portal_redirect('admin.php?section=' . urlencode($section));
 }
 
 // ── Read flash ─────────────────────────────────────────────────────────────────
+$flash = [];
 if (isset($_SESSION['admin_flash'])) {
     $flash = $_SESSION['admin_flash'];
     unset($_SESSION['admin_flash']);
 }
 
 // ── Page data ─────────────────────────────────────────────────────────────────
-$users      = portal_all_users();
-$allCourses = portal_course_catalog();
+$users              = portal_all_users();
+$adminCourses       = portal_admin_course_rows();
+$allCourses         = portal_course_catalog();
+$enrollmentCounts   = portal_user_enrollment_counts();
+$enrollTarget       = $enrollTargetId > 0 ? portal_find_user_by_id($enrollTargetId) : null;
+$enrolledIds        = $enrollTarget ? portal_enrolled_course_ids($enrollTargetId) : [];
+$editCourse         = $editCourseId > 0 ? portal_find_course_by_id($editCourseId) : null;
+$duplicateCourse    = $duplicateCourseId > 0 ? portal_find_course_by_id($duplicateCourseId) : null;
 
-$enrollTargetId = (int) ($_GET['enroll'] ?? 0);
-$enrollTarget   = $enrollTargetId > 0 ? portal_find_user_by_id($enrollTargetId) : null;
-$enrolledIds    = $enrollTarget ? portal_enrolled_course_ids($enrollTargetId) : [];
+$userQuery  = trim((string) ($_GET['user_q'] ?? ''));
+$userRole   = (string) ($_GET['user_role'] ?? 'all');
+$courseQuery = trim((string) ($_GET['course_q'] ?? ''));
+$courseStatus = (string) ($_GET['course_status'] ?? 'all');
+$courseYear = (string) ($_GET['course_year'] ?? 'all');
+$enrollCourseQ = trim((string) ($_GET['enroll_course_q'] ?? ''));
+
+$filteredUsers = array_values(array_filter(
+    $users,
+    static function (array $u) use ($userQuery, $userRole): bool {
+        if ($userRole !== 'all' && $u['role'] !== $userRole) {
+            return false;
+        }
+        if ($userQuery === '') {
+            return true;
+        }
+        $haystack = implode(' ', [$u['name'], $u['email'], $u['username'], $u['year'], $u['programme']]);
+        return stripos($haystack, $userQuery) !== false;
+    }
+));
+
+$filteredAdminCourses = array_values(array_filter(
+    $adminCourses,
+    static function (array $c) use ($courseQuery, $courseStatus, $courseYear): bool {
+        if ($courseYear !== 'all' && $c['year_group'] !== $courseYear) {
+            return false;
+        }
+        if ($courseStatus !== 'all' && $c['status'] !== $courseStatus) {
+            return false;
+        }
+        if ($courseQuery === '') {
+            return true;
+        }
+        $haystack = implode(' ', [$c['title'], $c['code'], $c['slug'], $c['full_title'], $c['room']]);
+        return stripos($haystack, $courseQuery) !== false;
+    }
+));
+
+$courseYearOptions = portal_course_year_options($adminCourses);
 
 $stats = [
     'total_users'       => count($users),
@@ -185,386 +482,1040 @@ $stats = [
     'supervisors'       => count(array_filter($users, fn($u) => $u['role'] === 'supervisor')),
     'teachers'          => count(array_filter($users, fn($u) => $u['role'] === 'teacher')),
     'students'          => count(array_filter($users, fn($u) => $u['role'] === 'student')),
-    'total_courses'     => count($allCourses),
-    'total_enrollments' => (int) $pdo->query("SELECT COUNT(*) FROM enrollments")->fetchColumn(),
+    'total_courses'     => count($adminCourses),
+    'open_courses'      => count(array_filter($adminCourses, fn($c) => $c['status'] === 'open')),
+    'archived_courses'  => count(array_filter($adminCourses, fn($c) => $c['status'] === 'archived')),
+    'draft_courses'     => count(array_filter($adminCourses, fn($c) => $c['status'] === 'draft')),
+    'total_enrollments' => (int) $pdo->query('SELECT COUNT(*) FROM enrollments')->fetchColumn(),
+    'total_submissions' => (int) $pdo->query('SELECT COUNT(*) FROM course_submissions')->fetchColumn(),
 ];
 
-$integrityPolicy   = portal_external_ai_policy();
-$integrityKeySet   = portal_site_setting_has('zerogpt_api_key') || trim((string) getenv('ZEROGPT_API_KEY')) !== '';
-$safeBrowsingKeySet  = portal_site_setting_has('google_safe_browsing_api_key') || trim((string) getenv('GOOGLE_SAFE_BROWSING_API_KEY')) !== '';
-$integrityCourses  = $pdo->query(
-    "SELECT id, title, code, external_ai_detection FROM courses ORDER BY title ASC"
+$integrityPolicy    = portal_external_ai_policy();
+$integrityKeySet    = portal_site_setting_has('zerogpt_api_key') || trim((string) getenv('ZEROGPT_API_KEY')) !== '';
+$safeBrowsingKeySet = portal_site_setting_has('google_safe_browsing_api_key')
+    || trim((string) getenv('GOOGLE_SAFE_BROWSING_API_KEY')) !== '';
+$integrityCourses   = $pdo->query(
+    'SELECT id, title, code, external_ai_detection FROM courses ORDER BY title ASC'
 )->fetchAll();
 
-$page_title   = 'Admin | ' . portal_school_name();
-$active_page  = 'admin';
-$page_eyebrow = 'Management';
-$page_heading = 'Admin panel';
-$page_description = 'Manage student accounts, assign roles, and control course enrollments.';
 $dbSecurityWarning = portal_db_security_warning();
+$showDeveloperSecurity = portal_is_owner() && portal_show_developer_security();
+$systemNeedsDevReview  = portal_system_needs_developer_review();
+
+$secPeriod   = (string) ($_GET['sec_period'] ?? '24h');
+$secReviewed = (string) ($_GET['sec_reviewed'] ?? 'all');
+$secSeverity = (string) ($_GET['sec_severity'] ?? 'all');
+$secType     = (string) ($_GET['sec_type'] ?? 'all');
+if (!in_array($secPeriod, ['24h', '7d', '30d'], true)) {
+    $secPeriod = '24h';
+}
+
+$securityStats   = portal_security_dashboard_stats($secPeriod);
+$securityEvents  = portal_security_events_filtered($secPeriod, $secReviewed, $secSeverity, $secType, 100);
+$securityTypes   = [
+    'failed_login', 'login_throttled', 'csrf_failed', 'unauthorised_admin_access',
+    'unauthorised_course_access', 'forbidden_download', 'blocked_upload',
+    'unsafe_rich_text_removed', 'role_changed', 'user_deleted', 'course_archived', 'course_restored',
+];
+
+$sectionTitles = [
+    'dashboard'   => 'Dashboard',
+    'users'       => 'Manage Users',
+    'courses'     => 'Course Management',
+    'enrollments' => 'Enrolments',
+    'integrity'   => 'Integrity & Link Safety',
+    'security'    => 'Security Activity',
+];
+
+$navItems = [
+    ['key' => 'dashboard',   'label' => 'Dashboard',               'icon' => 'sparkles'],
+    ['key' => 'users',       'label' => 'Manage Users',            'icon' => 'users'],
+    ['key' => 'courses',     'label' => 'Course Management',       'icon' => 'book-open'],
+    ['key' => 'enrollments', 'label' => 'Enrolments',              'icon' => 'folder'],
+    ['key' => 'integrity',   'label' => 'Integrity & Link Safety', 'icon' => 'shield'],
+    ['key' => 'security',    'label' => 'Security Activity',     'icon' => 'lock'],
+];
+
+$adminUrl = static function (string $targetSection, array $extra = []) use ($adminSections): string {
+    $params = array_merge(['section' => $targetSection], array_filter($extra, static fn($v) => $v !== null && $v !== ''));
+    return 'admin.php?' . http_build_query($params);
+};
+
+$page_title       = 'Admin | ' . portal_school_name();
+$active_page      = 'admin';
+$page_eyebrow     = 'Administration';
+$page_heading     = 'Admin';
+$page_description = 'Manage users, courses, enrolments, integrity settings, and security for ' . portal_school_short_name() . '.';
 
 ob_start();
 ?>
-<section class="admin-layout">
-
-    <!-- ── Left column: users + enrollment ── -->
-    <div class="stack">
-
-        <?php if ($dbSecurityWarning): ?>
-        <div class="admin-flash error">
-            <?= portal_escape($dbSecurityWarning) ?>
+<div class="admin-shell">
+    <header class="admin-topbar">
+        <div class="admin-topbar-main">
+            <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+                <a href="<?= portal_escape($adminUrl('dashboard')) ?>">Admin</a>
+                <span aria-hidden="true">/</span>
+                <span><?= portal_escape($sectionTitles[$section] ?? 'Dashboard') ?></span>
+            </nav>
+            <h2 class="admin-topbar-title"><?= portal_escape($sectionTitles[$section] ?? 'Dashboard') ?></h2>
         </div>
-        <?php endif; ?>
-
-        <?php if ($flash): ?>
-        <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>">
-            <?= portal_escape($flash[1]) ?>
+        <div class="admin-topbar-user">
+            <div class="admin-topbar-user-text">
+                <strong><?= portal_escape($currentUser['name']) ?></strong>
+                <span class="admin-badge admin-badge--<?= portal_escape($currentUser['role']) ?>"><?= portal_escape(ucfirst($currentUser['role'])) ?></span>
+            </div>
+            <div class="admin-avatar" aria-hidden="true"><?= portal_escape($currentUser['initials'] ?? 'AD') ?></div>
         </div>
-        <?php endif; ?>
+    </header>
 
-        <!-- Create account -->
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">New account</p>
-                    <h3 class="card-title">Add a user</h3>
-                </div>
-            </div>
-
-            <form class="admin-create-form" method="post" action="admin.php">
-                <?= portal_csrf_field() ?>
-                <input type="hidden" name="action" value="create_user">
-
-                <div class="admin-form-grid">
-                    <label class="admin-field">
-                        <span>Full name</span>
-                        <input type="text" name="name" required placeholder="e.g. Jane Smith">
-                    </label>
-                    <label class="admin-field">
-                        <span>Username</span>
-                        <input type="text" name="username" required placeholder="e.g. jsmith">
-                    </label>
-                    <label class="admin-field">
-                        <span>Email</span>
-                        <input type="email" name="email" required placeholder="student@rieo.edu">
-                    </label>
-                    <label class="admin-field">
-                        <span>Year group</span>
-                        <select name="year">
-                            <option>Year 10</option>
-                            <option selected>Year 11</option>
-                            <option>Year 12</option>
-                            <option>Year 13</option>
-                        </select>
-                    </label>
-                    <label class="admin-field">
-                        <span>Programme</span>
-                        <input type="text" name="programme" placeholder="e.g. Sciences pathway" value="General">
-                    </label>
-                    <label class="admin-field">
-                        <span>Password</span>
-                        <input type="password" name="password" required minlength="6" placeholder="Min. 6 characters">
-                    </label>
-                    <?php if ($isOwner): ?>
-                    <label class="admin-field">
-                        <span>Role</span>
-                        <select name="role">
-                            <option value="student" selected>Student</option>
-                            <option value="teacher">Teacher</option>
-                            <option value="supervisor">Supervisor</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                    </label>
-                    <?php endif; ?>
-                </div>
-
-                <div class="button-row">
-                    <button type="submit" class="button">Create account</button>
-                </div>
-            </form>
-        </article>
-
-        <!-- User list -->
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Accounts</p>
-                    <h3 class="card-title">All users</h3>
-                </div>
-                <span class="chip"><?= $stats['total_users'] ?></span>
-            </div>
-
-            <div class="admin-user-list">
-                <?php foreach ($users as $u): ?>
-                <?php $isSelf = (int) $u['id'] === (int) $currentUser['id']; ?>
-                <div class="admin-user-row">
-                    <div class="admin-avatar"><?= portal_escape($u['initials']) ?></div>
-
-                    <div class="admin-user-info">
-                        <strong><?= portal_escape($u['name']) ?></strong>
-                        <span><?= portal_escape($u['email']) ?></span>
-                        <span><?= portal_escape($u['year']) ?> · <?= portal_escape($u['programme']) ?></span>
-                    </div>
-
-                    <span class="admin-role-badge role-<?= portal_escape($u['role']) ?>"><?= portal_escape(ucfirst($u['role'])) ?></span>
-
-                    <div class="admin-user-actions">
-                        <a class="inline-action" href="admin.php?enroll=<?= (int) $u['id'] ?>#enrollment-panel">Enrollments</a>
-
-                        <?php if ($isOwner && !$isSelf && $u['role'] !== 'owner'): ?>
-                        <form method="post" action="admin.php" class="admin-inline-form">
-                            <?= portal_csrf_field() ?>
-                            <input type="hidden" name="action" value="change_role">
-                            <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
-                            <select name="role" class="admin-role-select" onchange="this.form.submit()">
-                                <option value="student"<?= $u['role'] === 'student' ? ' selected' : '' ?>>Student</option>
-                                <option value="teacher"<?= $u['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
-                                <option value="supervisor"<?= $u['role'] === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
-                                <option value="admin"<?= $u['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
-                            </select>
-                        </form>
-                        <?php endif; ?>
-
-                        <?php if (!$isSelf && $u['role'] !== 'owner' && ($isOwner || $u['role'] === 'student')): ?>
-                        <form method="post" action="admin.php" class="admin-inline-form"
-                              onsubmit="return confirm('Delete account for <?= portal_escape($u['name']) ?>?')">
-                            <?= portal_csrf_field() ?>
-                            <input type="hidden" name="action" value="delete_user">
-                            <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
-                            <button type="submit" class="admin-delete-btn">Delete</button>
-                        </form>
-                        <?php endif; ?>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            </div>
-        </article>
-
-        <!-- Enrollment panel -->
-        <?php if ($enrollTarget): ?>
-        <article class="card-shell" id="enrollment-panel">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Enrollment</p>
-                    <h3 class="card-title">Courses for <?= portal_escape($enrollTarget['name']) ?></h3>
-                    <p><?= count($enrolledIds) ?> of <?= count($allCourses) ?> courses currently enrolled</p>
-                </div>
-                <a class="inline-action" href="admin.php">Close</a>
-            </div>
-
-            <form method="post" action="admin.php">
-                <?= portal_csrf_field() ?>
-                <input type="hidden" name="action" value="save_enrollments">
-                <input type="hidden" name="user_id" value="<?= (int) $enrollTarget['id'] ?>">
-
-                <div class="admin-enroll-grid">
-                    <?php foreach ($allCourses as $course): ?>
-                    <?php $checked = in_array((int) $course['id'], $enrolledIds, true); ?>
-                    <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
-                        <input type="checkbox" name="course_ids[]" value="<?= (int) $course['id'] ?>"<?= $checked ? ' checked' : '' ?>>
-                        <span class="admin-course-dot" style="background:<?= portal_escape($course['accent']) ?>"></span>
-                        <div class="admin-enroll-text">
-                            <strong><?= portal_escape($course['title']) ?></strong>
-                            <span><?= portal_escape($course['code']) ?></span>
-                        </div>
-                    </label>
-                    <?php endforeach; ?>
-                </div>
-
-                <div class="button-row">
-                    <button type="submit" class="button">Save enrollments</button>
-                    <a href="admin.php" class="button-secondary">Cancel</a>
-                </div>
-            </form>
-        </article>
-        <?php endif; ?>
-
+    <?php if ($flash): ?>
+    <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>">
+        <?= portal_escape($flash[1]) ?>
     </div>
+    <?php endif; ?>
 
-    <!-- ── Right column: stats + course overview ── -->
-    <div class="stack">
+    <div class="admin-body">
+        <nav class="admin-sidebar" aria-label="Admin sections">
+            <?php foreach ($navItems as $item): ?>
+            <a class="admin-sidebar-link<?= $section === $item['key'] ? ' is-active' : '' ?>"
+               href="<?= portal_escape($adminUrl($item['key'])) ?>">
+                <?= portal_icon($item['icon'], 'admin-sidebar-icon') ?>
+                <span><?= portal_escape($item['label']) ?></span>
+            </a>
+            <?php endforeach; ?>
+        </nav>
 
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Overview</p>
-                    <h3 class="card-title">Quick stats</h3>
-                </div>
-            </div>
-            <div class="admin-stats-grid">
-                <div class="admin-stat">
-                    <strong><?= $stats['total_users'] ?></strong>
-                    <span>Total accounts</span>
-                </div>
-                <div class="admin-stat">
-                    <strong><?= $stats['students'] ?></strong>
-                    <span>Students</span>
-                </div>
-                <div class="admin-stat">
-                    <strong><?= $stats['teachers'] ?></strong>
-                    <span>Teachers</span>
-                </div>
-                <div class="admin-stat">
-                    <strong><?= $stats['supervisors'] ?></strong>
-                    <span>Supervisors</span>
-                </div>
-                <div class="admin-stat">
-                    <strong><?= $stats['admins'] ?></strong>
-                    <span>Admins</span>
-                </div>
-                <div class="admin-stat">
-                    <strong><?= $stats['total_enrollments'] ?></strong>
-                    <span>Enrollments</span>
-                </div>
-            </div>
-        </article>
+        <div class="admin-main">
 
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Courses</p>
-                    <h3 class="card-title">Active this year</h3>
+            <!-- Dashboard -->
+            <section id="admin-section-dashboard" class="admin-section<?= $section === 'dashboard' ? ' is-active' : '' ?>">
+                <div class="admin-stat-grid">
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Total users</p>
+                        <strong class="admin-stat-value"><?= $stats['total_users'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Students</p>
+                        <strong class="admin-stat-value"><?= $stats['students'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Teachers</p>
+                        <strong class="admin-stat-value"><?= $stats['teachers'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Supervisors</p>
+                        <strong class="admin-stat-value"><?= $stats['supervisors'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Admins</p>
+                        <strong class="admin-stat-value"><?= $stats['admins'] + $stats['owners'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Total courses</p>
+                        <strong class="admin-stat-value"><?= $stats['total_courses'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Open courses</p>
+                        <strong class="admin-stat-value"><?= $stats['open_courses'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Archived</p>
+                        <strong class="admin-stat-value"><?= $stats['archived_courses'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Enrolments</p>
+                        <strong class="admin-stat-value"><?= $stats['total_enrollments'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Submissions</p>
+                        <strong class="admin-stat-value"><?= $stats['total_submissions'] ?></strong>
+                    </article>
                 </div>
-                <span class="chip"><?= $stats['total_courses'] ?></span>
-            </div>
-            <div class="admin-course-overview">
-                <?php foreach ($allCourses as $course): ?>
-                <div class="admin-course-row">
-                    <span class="admin-course-dot" style="background:<?= portal_escape($course['accent']) ?>"></span>
-                    <div>
-                        <strong><?= portal_escape($course['title']) ?></strong>
-                        <span><?= portal_escape($course['code']) ?> · <?= portal_escape($course['room']) ?></span>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            </div>
-        </article>
 
-        <article class="card-shell" id="integrity-settings">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Integrity</p>
-                    <h3 class="card-title">Integrity and link safety</h3>
-                    <p>Configure ZeroGPT for optional external AI checks and Google Safe Browsing for safer external course links.</p>
-                </div>
-                <span class="chip<?= ($integrityKeySet || $safeBrowsingKeySet) ? '' : ' chip--muted' ?>">
-                    <?= $integrityKeySet ? 'ZeroGPT set' : 'ZeroGPT missing' ?> · <?= $safeBrowsingKeySet ? 'Safe Browsing set' : 'Safe Browsing missing' ?>
-                </span>
-            </div>
-
-            <form method="post" action="admin.php#integrity-settings" class="admin-integrity-form">
-                <?= portal_csrf_field() ?>
-                <input type="hidden" name="action" value="save_integrity_settings">
-
-                <label class="admin-field">
-                    <span>ZeroGPT API key</span>
-                    <input type="password" name="zerogpt_api_key" autocomplete="new-password"
-                           placeholder="<?= $integrityKeySet ? 'Leave blank to keep current key' : 'Paste your ZeroGPT API key' ?>">
-                    <?php if ($integrityKeySet): ?>
-                    <label class="admin-checkbox-inline">
-                        <input type="checkbox" name="clear_zerogpt_api_key" value="1">
-                        Remove saved API key
-                    </label>
-                    <?php endif; ?>
-                    <small class="admin-field-hint">Stored securely in the site database. You can still use <code>.env</code> as a fallback if no key is saved here.</small>
-                </label>
-
-                <label class="admin-field">
-                    <span>Google Safe Browsing API key <small>(for external course links)</small></span>
-                    <input type="password" name="google_safe_browsing_api_key" autocomplete="new-password"
-                           placeholder="<?= $safeBrowsingKeySet ? 'Leave blank to keep current key' : 'Paste your Google Safe Browsing API key' ?>">
-                    <?php if ($safeBrowsingKeySet): ?>
-                    <label class="admin-checkbox-inline">
-                        <input type="checkbox" name="clear_google_safe_browsing_api_key" value="1">
-                        Remove saved Google Safe Browsing key
-                    </label>
-                    <?php endif; ?>
-                    <small class="admin-field-hint">Used server-side before users open external link items. If unset, users still see an external-link warning but no Google Safe Browsing verdict.</small>
-                </label>
-
-                <fieldset class="admin-policy-fieldset">
-                    <legend>When should external AI detection run?</legend>
-                    <label class="admin-radio">
-                        <input type="radio" name="external_ai_policy" value="disabled"<?= $integrityPolicy === 'disabled' ? ' checked' : '' ?>>
-                        <span><strong>Disabled</strong> — never call ZeroGPT (internal checks still run).</span>
-                    </label>
-                    <label class="admin-radio">
-                        <input type="radio" name="external_ai_policy" value="site_wide"<?= $integrityPolicy === 'site_wide' ? ' checked' : '' ?>>
-                        <span><strong>Site-wide</strong> — run for every submission when an API key is configured.</span>
-                    </label>
-                    <label class="admin-radio">
-                        <input type="radio" name="external_ai_policy" value="per_module"<?= $integrityPolicy === 'per_module' ? ' checked' : '' ?>>
-                        <span><strong>Selected modules only</strong> — enable specific courses below; teachers opt in per assignment.</span>
-                    </label>
-                </fieldset>
-
-                <div class="admin-ai-modules" id="admin-ai-modules"<?= $integrityPolicy === 'per_module' ? '' : ' hidden' ?>>
-                    <p class="admin-field-hint">Choose which modules can use external AI detection. Teachers must also tick “External AI detection” on each submission slot.</p>
-                    <div class="admin-enroll-grid">
-                        <?php foreach ($integrityCourses as $ic): ?>
-                        <?php $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1; ?>
-                        <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
-                            <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
-                            <div class="admin-enroll-text">
-                                <strong><?= portal_escape((string) $ic['title']) ?></strong>
-                                <span><?= portal_escape((string) $ic['code']) ?></span>
+                <div class="admin-dashboard-grid">
+                    <article class="admin-card">
+                        <header class="admin-card-header">
+                            <div>
+                                <p class="eyebrow">Quick links</p>
+                                <h3>Common tasks</h3>
                             </div>
+                        </header>
+                        <div class="admin-quick-links">
+                            <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('users')) ?>">Add or manage users</a>
+                            <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('courses')) ?>">Manage courses</a>
+                            <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('enrollments')) ?>">Manage enrolments</a>
+                            <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('integrity')) ?>">Integrity settings</a>
+                        </div>
+                    </article>
+
+                    <article class="admin-card">
+                        <header class="admin-card-header">
+                            <div>
+                                <p class="eyebrow">Role guide</p>
+                                <h3>Permissions overview</h3>
+                            </div>
+                        </header>
+                        <div class="admin-role-guide">
+                            <div class="admin-role-row">
+                                <span class="admin-badge admin-badge--owner">Owner</span>
+                                <p>Full access — manage all accounts, change roles, delete users, delete empty courses.</p>
+                            </div>
+                            <div class="admin-role-row">
+                                <span class="admin-badge admin-badge--admin">Admin</span>
+                                <p>Create accounts, manage enrolments, create and edit courses, configure integrity.</p>
+                            </div>
+                            <div class="admin-role-row">
+                                <span class="admin-badge admin-badge--supervisor">Supervisor</span>
+                                <p>Course management on assigned modules only. No admin panel access.</p>
+                            </div>
+                            <div class="admin-role-row">
+                                <span class="admin-badge admin-badge--teacher">Teacher</span>
+                                <p>Manage folders, materials, and announcements for assigned courses.</p>
+                            </div>
+                            <div class="admin-role-row">
+                                <span class="admin-badge admin-badge--student">Student</span>
+                                <p>Access enrolled courses via the student portal.</p>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <!-- Users -->
+            <section id="admin-section-users" class="admin-section<?= $section === 'users' ? ' is-active' : '' ?>">
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">New account</p>
+                            <h3>Add a user</h3>
+                        </div>
+                    </header>
+                    <form class="admin-form-grid" method="post" action="<?= portal_escape($adminUrl('users')) ?>">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="create_user">
+                        <label class="admin-field">
+                            <span>Full name</span>
+                            <input type="text" name="name" required placeholder="e.g. Jane Smith">
                         </label>
-                        <?php endforeach; ?>
+                        <label class="admin-field">
+                            <span>Username</span>
+                            <input type="text" name="username" required placeholder="e.g. jsmith">
+                        </label>
+                        <label class="admin-field">
+                            <span>Email</span>
+                            <input type="email" name="email" required placeholder="student@rieo.edu">
+                        </label>
+                        <label class="admin-field">
+                            <span>Year group</span>
+                            <select name="year">
+                                <option>Year 10</option>
+                                <option selected>Year 11</option>
+                                <option>Year 12</option>
+                                <option>Year 13</option>
+                            </select>
+                        </label>
+                        <label class="admin-field">
+                            <span>Programme</span>
+                            <input type="text" name="programme" value="General" placeholder="e.g. Sciences pathway">
+                        </label>
+                        <label class="admin-field">
+                            <span>Password</span>
+                            <input type="password" name="password" required minlength="6" placeholder="Min. 6 characters">
+                        </label>
+                        <?php if ($isOwner): ?>
+                        <label class="admin-field">
+                            <span>Role</span>
+                            <select name="role">
+                                <option value="student" selected>Student</option>
+                                <option value="teacher">Teacher</option>
+                                <option value="supervisor">Supervisor</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                        </label>
+                        <?php endif; ?>
+                        <div class="admin-form-actions admin-form-actions--full">
+                            <button type="submit" class="admin-btn admin-btn--primary">Create account</button>
+                        </div>
+                    </form>
+                </article>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Accounts</p>
+                            <h3>All users</h3>
+                        </div>
+                        <span class="chip"><?= count($filteredUsers) ?> shown</span>
+                    </header>
+
+                    <form class="admin-filter-row" method="get" action="admin.php">
+                        <input type="hidden" name="section" value="users">
+                        <label class="admin-search">
+                            <span class="visually-hidden">Search users</span>
+                            <input type="search" name="user_q" value="<?= portal_escape($userQuery) ?>" placeholder="Search name, email, or username">
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Role</span>
+                            <select name="user_role" onchange="this.form.submit()">
+                                <option value="all"<?= $userRole === 'all' ? ' selected' : '' ?>>All roles</option>
+                                <option value="owner"<?= $userRole === 'owner' ? ' selected' : '' ?>>Owner</option>
+                                <option value="admin"<?= $userRole === 'admin' ? ' selected' : '' ?>>Admin</option>
+                                <option value="supervisor"<?= $userRole === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
+                                <option value="teacher"<?= $userRole === 'teacher' ? ' selected' : '' ?>>Teacher</option>
+                                <option value="student"<?= $userRole === 'student' ? ' selected' : '' ?>>Student</option>
+                            </select>
+                        </label>
+                        <button type="submit" class="admin-btn admin-btn--secondary">Search</button>
+                    </form>
+
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Username</th>
+                                    <th>Email</th>
+                                    <th>Role</th>
+                                    <th>Year</th>
+                                    <th>Enrolments</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($filteredUsers as $u): ?>
+                                <?php $isSelf = (int) $u['id'] === (int) $currentUser['id']; ?>
+                                <tr>
+                                    <td>
+                                        <div class="admin-table-user">
+                                            <div class="admin-avatar admin-avatar--sm"><?= portal_escape($u['initials']) ?></div>
+                                            <strong><?= portal_escape($u['name']) ?></strong>
+                                        </div>
+                                    </td>
+                                    <td><?= portal_escape($u['username']) ?></td>
+                                    <td><?= portal_escape($u['email']) ?></td>
+                                    <td><span class="admin-badge admin-badge--<?= portal_escape($u['role']) ?>"><?= portal_escape(ucfirst($u['role'])) ?></span></td>
+                                    <td><?= portal_escape($u['year']) ?></td>
+                                    <td><?= (int) ($enrollmentCounts[(int) $u['id']] ?? 0) ?></td>
+                                    <td>
+                                        <div class="admin-table-actions">
+                                            <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('enrollments', ['enroll' => (int) $u['id']])) ?>">Enrolments</a>
+                                            <?php if ($isOwner && !$isSelf && $u['role'] !== 'owner'): ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('users')) ?>" class="admin-inline-form">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="change_role">
+                                                <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
+                                                <select name="role" class="admin-role-select" onchange="this.form.submit()" title="Change role">
+                                                    <option value="student"<?= $u['role'] === 'student' ? ' selected' : '' ?>>Student</option>
+                                                    <option value="teacher"<?= $u['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
+                                                    <option value="supervisor"<?= $u['role'] === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
+                                                    <option value="admin"<?= $u['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
+                                                </select>
+                                            </form>
+                                            <?php endif; ?>
+                                            <?php if (!$isSelf && $u['role'] !== 'owner' && ($isOwner || $u['role'] === 'student')): ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('users')) ?>" class="admin-inline-form"
+                                                  onsubmit="return confirm('Delete account for <?= portal_escape($u['name']) ?>?')">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="delete_user">
+                                                <input type="hidden" name="user_id" value="<?= (int) $u['id'] ?>">
+                                                <button type="submit" class="admin-btn admin-btn--danger admin-btn--sm">Delete</button>
+                                            </form>
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
+                </article>
+            </section>
+
+            <!-- Courses -->
+            <section id="admin-section-courses" class="admin-section<?= $section === 'courses' ? ' is-active' : '' ?>">
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Modules</p>
+                            <h3>Course management</h3>
+                            <p class="admin-card-lead">Create, edit, archive, and duplicate course spaces without editing the database manually.</p>
+                        </div>
+                        <button type="button" class="admin-btn admin-btn--primary" data-admin-open="create-course-panel">
+                            <?= portal_icon('plus', 'icon-sm') ?> Add course
+                        </button>
+                    </header>
+
+                    <form class="admin-filter-row" method="get" action="admin.php">
+                        <input type="hidden" name="section" value="courses">
+                        <label class="admin-search">
+                            <span class="visually-hidden">Search courses</span>
+                            <input type="search" name="course_q" value="<?= portal_escape($courseQuery) ?>" placeholder="Search title, code, or slug">
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Status</span>
+                            <select name="course_status">
+                                <option value="all"<?= $courseStatus === 'all' ? ' selected' : '' ?>>All</option>
+                                <option value="open"<?= $courseStatus === 'open' ? ' selected' : '' ?>>Open</option>
+                                <option value="draft"<?= $courseStatus === 'draft' ? ' selected' : '' ?>>Draft</option>
+                                <option value="archived"<?= $courseStatus === 'archived' ? ' selected' : '' ?>>Archived</option>
+                            </select>
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Year</span>
+                            <select name="course_year">
+                                <option value="all">All years</option>
+                                <?php foreach ($courseYearOptions as $yr): ?>
+                                <option value="<?= portal_escape($yr) ?>"<?= $courseYear === $yr ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <button type="submit" class="admin-btn admin-btn--secondary">Filter</button>
+                    </form>
+
+                    <div class="admin-table-wrap">
+                        <table class="admin-table admin-table--courses">
+                            <thead>
+                                <tr>
+                                    <th>Course</th>
+                                    <th>Code</th>
+                                    <th>Year</th>
+                                    <th>Term</th>
+                                    <th>Status</th>
+                                    <th>Schedule</th>
+                                    <th>Enrolled</th>
+                                    <th>Staff</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($filteredAdminCourses as $c): ?>
+                                <?php
+                                    $statusKey = (string) $c['status'];
+                                    $badgeClass = in_array($statusKey, ['open', 'draft', 'archived'], true)
+                                        ? 'admin-badge--' . $statusKey : 'admin-badge--draft';
+                                ?>
+                                <tr>
+                                    <td>
+                                        <div class="admin-course-cell">
+                                            <span class="admin-course-accent" style="background:<?= portal_escape((string) $c['accent']) ?>"></span>
+                                            <div>
+                                                <strong><?= portal_escape((string) $c['title']) ?></strong>
+                                                <span class="admin-table-meta"><?= portal_escape((string) $c['slug']) ?></span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td><?= portal_escape((string) $c['code']) ?></td>
+                                    <td><?= portal_escape((string) $c['year_group']) ?></td>
+                                    <td><?= portal_escape((string) $c['term']) ?></td>
+                                    <td><span class="admin-badge <?= portal_escape($badgeClass) ?>"><?= portal_escape((string) $c['status_label']) ?></span></td>
+                                    <td>
+                                        <span><?= portal_escape((string) $c['meeting']) ?></span>
+                                        <span class="admin-table-meta"><?= portal_escape((string) $c['room']) ?></span>
+                                    </td>
+                                    <td><?= (int) $c['enrollment_count'] ?></td>
+                                    <td><?= (int) $c['assigned_staff_count'] ?></td>
+                                    <td>
+                                        <div class="admin-table-actions">
+                                            <a class="admin-btn admin-btn--secondary admin-btn--sm" href="course.php?course=<?= portal_escape((string) $c['slug']) ?>">View</a>
+                                            <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('courses', ['edit' => (int) $c['id']])) ?>">Edit</a>
+                                            <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('courses', ['duplicate' => (int) $c['id']])) ?>">Duplicate</a>
+                                            <?php if ($c['status'] === 'archived'): ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-inline-form">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="restore_course">
+                                                <input type="hidden" name="course_id" value="<?= (int) $c['id'] ?>">
+                                                <button type="submit" class="admin-btn admin-btn--primary admin-btn--sm">Restore</button>
+                                            </form>
+                                            <?php else: ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-inline-form"
+                                                  onsubmit="return confirm('Archive <?= portal_escape((string) $c['title']) ?>? All data will be kept.')">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="archive_course">
+                                                <input type="hidden" name="course_id" value="<?= (int) $c['id'] ?>">
+                                                <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Archive</button>
+                                            </form>
+                                            <?php endif; ?>
+                                            <?php if ($isOwner): ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-inline-form"
+                                                  onsubmit="return confirm('Permanently delete this course? Only empty courses can be removed.')">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="delete_course">
+                                                <input type="hidden" name="course_id" value="<?= (int) $c['id'] ?>">
+                                                <button type="submit" class="admin-btn admin-btn--danger admin-btn--sm">Delete</button>
+                                            </form>
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($filteredAdminCourses === []): ?>
+                                <tr><td colspan="9" class="admin-table-empty">No courses match your filters.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
+            <!-- Enrolments -->
+            <section id="admin-section-enrollments" class="admin-section<?= $section === 'enrollments' ? ' is-active' : '' ?>">
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Course access</p>
+                            <h3>Manage enrolments</h3>
+                            <p class="admin-card-lead">Select a user, then tick the modules they should access.</p>
+                        </div>
+                    </header>
+
+                    <form class="admin-filter-row" method="get" action="admin.php">
+                        <input type="hidden" name="section" value="enrollments">
+                        <label class="admin-field admin-field--inline admin-field--grow">
+                            <span>Select user</span>
+                            <select name="enroll" onchange="this.form.submit()">
+                                <option value="">Choose a user…</option>
+                                <?php foreach ($users as $u): ?>
+                                <option value="<?= (int) $u['id'] ?>"<?= $enrollTargetId === (int) $u['id'] ? ' selected' : '' ?>>
+                                    <?= portal_escape($u['name']) ?> (<?= portal_escape($u['username']) ?>)
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                    </form>
+
+                    <?php if ($enrollTarget): ?>
+                    <div class="admin-enroll-target">
+                        <div class="admin-table-user">
+                            <div class="admin-avatar"><?= portal_escape($enrollTarget['initials']) ?></div>
+                            <div>
+                                <strong><?= portal_escape($enrollTarget['name']) ?></strong>
+                                <span class="admin-table-meta"><?= portal_escape($enrollTarget['email']) ?> · <?= count($enrolledIds) ?> of <?= count($allCourses) ?> courses</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <form method="post" action="<?= portal_escape($adminUrl('enrollments', ['enroll' => $enrollTargetId])) ?>">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="save_enrollments">
+                        <input type="hidden" name="user_id" value="<?= (int) $enrollTarget['id'] ?>">
+
+                        <label class="admin-search admin-search--block">
+                            <span class="visually-hidden">Filter courses</span>
+                            <input type="search" id="enroll-course-filter" placeholder="Filter courses by title or code" value="<?= portal_escape($enrollCourseQ) ?>">
+                        </label>
+
+                        <div class="admin-enroll-grid" id="enroll-course-grid">
+                            <?php foreach ($allCourses as $course): ?>
+                            <?php
+                                $checked = in_array((int) $course['id'], $enrolledIds, true);
+                                $cStatus = (string) $course['status'];
+                                $cBadge = in_array($cStatus, ['open', 'draft', 'archived'], true) ? 'admin-badge--' . $cStatus : 'admin-badge--draft';
+                            ?>
+                            <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>"
+                                   data-enroll-search="<?= portal_escape(strtolower($course['title'] . ' ' . $course['code'])) ?>">
+                                <input type="checkbox" name="course_ids[]" value="<?= (int) $course['id'] ?>"<?= $checked ? ' checked' : '' ?>>
+                                <span class="admin-course-dot" style="background:<?= portal_escape($course['accent']) ?>"></span>
+                                <div class="admin-enroll-text">
+                                    <strong><?= portal_escape($course['title']) ?></strong>
+                                    <span><?= portal_escape($course['code']) ?></span>
+                                </div>
+                                <span class="admin-badge <?= portal_escape($cBadge) ?>"><?= portal_escape($course['status_label']) ?></span>
+                            </label>
+                            <?php endforeach; ?>
+                        </div>
+
+                        <div class="admin-form-actions">
+                            <button type="submit" class="admin-btn admin-btn--primary">Save enrolments</button>
+                            <a href="<?= portal_escape($adminUrl('enrollments')) ?>" class="admin-btn admin-btn--secondary">Clear selection</a>
+                        </div>
+                    </form>
+                    <?php else: ?>
+                    <p class="admin-card-lead">Choose a user above to manage their course enrolments.</p>
+                    <?php endif; ?>
+                </article>
+            </section>
+
+            <!-- Integrity -->
+            <section id="admin-section-integrity" class="admin-section<?= $section === 'integrity' ? ' is-active' : '' ?>">
+                <div class="admin-status-row">
+                    <article class="admin-card admin-card--compact">
+                        <p class="admin-stat-label">External AI policy</p>
+                        <strong><?= portal_escape(ucwords(str_replace('_', ' ', $integrityPolicy))) ?></strong>
+                        <span class="admin-badge <?= $integrityPolicy === 'disabled' ? 'admin-badge--draft' : 'admin-badge--open' ?>">
+                            <?= $integrityPolicy === 'disabled' ? 'Disabled' : 'Enabled' ?>
+                        </span>
+                    </article>
+                    <article class="admin-card admin-card--compact">
+                        <p class="admin-stat-label">ZeroGPT API key</p>
+                        <span class="admin-badge <?= $integrityKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>">
+                            <?= $integrityKeySet ? 'Configured' : 'Missing key' ?>
+                        </span>
+                    </article>
+                    <article class="admin-card admin-card--compact">
+                        <p class="admin-stat-label">Google Safe Browsing</p>
+                        <span class="admin-badge <?= $safeBrowsingKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>">
+                            <?= $safeBrowsingKeySet ? 'Configured' : 'Missing key' ?>
+                        </span>
+                    </article>
                 </div>
 
-                <div class="button-row">
-                    <button type="submit" class="button">Save settings</button>
-                </div>
-            </form>
-        </article>
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Integrity</p>
+                            <h3>Integrity and link safety</h3>
+                            <p class="admin-card-lead">Configure ZeroGPT for optional external AI checks and Google Safe Browsing for safer external course links.</p>
+                        </div>
+                    </header>
 
-        <article class="card-shell">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Permissions</p>
-                    <h3 class="card-title">Role guide</h3>
-                </div>
-            </div>
-            <div class="admin-role-guide">
-                <div class="admin-role-row">
-                    <span class="admin-role-badge role-owner">Owner</span>
-                    <p>Full access — manage all accounts, change roles, delete any user.</p>
-                </div>
-                <div class="admin-role-row">
-                    <span class="admin-role-badge role-admin">Admin</span>
-                    <p>Create accounts, manage enrollments, assign teachers to courses.</p>
-                </div>
-                <div class="admin-role-row">
-                    <span class="admin-role-badge role-teacher">Teacher</span>
-                    <p>Manage folders, materials, and announcements for assigned courses only.</p>
-                </div>
-                <div class="admin-role-row">
-                    <span class="admin-role-badge role-supervisor">Supervisor</span>
-                    <p>Same course-management tools as a teacher, but only on courses an admin/owner assigns to them. No admin panel access.</p>
-                </div>
-                <div class="admin-role-row">
-                    <span class="admin-role-badge role-student">Student</span>
-                    <p>Access enrolled courses only via the student portal.</p>
-                </div>
-            </div>
-        </article>
+                    <form method="post" action="<?= portal_escape($adminUrl('integrity')) ?>" class="admin-integrity-form">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="save_integrity_settings">
 
+                        <label class="admin-field">
+                            <span>ZeroGPT API key</span>
+                            <input type="password" name="zerogpt_api_key" autocomplete="new-password"
+                                   placeholder="<?= $integrityKeySet ? 'Leave blank to keep current key' : 'Paste your ZeroGPT API key' ?>">
+                            <?php if ($integrityKeySet): ?>
+                            <label class="admin-checkbox-inline">
+                                <input type="checkbox" name="clear_zerogpt_api_key" value="1">
+                                Remove saved API key
+                            </label>
+                            <?php endif; ?>
+                            <small class="admin-field-hint">Keys are stored in the site database and never shown after saving.</small>
+                        </label>
+
+                        <label class="admin-field">
+                            <span>Google Safe Browsing API key</span>
+                            <input type="password" name="google_safe_browsing_api_key" autocomplete="new-password"
+                                   placeholder="<?= $safeBrowsingKeySet ? 'Leave blank to keep current key' : 'Paste your Google Safe Browsing API key' ?>">
+                            <?php if ($safeBrowsingKeySet): ?>
+                            <label class="admin-checkbox-inline">
+                                <input type="checkbox" name="clear_google_safe_browsing_api_key" value="1">
+                                Remove saved Google Safe Browsing key
+                            </label>
+                            <?php endif; ?>
+                            <small class="admin-field-hint">Used server-side before users open external link items.</small>
+                        </label>
+
+                        <fieldset class="admin-policy-fieldset">
+                            <legend>When should external AI detection run?</legend>
+                            <label class="admin-radio">
+                                <input type="radio" name="external_ai_policy" value="disabled"<?= $integrityPolicy === 'disabled' ? ' checked' : '' ?>>
+                                <span><strong>Disabled</strong> — never call ZeroGPT (internal checks still run).</span>
+                            </label>
+                            <label class="admin-radio">
+                                <input type="radio" name="external_ai_policy" value="site_wide"<?= $integrityPolicy === 'site_wide' ? ' checked' : '' ?>>
+                                <span><strong>Site-wide</strong> — run for every submission when an API key is configured.</span>
+                            </label>
+                            <label class="admin-radio">
+                                <input type="radio" name="external_ai_policy" value="per_module"<?= $integrityPolicy === 'per_module' ? ' checked' : '' ?>>
+                                <span><strong>Selected modules only</strong> — enable specific courses below.</span>
+                            </label>
+                        </fieldset>
+
+                        <div class="admin-ai-modules" id="admin-ai-modules"<?= $integrityPolicy === 'per_module' ? '' : ' hidden' ?>>
+                            <p class="admin-field-hint">Choose which modules can use external AI detection.</p>
+                            <div class="admin-enroll-grid">
+                                <?php foreach ($integrityCourses as $ic): ?>
+                                <?php $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1; ?>
+                                <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
+                                    <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
+                                    <div class="admin-enroll-text">
+                                        <strong><?= portal_escape((string) $ic['title']) ?></strong>
+                                        <span><?= portal_escape((string) $ic['code']) ?></span>
+                                    </div>
+                                </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+
+                        <div class="admin-form-actions">
+                            <button type="submit" class="admin-btn admin-btn--primary">Save settings</button>
+                        </div>
+                    </form>
+                </article>
+            </section>
+
+            <!-- Security Activity -->
+            <section id="admin-section-security" class="admin-section<?= $section === 'security' ? ' is-active' : '' ?>">
+                <?php if ($systemNeedsDevReview): ?>
+                <div class="admin-flash error">
+                    System configuration requires developer review. Contact your system developer if this message persists.
+                </div>
+                <?php endif; ?>
+
+                <div class="admin-stat-grid admin-stat-grid--security">
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Active alerts</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['active_alerts'] ?></strong>
+                        <p class="admin-stat-caption"><?= $securityStats['active_alerts'] === 0 ? 'No unresolved alerts' : 'Medium/high events need review' ?></p>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Failed logins</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['failed_logins'] ?></strong>
+                        <p class="admin-stat-caption"><?= $securityStats['failed_logins'] === 0 ? 'No failed logins in period' : $securityStats['failed_logins'] . ' in selected period' ?></p>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Blocked access</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['blocked_access'] ?></strong>
+                        <p class="admin-stat-caption"><?= $securityStats['blocked_access'] === 0 ? 'No blocked access attempts' : 'Admin, course, or download blocks' ?></p>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Blocked uploads</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['blocked_uploads'] ?></strong>
+                        <p class="admin-stat-caption"><?= $securityStats['blocked_uploads'] === 0 ? 'No dangerous uploads detected' : 'Invalid type or content rejected' ?></p>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Unsafe content</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['unsafe_content'] ?></strong>
+                        <p class="admin-stat-caption"><?= $securityStats['unsafe_content'] === 0 ? 'No unsafe HTML detected' : 'Dangerous markup removed' ?></p>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Admin actions</p>
+                        <strong class="admin-stat-value"><?= (int) $securityStats['admin_actions'] ?></strong>
+                        <p class="admin-stat-caption">Role changes, deletions, archive/restore</p>
+                    </article>
+                </div>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Activity log</p>
+                            <h3>Recent security events</h3>
+                            <p class="admin-card-lead">Suspicious sign-ins, blocked access, rejected uploads, and important admin actions.</p>
+                        </div>
+                        <form method="post" action="<?= portal_escape($adminUrl('security', [
+                            'sec_period' => $secPeriod,
+                            'sec_reviewed' => $secReviewed,
+                            'sec_severity' => $secSeverity,
+                            'sec_type' => $secType,
+                        ])) ?>" class="admin-inline-form">
+                            <?= portal_csrf_field() ?>
+                            <input type="hidden" name="action" value="mark_security_low_info_reviewed">
+                            <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                            <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                            <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                            <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                            <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark low/info reviewed</button>
+                        </form>
+                    </header>
+
+                    <form class="admin-filter-row" method="get" action="admin.php">
+                        <input type="hidden" name="section" value="security">
+                        <label class="admin-field admin-field--inline">
+                            <span>Period</span>
+                            <select name="sec_period">
+                                <option value="24h"<?= $secPeriod === '24h' ? ' selected' : '' ?>>Last 24 hours</option>
+                                <option value="7d"<?= $secPeriod === '7d' ? ' selected' : '' ?>>Last 7 days</option>
+                                <option value="30d"<?= $secPeriod === '30d' ? ' selected' : '' ?>>Last 30 days</option>
+                            </select>
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Reviewed</span>
+                            <select name="sec_reviewed">
+                                <option value="all"<?= $secReviewed === 'all' ? ' selected' : '' ?>>All</option>
+                                <option value="unreviewed"<?= $secReviewed === 'unreviewed' ? ' selected' : '' ?>>Unreviewed</option>
+                                <option value="reviewed"<?= $secReviewed === 'reviewed' ? ' selected' : '' ?>>Reviewed</option>
+                            </select>
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Severity</span>
+                            <select name="sec_severity">
+                                <option value="all"<?= $secSeverity === 'all' ? ' selected' : '' ?>>All</option>
+                                <option value="info"<?= $secSeverity === 'info' ? ' selected' : '' ?>>Info</option>
+                                <option value="low"<?= $secSeverity === 'low' ? ' selected' : '' ?>>Low</option>
+                                <option value="medium"<?= $secSeverity === 'medium' ? ' selected' : '' ?>>Medium</option>
+                                <option value="high"<?= $secSeverity === 'high' ? ' selected' : '' ?>>High</option>
+                            </select>
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Event type</span>
+                            <select name="sec_type">
+                                <option value="all"<?= $secType === 'all' ? ' selected' : '' ?>>All types</option>
+                                <?php foreach ($securityTypes as $typeKey): ?>
+                                <option value="<?= portal_escape($typeKey) ?>"<?= $secType === $typeKey ? ' selected' : '' ?>><?= portal_escape(portal_security_event_type_label($typeKey)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <button type="submit" class="admin-btn admin-btn--secondary">Apply filters</button>
+                    </form>
+
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Date / time</th>
+                                    <th>Severity</th>
+                                    <th>Event</th>
+                                    <th>User</th>
+                                    <th>Route</th>
+                                    <th>Details</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($securityEvents as $event): ?>
+                                <?php
+                                    $evSeverity = (string) $event['severity'];
+                                    $isReviewed = (int) ($event['reviewed'] ?? 0) === 1;
+                                    $evUser = (string) ($event['username'] ?? '');
+                                    if ($evUser === '' && !empty($event['user_id'])) {
+                                        $evUser = 'User #' . (int) $event['user_id'];
+                                    }
+                                    if ($evUser === '') {
+                                        $evUser = '—';
+                                    }
+                                ?>
+                                <tr>
+                                    <td><?= portal_escape(date('j M Y H:i', strtotime((string) $event['created_at']))) ?></td>
+                                    <td><span class="admin-severity admin-severity--<?= portal_escape($evSeverity) ?>"><?= portal_escape(ucfirst($evSeverity)) ?></span></td>
+                                    <td><?= portal_escape(portal_security_event_type_label((string) $event['event_type'])) ?></td>
+                                    <td><?= portal_escape($evUser) ?></td>
+                                    <td><code class="admin-route-code"><?= portal_escape((string) $event['route']) ?></code></td>
+                                    <td><?= portal_escape((string) $event['details']) ?></td>
+                                    <td>
+                                        <?php if ($isReviewed): ?>
+                                        <span class="admin-badge admin-badge--open">Reviewed</span>
+                                        <?php else: ?>
+                                        <span class="admin-badge admin-badge--draft">Open</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php if (!$isReviewed): ?>
+                                        <form method="post" action="<?= portal_escape($adminUrl('security', [
+                                            'sec_period' => $secPeriod,
+                                            'sec_reviewed' => $secReviewed,
+                                            'sec_severity' => $secSeverity,
+                                            'sec_type' => $secType,
+                                        ])) ?>" class="admin-inline-form">
+                                            <?= portal_csrf_field() ?>
+                                            <input type="hidden" name="action" value="mark_security_event_reviewed">
+                                            <input type="hidden" name="event_id" value="<?= (int) $event['id'] ?>">
+                                            <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                                            <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                                            <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                                            <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                                            <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark reviewed</button>
+                                        </form>
+                                        <?php else: ?>
+                                        <span class="admin-table-meta">—</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($securityEvents === []): ?>
+                                <tr><td colspan="8" class="admin-table-empty">No security events found for these filters.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <?php if ($showDeveloperSecurity): ?>
+                <article class="admin-card admin-card--diagnostics">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Developer only</p>
+                            <h3>Developer diagnostics</h3>
+                            <p class="admin-card-lead">Technical configuration checks. Not shown to regular admins.</p>
+                        </div>
+                    </header>
+                    <div class="admin-status-row">
+                        <article class="admin-card admin-card--compact">
+                            <p class="admin-stat-label">Database storage</p>
+                            <span class="admin-badge <?= portal_db_is_in_webroot() ? 'admin-badge--archived' : 'admin-badge--open' ?>">
+                                <?= portal_db_is_in_webroot() ? 'Needs relocation' : 'Outside web root' ?>
+                            </span>
+                            <p class="admin-field-hint"><?= getenv('PORTAL_DB_PATH') !== false && trim((string) getenv('PORTAL_DB_PATH')) !== '' ? 'Using PORTAL_DB_PATH' : 'Using default database location' ?></p>
+                        </article>
+                        <article class="admin-card admin-card--compact">
+                            <p class="admin-stat-label">Upload protection</p>
+                            <span class="admin-badge admin-badge--open">Active</span>
+                            <p class="admin-field-hint">Upload and database folders are blocked from direct browser access.</p>
+                        </article>
+                        <article class="admin-card admin-card--compact">
+                            <p class="admin-stat-label">Rich text sanitizer</p>
+                            <span class="admin-badge admin-badge--open">Enabled</span>
+                        </article>
+                        <article class="admin-card admin-card--compact">
+                            <p class="admin-stat-label">CSRF protection</p>
+                            <span class="admin-badge admin-badge--open">Enabled</span>
+                        </article>
+                    </div>
+                    <?php if ($dbSecurityWarning): ?>
+                    <div class="admin-flash error admin-flash--compact">
+                        <?= portal_escape($dbSecurityWarning) ?>
+                    </div>
+                    <?php endif; ?>
+                    <ul class="admin-checklist">
+                        <li>Move the SQLite database outside the public web folder using <code>PORTAL_DB_PATH</code> in production.</li>
+                        <li>Confirm <code>/database/portal.db</code> returns 403 or denied in the browser.</li>
+                        <li>Never commit <code>INITIAL_OWNER_PASSWORD.txt</code> or API keys to version control.</li>
+                        <li>Run automated security tests: <code>npm run test:security</code></li>
+                        <li>Run rich-text XSS checks: <code>php tests/security_rich_text_check.php</code></li>
+                    </ul>
+                </article>
+                <?php elseif (portal_is_owner()): ?>
+                <article class="admin-card admin-card--muted">
+                    <p class="admin-card-lead">Developer diagnostics are hidden. Set <code>PORTAL_SHOW_DEVELOPER_SECURITY=1</code> in your environment to view technical configuration checks.</p>
+                </article>
+                <?php else: ?>
+                <article class="admin-card admin-card--muted">
+                    <p class="admin-card-lead">Developer diagnostics hidden. Contact the system developer for configuration checks.</p>
+                </article>
+                <?php endif; ?>
+            </section>
+
+        </div>
     </div>
-</section>
+</div>
+
+<!-- Create course panel -->
+<dialog class="admin-panel" id="create-course-panel">
+    <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-panel-form">
+        <?= portal_csrf_field() ?>
+        <input type="hidden" name="action" value="create_course">
+        <header class="admin-panel-header">
+            <h3>Add course / module</h3>
+            <button type="button" class="admin-panel-close" data-admin-close aria-label="Close">&times;</button>
+        </header>
+        <div class="admin-form-grid">
+            <label class="admin-field"><span>Course title</span><input type="text" name="title" required></label>
+            <label class="admin-field"><span>Full title</span><input type="text" name="full_title" required></label>
+            <label class="admin-field"><span>Course code</span><input type="text" name="code" required placeholder="BIO-2526-01"></label>
+            <label class="admin-field"><span>Slug</span><input type="text" name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="biology-2526"></label>
+            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"></textarea></label>
+            <label class="admin-field"><span>Year group</span><input type="text" name="year_group" value="25/26"></label>
+            <label class="admin-field"><span>Term</span><input type="text" name="term" value="Full year"></label>
+            <label class="admin-field"><span>Status</span>
+                <select name="status">
+                    <option value="draft" selected>Draft</option>
+                    <option value="open">Open</option>
+                    <option value="archived">Archived</option>
+                </select>
+            </label>
+            <label class="admin-field"><span>Status label</span><input type="text" name="status_label" placeholder="Auto from status"></label>
+            <label class="admin-field"><span>Accent colour</span><input type="text" name="accent" value="#c1202f" pattern="#[0-9a-fA-F]{6}"></label>
+            <label class="admin-field"><span>Meeting time</span><input type="text" name="meeting" value="TBA"></label>
+            <label class="admin-field"><span>Room</span><input type="text" name="room" value="TBA"></label>
+            <label class="admin-field admin-field--full"><span>Notice</span><textarea name="notice" rows="2"></textarea></label>
+        </div>
+        <footer class="admin-panel-footer">
+            <button type="button" class="admin-btn admin-btn--secondary" data-admin-close>Cancel</button>
+            <button type="submit" class="admin-btn admin-btn--primary">Create course</button>
+        </footer>
+    </form>
+</dialog>
+
+<?php if ($editCourse): ?>
+<dialog class="admin-panel" id="edit-course-panel" open>
+    <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-panel-form">
+        <?= portal_csrf_field() ?>
+        <input type="hidden" name="action" value="update_course">
+        <input type="hidden" name="course_id" value="<?= (int) $editCourse['id'] ?>">
+        <header class="admin-panel-header">
+            <h3>Edit course</h3>
+            <a class="admin-panel-close" href="<?= portal_escape($adminUrl('courses')) ?>" aria-label="Close">&times;</a>
+        </header>
+        <p class="admin-field-hint admin-field-hint--panel">Slug: <code><?= portal_escape((string) $editCourse['slug']) ?></code> (not editable — preserves links and uploads)</p>
+        <div class="admin-form-grid">
+            <label class="admin-field"><span>Course title</span><input type="text" name="title" required value="<?= portal_escape((string) $editCourse['title']) ?>"></label>
+            <label class="admin-field"><span>Full title</span><input type="text" name="full_title" required value="<?= portal_escape((string) $editCourse['full_title']) ?>"></label>
+            <label class="admin-field"><span>Course code</span><input type="text" name="code" required value="<?= portal_escape((string) $editCourse['code']) ?>"></label>
+            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"><?= portal_escape((string) $editCourse['summary']) ?></textarea></label>
+            <label class="admin-field"><span>Year group</span><input type="text" name="year_group" value="<?= portal_escape((string) $editCourse['year_group']) ?>"></label>
+            <label class="admin-field"><span>Term</span><input type="text" name="term" value="<?= portal_escape((string) $editCourse['term']) ?>"></label>
+            <label class="admin-field"><span>Status</span>
+                <select name="status">
+                    <option value="open"<?= $editCourse['status'] === 'open' ? ' selected' : '' ?>>Open</option>
+                    <option value="draft"<?= $editCourse['status'] === 'draft' ? ' selected' : '' ?>>Draft</option>
+                    <option value="archived"<?= $editCourse['status'] === 'archived' ? ' selected' : '' ?>>Archived</option>
+                </select>
+            </label>
+            <label class="admin-field"><span>Status label</span><input type="text" name="status_label" value="<?= portal_escape((string) $editCourse['status_label']) ?>"></label>
+            <label class="admin-field"><span>Accent colour</span><input type="text" name="accent" value="<?= portal_escape((string) $editCourse['accent']) ?>" pattern="#[0-9a-fA-F]{6}"></label>
+            <label class="admin-field"><span>Meeting time</span><input type="text" name="meeting" value="<?= portal_escape((string) $editCourse['meeting']) ?>"></label>
+            <label class="admin-field"><span>Room</span><input type="text" name="room" value="<?= portal_escape((string) $editCourse['room']) ?>"></label>
+            <label class="admin-field admin-field--full"><span>Notice</span><textarea name="notice" rows="2"><?= portal_escape((string) $editCourse['notice']) ?></textarea></label>
+        </div>
+        <footer class="admin-panel-footer">
+            <a href="<?= portal_escape($adminUrl('courses')) ?>" class="admin-btn admin-btn--secondary">Cancel</a>
+            <button type="submit" class="admin-btn admin-btn--primary">Save changes</button>
+        </footer>
+    </form>
+</dialog>
+<?php endif; ?>
+
+<?php if ($duplicateCourse): ?>
+<dialog class="admin-panel" id="duplicate-course-panel" open>
+    <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-panel-form">
+        <?= portal_csrf_field() ?>
+        <input type="hidden" name="action" value="duplicate_course">
+        <input type="hidden" name="source_course_id" value="<?= (int) $duplicateCourse['id'] ?>">
+        <header class="admin-panel-header">
+            <h3>Duplicate course</h3>
+            <a class="admin-panel-close" href="<?= portal_escape($adminUrl('courses')) ?>" aria-label="Close">&times;</a>
+        </header>
+        <p class="admin-field-hint admin-field-hint--panel">Copying metadata from <strong><?= portal_escape((string) $duplicateCourse['title']) ?></strong>. Enrolments, submissions, and materials are not copied.</p>
+        <div class="admin-form-grid">
+            <label class="admin-field"><span>New course title</span><input type="text" name="title" required value="<?= portal_escape((string) $duplicateCourse['title'] . ' (copy)') ?>"></label>
+            <label class="admin-field"><span>New full title</span><input type="text" name="full_title" required value="<?= portal_escape((string) $duplicateCourse['full_title'] . ' (copy)') ?>"></label>
+            <label class="admin-field"><span>New course code</span><input type="text" name="code" required placeholder="NEW-CODE-01"></label>
+            <label class="admin-field"><span>New slug</span><input type="text" name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="new-slug-2526"></label>
+        </div>
+        <footer class="admin-panel-footer">
+            <a href="<?= portal_escape($adminUrl('courses')) ?>" class="admin-btn admin-btn--secondary">Cancel</a>
+            <button type="submit" class="admin-btn admin-btn--primary">Create duplicate</button>
+        </footer>
+    </form>
+</dialog>
+<?php endif; ?>
+
 <script>
 (function () {
-    const modules = document.getElementById('admin-ai-modules');
-    if (!modules) return;
-    function syncModules() {
-        const sel = document.querySelector('input[name="external_ai_policy"]:checked');
-        modules.hidden = !sel || sel.value !== 'per_module';
-    }
-    document.querySelectorAll('input[name="external_ai_policy"]').forEach(radio => {
-        radio.addEventListener('change', syncModules);
+    document.querySelectorAll('[data-admin-open]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-admin-open');
+            var dlg = document.getElementById(id);
+            if (dlg && typeof dlg.showModal === 'function') dlg.showModal();
+        });
     });
-    syncModules();
+
+    document.querySelectorAll('[data-admin-close]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var dlg = btn.closest('dialog');
+            if (dlg) dlg.close();
+        });
+    });
+
+    var modules = document.getElementById('admin-ai-modules');
+    if (modules) {
+        function syncModules() {
+            var sel = document.querySelector('input[name="external_ai_policy"]:checked');
+            modules.hidden = !sel || sel.value !== 'per_module';
+        }
+        document.querySelectorAll('input[name="external_ai_policy"]').forEach(function (radio) {
+            radio.addEventListener('change', syncModules);
+        });
+        syncModules();
+    }
+
+    var enrollFilter = document.getElementById('enroll-course-filter');
+    var enrollGrid = document.getElementById('enroll-course-grid');
+    if (enrollFilter && enrollGrid) {
+        enrollFilter.addEventListener('input', function () {
+            var q = enrollFilter.value.trim().toLowerCase();
+            enrollGrid.querySelectorAll('.admin-enroll-item').forEach(function (item) {
+                var hay = item.getAttribute('data-enroll-search') || '';
+                item.hidden = q !== '' && hay.indexOf(q) === -1;
+            });
+        });
+        if (enrollFilter.value.trim() !== '') {
+            enrollFilter.dispatchEvent(new Event('input'));
+        }
+    }
 })();
 </script>
 <?php

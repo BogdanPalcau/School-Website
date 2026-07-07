@@ -93,6 +93,7 @@ if (isset($_GET['item'])) {
     }
 
     if (!$canAccess) {
+        portal_log_security_event('forbidden_download', 'medium', 'Blocked download of course material');
         http_response_code(403);
         exit('Access denied.');
     }
@@ -136,6 +137,7 @@ if (isset($_GET['sub'])) {
               || (int) $sub['user_id'] === (int) $me['id'];
 
     if (!$canAccess) {
+        portal_log_security_event('forbidden_download', 'medium', 'Blocked download of submission file');
         http_response_code(403);
         exit('Access denied.');
     }
