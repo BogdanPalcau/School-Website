@@ -1359,10 +1359,8 @@ if (!function_exists('portal_run_migrations')) {
         }
 
         // ── Course teachers (junction: assigned course staff → courses) ────────
-        // Despite the historical name, this table now stores ANY assigned
-        // course staff account — both 'teacher' and 'supervisor' roles. It is
-        // the single source of truth that portal_assigned_course_ids() and
-        // portal_can_manage_course() read from.
+        // Stores teacher accounts assigned to courses. assignment_role is
+        // course-level: 'teacher' or 'supervisor' (Course Supervisor).
         $db->exec("
             CREATE TABLE IF NOT EXISTS course_teachers (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1372,6 +1370,56 @@ if (!function_exists('portal_run_migrations')) {
                 UNIQUE(course_id, user_id)
             )
         ");
+
+        $ctCols = array_column($db->query("PRAGMA table_info(course_teachers)")->fetchAll(), 'name');
+        if (!in_array('assignment_role', $ctCols, true)) {
+            $db->exec("ALTER TABLE course_teachers ADD COLUMN assignment_role TEXT NOT NULL DEFAULT 'teacher'");
+        }
+
+        // Legacy: global role 'supervisor' → teacher + course-level supervisor assignment
+        try {
+            $legacySupervisorIds = $db->query(
+                "SELECT id FROM users WHERE role = 'supervisor'"
+            )->fetchAll(PDO::FETCH_COLUMN);
+            if ($legacySupervisorIds !== []) {
+                $markSupervisor = $db->prepare(
+                    "UPDATE course_teachers SET assignment_role = 'supervisor' WHERE user_id = ?"
+                );
+                foreach ($legacySupervisorIds as $legacyId) {
+                    $markSupervisor->execute([(int) $legacyId]);
+                }
+                $db->exec("UPDATE users SET role = 'teacher' WHERE role = 'supervisor'");
+            }
+        } catch (\PDOException $e) {
+            // Non-fatal during migration.
+        }
+
+        // Remove supervisor from global users.role CHECK (course-level only now)
+        $usersTableSQL = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        )->fetchColumn() ?: '');
+        if ($usersTableSQL !== '' && str_contains($usersTableSQL, "'supervisor'")) {
+            $db->exec('PRAGMA foreign_keys = OFF');
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS _users_role_fix (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                    email         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT    NOT NULL,
+                    name          TEXT    NOT NULL,
+                    year          TEXT    NOT NULL DEFAULT 'Year 11',
+                    programme     TEXT    NOT NULL DEFAULT 'General',
+                    initials      TEXT    NOT NULL DEFAULT 'ST',
+                    role          TEXT    NOT NULL DEFAULT 'student'
+                                      CHECK(role IN ('owner','admin','teacher','student')),
+                    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                )
+            ");
+            $db->exec("INSERT INTO _users_role_fix SELECT * FROM users");
+            $db->exec('DROP TABLE users');
+            $db->exec('ALTER TABLE _users_role_fix RENAME TO users');
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
 
         // ── Course announcements (writable by assigned teachers and admins) ────
         $db->exec("
@@ -1712,33 +1760,95 @@ portal_protect_sensitive_paths();
 // ── Teacher / course-manager permission helpers ───────────────────────────────
 
 if (!function_exists('portal_is_teacher')) {
-    // Strictly the 'teacher' role. Kept narrow on purpose — code that means
-    // "any assigned course staff member" (teacher OR supervisor) should call
-    // portal_is_course_staff() instead of loosening this check.
+    /** Global teacher account (not the same as course-level assignment role). */
     function portal_is_teacher(): bool
     {
         return portal_current_user_role() === 'teacher';
     }
 }
 
+if (!function_exists('portal_valid_assignment_role')) {
+    function portal_valid_assignment_role(string $role): bool
+    {
+        return in_array($role, ['teacher', 'supervisor'], true);
+    }
+}
+
+if (!function_exists('portal_course_assignment_role')) {
+    /**
+     * Course-level staff assignment for a user on a module.
+     *
+     * @return 'teacher'|'supervisor'|null
+     */
+    function portal_course_assignment_role(int $courseId, ?int $userId = null): ?string
+    {
+        if ($courseId <= 0) {
+            return null;
+        }
+
+        if ($userId === null) {
+            if (!portal_is_logged_in()) {
+                return null;
+            }
+            $userId = (int) portal_current_user()['id'];
+        }
+
+        if ($userId <= 0) {
+            return null;
+        }
+
+        $stmt = portal_db()->prepare(
+            'SELECT assignment_role FROM course_teachers WHERE course_id = ? AND user_id = ? LIMIT 1'
+        );
+        $stmt->execute([$courseId, $userId]);
+        $role = $stmt->fetchColumn();
+        if ($role === false) {
+            return null;
+        }
+
+        $role = (string) $role;
+
+        return portal_valid_assignment_role($role) ? $role : 'teacher';
+    }
+}
+
+if (!function_exists('portal_is_course_teacher')) {
+    function portal_is_course_teacher(int $courseId, ?int $userId = null): bool
+    {
+        return portal_course_assignment_role($courseId, $userId) === 'teacher';
+    }
+}
+
+if (!function_exists('portal_is_course_supervisor')) {
+    function portal_is_course_supervisor(int $courseId, ?int $userId = null): bool
+    {
+        return portal_course_assignment_role($courseId, $userId) === 'supervisor';
+    }
+}
+
+if (!function_exists('portal_course_assignment_role_label')) {
+    function portal_course_assignment_role_label(string $assignmentRole): string
+    {
+        return $assignmentRole === 'supervisor' ? 'Course Supervisor' : 'Teacher';
+    }
+}
+
 if (!function_exists('portal_is_supervisor')) {
-    // A Supervisor is course-level staff: higher than a teacher, but never a
-    // full admin/owner. They only gain access to courses an admin/owner has
-    // explicitly assigned them to via course_teachers.
+    /**
+     * @deprecated Supervisor is a course-level assignment, not a global role.
+     *             Use portal_is_course_supervisor($courseId) instead.
+     */
     function portal_is_supervisor(): bool
     {
-        return portal_current_user_role() === 'supervisor';
+        return false;
     }
 }
 
 if (!function_exists('portal_is_course_staff')) {
-    // True for any account that manages courses at the course level (teacher
-    // or supervisor), as opposed to site-wide admin/owner access. Use this
-    // wherever "teacher-like course management" is intended so supervisors
-    // are included automatically.
+    /** True for global teacher accounts (may hold course-level teacher or supervisor assignments). */
     function portal_is_course_staff(): bool
     {
-        return in_array(portal_current_user_role(), ['teacher', 'supervisor'], true);
+        return portal_is_teacher();
     }
 }
 
@@ -1822,18 +1932,15 @@ if (!function_exists('portal_json_response')) {
 }
 
 if (!function_exists('portal_can_manage_course')) {
-    // owner/admin manage every course; teacher/supervisor manage only the
-    // specific courses an admin/owner has assigned them to via
-    // course_teachers. Students never manage courses.
+    // owner/admin manage every course; teacher accounts manage only courses
+    // they are assigned to (as Teacher or Course Supervisor on that module).
     function portal_can_manage_course(int $courseId): bool
     {
         if (portal_is_admin()) {
             return true;
         }
-        if (!portal_is_course_staff()) {
-            return false;
-        }
-        return in_array($courseId, portal_assigned_course_ids(), true);
+
+        return portal_course_assignment_role($courseId) !== null;
     }
 }
 

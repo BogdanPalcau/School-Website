@@ -433,19 +433,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // ── Admin-only: assign / remove course staff (teacher or supervisor) ──────
+    // ── Admin-only: assign / remove / update course staff ─────────────────────
     if (portal_is_admin()) {
         if ($action === 'assign_teacher') {
             $uid = (int) ($_POST['user_id'] ?? 0);
-            $chk = $db->prepare("SELECT id FROM users WHERE id = ? AND role IN ('teacher', 'supervisor')");
+            $assignmentRole = (string) ($_POST['assignment_role'] ?? 'teacher');
+            if (!portal_valid_assignment_role($assignmentRole)) {
+                $assignmentRole = 'teacher';
+            }
+            $chk = $db->prepare("SELECT id FROM users WHERE id = ? AND role = 'teacher'");
             $chk->execute([$uid]);
             if ($chk->fetch()) {
-                $db->prepare("INSERT OR IGNORE INTO course_teachers (course_id, user_id) VALUES (?,?)")
-                   ->execute([$courseId, $uid]);
+                $db->prepare("
+                    INSERT INTO course_teachers (course_id, user_id, assignment_role)
+                    VALUES (?,?,?)
+                    ON CONFLICT(course_id, user_id) DO UPDATE SET assignment_role = excluded.assignment_role
+                ")->execute([$courseId, $uid, $assignmentRole]);
             }
+        } elseif ($action === 'change_assignment_role') {
+            $uid = (int) ($_POST['user_id'] ?? 0);
+            $assignmentRole = (string) ($_POST['assignment_role'] ?? 'teacher');
+            if (!portal_valid_assignment_role($assignmentRole)) {
+                $assignmentRole = 'teacher';
+            }
+            $db->prepare("
+                UPDATE course_teachers SET assignment_role = ?
+                WHERE course_id = ? AND user_id = ?
+            ")->execute([$assignmentRole, $courseId, $uid]);
         } elseif ($action === 'remove_teacher') {
             $uid = (int) ($_POST['user_id'] ?? 0);
-            $db->prepare("DELETE FROM course_teachers WHERE course_id = ? AND user_id = ?")
+            $db->prepare('DELETE FROM course_teachers WHERE course_id = ? AND user_id = ?')
                ->execute([$courseId, $uid]);
         }
     }
@@ -1351,23 +1368,22 @@ unset($_folder);
 
 $submissionModals = '';
 
-// Assigned course staff for this course — teacher or supervisor accounts
-// (course_teachers stores both; see comment on that table in bootstrap.php)
+// Assigned course staff for this course (course-level teacher / supervisor)
 $_tStmt = $_db->prepare(
-    "SELECT u.id, u.name, u.initials, u.email, u.role
+    "SELECT u.id, u.name, u.initials, u.email, ct.assignment_role
      FROM course_teachers ct
      JOIN users u ON u.id = ct.user_id
      WHERE ct.course_id = ?
-     ORDER BY u.name ASC"
+     ORDER BY ct.assignment_role DESC, u.name ASC"
 );
 $_tStmt->execute([$courseId]);
 $courseTeachers = $_tStmt->fetchAll();
 
-// Teacher/supervisor accounts not yet assigned (for admin "+" dropdown)
+// Teacher accounts not yet assigned to this course (admin assign dropdown)
 $courseTeacherIds = array_column($courseTeachers, 'id');
 $availableTeachers = [];
 if (portal_is_admin()) {
-    $_atStmt = $_db->query("SELECT id, name, initials, role FROM users WHERE role IN ('teacher', 'supervisor') ORDER BY name ASC");
+    $_atStmt = $_db->query("SELECT id, name, initials FROM users WHERE role = 'teacher' ORDER BY name ASC");
     foreach ($_atStmt->fetchAll() as $_t) {
         if (!in_array((int) $_t['id'], $courseTeacherIds, true)) {
             $availableTeachers[] = $_t;
@@ -2912,26 +2928,40 @@ ob_start();
 
                 <div class="course-staff-list">
                     <?php if (empty($courseTeachers)): ?>
-                        <p class="folder-empty-note" style="padding:4px 0;">No teachers or supervisors assigned yet.</p>
+                        <p class="folder-empty-note" style="padding:4px 0;">No course staff assigned yet.</p>
                     <?php else: ?>
                         <?php foreach ($courseTeachers as $teacher): ?>
-                            <?php $_staffIsSupervisor = ($teacher['role'] ?? 'teacher') === 'supervisor'; ?>
+                            <?php
+                                $_assignRole = (string) ($teacher['assignment_role'] ?? 'teacher');
+                                $_staffIsSupervisor = $_assignRole === 'supervisor';
+                                $_assignLabel = portal_course_assignment_role_label($_assignRole);
+                            ?>
                             <div class="course-staff-item">
                                 <div class="course-staff-avatar <?= $_staffIsSupervisor ? 'supervisor-avatar' : 'teacher-avatar' ?>"><?= portal_escape($teacher['initials']) ?></div>
                                 <div class="course-staff-info">
                                     <h4><?= portal_escape($teacher['name']) ?></h4>
-                                    <p><?= $_staffIsSupervisor ? 'Supervisor' : 'Teacher' ?></p>
-                                    <span class="admin-role-badge <?= $_staffIsSupervisor ? 'role-supervisor' : 'role-teacher' ?>" style="margin-top:4px;font-size:0.68rem;">Can manage course</span>
+                                    <span class="admin-badge <?= $_staffIsSupervisor ? 'admin-badge--supervisor' : 'admin-badge--teacher' ?>"><?= portal_escape($_assignLabel) ?></span>
                                 </div>
                                 <?php if (portal_is_admin()): ?>
-                                    <form method="POST" class="staff-remove-form">
-                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="remove_teacher">
-                                        <input type="hidden" name="user_id" value="<?= (int) $teacher['id'] ?>">
-                                        <button type="submit" class="btn-icon-danger" title="Remove from course">
-                                            <?= portal_icon('trash', 'icon-sm') ?>
-                                        </button>
-                                    </form>
+                                    <div class="course-staff-admin-actions">
+                                        <form method="POST" class="staff-role-form">
+                                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                            <input type="hidden" name="action" value="change_assignment_role">
+                                            <input type="hidden" name="user_id" value="<?= (int) $teacher['id'] ?>">
+                                            <select name="assignment_role" class="admin-role-select" onchange="this.form.submit()" title="Change assignment">
+                                                <option value="teacher"<?= $_assignRole === 'teacher' ? ' selected' : '' ?>>Course Teacher</option>
+                                                <option value="supervisor"<?= $_assignRole === 'supervisor' ? ' selected' : '' ?>>Course Supervisor</option>
+                                            </select>
+                                        </form>
+                                        <form method="POST" class="staff-remove-form">
+                                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                            <input type="hidden" name="action" value="remove_teacher">
+                                            <input type="hidden" name="user_id" value="<?= (int) $teacher['id'] ?>">
+                                            <button type="submit" class="btn-icon-danger" title="Remove from course">
+                                                <?= portal_icon('trash', 'icon-sm') ?>
+                                            </button>
+                                        </form>
+                                    </div>
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
@@ -2943,24 +2973,31 @@ ob_start();
                         <details class="folder-admin-panel" style="margin-top:14px;">
                             <summary class="folder-admin-trigger folder-admin-trigger--sm">
                                 <?= portal_icon('plus', 'icon-sm') ?>
-                                <span>Assign teacher/supervisor</span>
+                                <span>Assign course staff</span>
                             </summary>
                             <form method="POST" class="folder-admin-form folder-admin-form--inner">
                                 <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                 <input type="hidden" name="action" value="assign_teacher">
                                 <label class="folder-form-label">
-                                    <span>Select teacher or supervisor</span>
+                                    <span>Select teacher account</span>
                                     <select name="user_id">
                                         <?php foreach ($availableTeachers as $t): ?>
-                                            <option value="<?= (int) $t['id'] ?>"><?= portal_escape($t['name']) ?> (<?= $t['role'] === 'supervisor' ? 'Supervisor' : 'Teacher' ?>)</option>
+                                            <option value="<?= (int) $t['id'] ?>"><?= portal_escape($t['name']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </label>
-                                <button type="submit" class="button">Assign</button>
+                                <label class="folder-form-label">
+                                    <span>Assignment on this module</span>
+                                    <select name="assignment_role">
+                                        <option value="teacher">Course Teacher</option>
+                                        <option value="supervisor">Course Supervisor</option>
+                                    </select>
+                                </label>
+                                <button type="submit" class="button button--sm">Assign</button>
                             </form>
                         </details>
                     <?php elseif (empty($courseTeachers)): ?>
-                        <p class="folder-empty-note" style="margin-top:10px;">No teacher or supervisor accounts exist yet. Create one in the admin panel.</p>
+                        <p class="folder-empty-note" style="margin-top:10px;">No teacher accounts exist yet. Create one in Admin → Manage Users.</p>
                     <?php endif; ?>
                 <?php endif; ?>
             </article>

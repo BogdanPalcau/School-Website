@@ -769,9 +769,17 @@ select {
 
 .course-detail-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
     gap: 18px;
     align-items: start;
+}
+
+.course-detail-layout > * {
+    min-width: 0;
+}
+
+.course-detail-layout > .stack:first-child {
+    overflow-x: clip;
 }
 
 .course-content-card {
@@ -4155,51 +4163,91 @@ body {
 
 .admin-enroll-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
     margin-bottom: 18px;
 }
 
 .admin-enroll-item {
-    display: grid;
-    grid-template-columns: 18px 14px minmax(0, 1fr);
-    gap: 10px;
-    align-items: center;
-    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
     border-radius: var(--radius-md);
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
+    background: #fff;
+    border: 1px solid rgba(22, 36, 90, 0.1);
+    box-shadow: 0 4px 14px rgba(24, 18, 20, 0.03);
     cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    min-width: 0;
+}
+
+.admin-enroll-item:hover {
+    border-color: rgba(193, 32, 47, 0.22);
+    box-shadow: 0 6px 18px rgba(24, 18, 20, 0.06);
 }
 
 .admin-enroll-item.enrolled {
-    background: var(--primary-soft);
-    border-color: var(--primary-soft-strong);
+    background: #fffbfc;
+    border-color: rgba(193, 32, 47, 0.28);
+    box-shadow: inset 3px 0 0 var(--primary);
 }
 
 .admin-enroll-item input[type="checkbox"] {
     accent-color: var(--primary);
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
+    margin-top: 2px;
     cursor: pointer;
+    flex-shrink: 0;
 }
 
-.admin-course-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+.admin-enroll-accent {
+    width: 4px;
+    align-self: stretch;
+    min-height: 42px;
+    border-radius: 999px;
     flex-shrink: 0;
+}
+
+.admin-enroll-accent--muted {
+    background: #d1d5db;
+}
+
+.admin-enroll-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.admin-enroll-text {
+    min-width: 0;
+    width: 100%;
 }
 
 .admin-enroll-text strong {
     display: block;
-    font-size: 0.88rem;
+    font-size: 0.92rem;
+    line-height: 1.3;
+    color: var(--text);
 }
 
 .admin-enroll-text span {
+    display: block;
+    margin-top: 2px;
     color: var(--muted);
     font-size: 0.8rem;
+}
+
+.admin-enroll-item .admin-badge {
+    flex-shrink: 0;
+}
+
+.admin-enroll-item[hidden] {
+    display: none;
 }
 
 .admin-stats-grid {
@@ -4660,6 +4708,86 @@ body {
 
 @media (max-width: 560px) {
     .admin-stat-grid--security {
+        grid-template-columns: 1fr;
+    }
+}
+
+.admin-role-guide-note {
+    margin: 18px 0 0;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: #faf3f4;
+    border: 1px solid rgba(193, 32, 47, 0.12);
+    color: var(--muted);
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+.admin-role-guide-section {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.admin-role-guide-section:last-of-type {
+    margin-bottom: 0;
+}
+
+.admin-role-guide-heading {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.admin-role-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.admin-role-guide-grid--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-role-card {
+    display: grid;
+    gap: 10px;
+    padding: 16px;
+    border-radius: var(--radius-md);
+    background: #f8f9fb;
+    border: 1px solid rgba(22, 36, 90, 0.08);
+}
+
+.admin-role-card p {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.admin-card--role-guide .admin-card-header {
+    margin-bottom: 14px;
+}
+
+.course-staff-admin-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.staff-role-form .admin-role-select {
+    min-width: 148px;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 860px) {
+    .admin-role-guide-grid,
+    .admin-role-guide-grid--two {
         grid-template-columns: 1fr;
     }
 }
@@ -6303,11 +6431,14 @@ body {
 
 .folder-item-actions {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
     align-self: start;
     padding-top: 1px;
+    max-width: 100%;
 }
 
 .item-drag-handle {
@@ -6366,6 +6497,10 @@ body {
         grid-template-columns: 16px 20px minmax(0, 1fr) 18px;
         gap: 10px;
         padding: 14px 16px;
+    }
+
+    .folder-card--managed .folder-summary {
+        grid-template-columns: 16px 14px 20px minmax(0, 1fr) 28px 28px 18px;
     }
 }
 
@@ -6428,6 +6563,56 @@ body {
 .staff-remove-form {
     margin: 0;
     flex-shrink: 0;
+}
+
+/* Course page sidebar: keep staff rows inside the column */
+.course-detail-layout aside .course-staff-item {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 8px 12px;
+    align-items: start;
+}
+
+.course-detail-layout aside .course-staff-avatar {
+    width: 44px;
+    height: 44px;
+    font-size: 0.85rem;
+}
+
+.course-detail-layout aside .course-staff-info {
+    min-width: 0;
+}
+
+.course-detail-layout aside .course-staff-admin-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    width: 100%;
+    padding-top: 8px;
+    margin-top: 2px;
+    border-top: 1px solid rgba(130, 15, 26, 0.08);
+}
+
+.course-detail-layout aside .staff-role-form {
+    flex: 1 1 140px;
+    min-width: 0;
+}
+
+.course-detail-layout aside .staff-role-form .admin-role-select {
+    width: 100%;
+    min-width: 0;
+}
+
+.course-detail-layout aside .folder-admin-form select {
+    width: 100%;
+}
+
+.course-detail-layout aside .folder-admin-form .button {
+    width: 100%;
+    justify-content: center;
 }
 
 /* ── Tab settings bar ────────────────────────────────────────────────────────── */
@@ -6592,9 +6777,22 @@ body {
     pointer-events: none;
 }
 
-/* Adjust folder-summary grid to include drag handle */
+/* Adjust folder-summary grid to include drag handle + admin actions */
 .folder-card--managed .folder-summary {
-    grid-template-columns: 20px 16px 22px minmax(0,1fr) 30px 20px;
+    grid-template-columns: 20px 16px 22px minmax(0, 1fr) 30px 30px 20px;
+    gap: 10px;
+    padding: 14px 16px;
+}
+
+.folder-stack,
+.folder-row,
+.folder-card {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.folder-summary {
+    min-width: 0;
 }
 
 /* ── Folder: file download link ──────────────────────────────────────────────── */

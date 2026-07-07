@@ -112,7 +112,7 @@ function security_setup(PDO $db): array
     $blockedCourseId = security_insert_course($db, SECURE_BLOCKED_SLUG, 'SEC-BLOCK', 'Blocked Course');
 
     $db->prepare('INSERT INTO enrollments (user_id, course_id) VALUES (?,?)')->execute([$studentId, $openCourseId]);
-    $db->prepare('INSERT INTO course_teachers (course_id, user_id) VALUES (?,?)')->execute([$openCourseId, $teacherId]);
+    $db->prepare('INSERT INTO course_teachers (course_id, user_id, assignment_role) VALUES (?,?,?)')->execute([$openCourseId, $teacherId, 'teacher']);
 
     $db->prepare('INSERT INTO course_staff (course_id, name, role) VALUES (?,?,?)')
         ->execute([$openCourseId, 'Security Teacher', 'Teacher']);

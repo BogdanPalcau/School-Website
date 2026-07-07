@@ -47,7 +47,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260707b';
+$asset_version = '20260707e';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
@@ -108,8 +108,6 @@ $style_src = '../style.css?v=' . $asset_version;
                         $__sidebarMeta = 'Administrator';
                     } elseif ($__sidebarRole === 'teacher') {
                         $__sidebarMeta = 'Teacher account';
-                    } elseif ($__sidebarRole === 'supervisor') {
-                        $__sidebarMeta = 'Supervisor account';
                     }
                 ?>
                 <div class="sidebar-user-card">

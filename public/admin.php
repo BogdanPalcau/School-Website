@@ -50,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password  = (string) ($_POST['password'] ?? '');
         $newRole   = $isOwner ? (string) ($_POST['role'] ?? 'student') : 'student';
 
-        if (!in_array($newRole, ['admin', 'supervisor', 'teacher', 'student'], true)) {
+        if (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
             $newRole = 'student';
         }
 
@@ -116,7 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['admin_flash'] = ['error', 'You cannot change your own role.'];
         } elseif ($target['role'] === 'owner') {
             $_SESSION['admin_flash'] = ['error', 'Owner role cannot be reassigned.'];
-        } elseif (!in_array($newRole, ['admin', 'supervisor', 'teacher', 'student'], true)) {
+        } elseif (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
             $_SESSION['admin_flash'] = ['error', 'Invalid role.'];
         } else {
             $pdo->prepare('UPDATE users SET role = ? WHERE id = ?')->execute([$newRole, $targetId]);
@@ -479,7 +479,9 @@ $stats = [
     'total_users'       => count($users),
     'owners'            => count(array_filter($users, fn($u) => $u['role'] === 'owner')),
     'admins'            => count(array_filter($users, fn($u) => $u['role'] === 'admin')),
-    'supervisors'       => count(array_filter($users, fn($u) => $u['role'] === 'supervisor')),
+    'course_supervisors' => (int) $pdo->query(
+        "SELECT COUNT(*) FROM course_teachers WHERE assignment_role = 'supervisor'"
+    )->fetchColumn(),
     'teachers'          => count(array_filter($users, fn($u) => $u['role'] === 'teacher')),
     'students'          => count(array_filter($users, fn($u) => $u['role'] === 'student')),
     'total_courses'     => count($adminCourses),
@@ -603,8 +605,8 @@ ob_start();
                         <strong class="admin-stat-value"><?= $stats['teachers'] ?></strong>
                     </article>
                     <article class="admin-stat-card">
-                        <p class="admin-stat-label">Supervisors</p>
-                        <strong class="admin-stat-value"><?= $stats['supervisors'] ?></strong>
+                        <p class="admin-stat-label">Course supervisors</p>
+                        <strong class="admin-stat-value"><?= $stats['course_supervisors'] ?></strong>
                     </article>
                     <article class="admin-stat-card">
                         <p class="admin-stat-label">Admins</p>
@@ -648,35 +650,52 @@ ob_start();
                         </div>
                     </article>
 
-                    <article class="admin-card">
+                    <article class="admin-card admin-card--role-guide">
                         <header class="admin-card-header">
                             <div>
                                 <p class="eyebrow">Role guide</p>
                                 <h3>Permissions overview</h3>
+                                <p class="admin-card-lead">Understand the difference between system roles and course-specific assignments.</p>
                             </div>
                         </header>
-                        <div class="admin-role-guide">
-                            <div class="admin-role-row">
-                                <span class="admin-badge admin-badge--owner">Owner</span>
-                                <p>Full access — manage all accounts, change roles, delete users, delete empty courses.</p>
-                            </div>
-                            <div class="admin-role-row">
-                                <span class="admin-badge admin-badge--admin">Admin</span>
-                                <p>Create accounts, manage enrolments, create and edit courses, configure integrity.</p>
-                            </div>
-                            <div class="admin-role-row">
-                                <span class="admin-badge admin-badge--supervisor">Supervisor</span>
-                                <p>Course management on assigned modules only. No admin panel access.</p>
-                            </div>
-                            <div class="admin-role-row">
-                                <span class="admin-badge admin-badge--teacher">Teacher</span>
-                                <p>Manage folders, materials, and announcements for assigned courses.</p>
-                            </div>
-                            <div class="admin-role-row">
-                                <span class="admin-badge admin-badge--student">Student</span>
-                                <p>Access enrolled courses via the student portal.</p>
+
+                        <div class="admin-role-guide-section">
+                            <h4 class="admin-role-guide-heading">System roles</h4>
+                            <div class="admin-role-guide-grid">
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--owner">Owner</span>
+                                    <p>Full system control. Can manage accounts, roles, courses, and high-risk actions.</p>
+                                </article>
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--admin">Admin</span>
+                                    <p>Manages users, enrolments, courses, integrity settings, and admin workflows.</p>
+                                </article>
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--teacher">Teacher</span>
+                                    <p>Teaching account. Can be assigned to modules as Course Teacher or Course Supervisor.</p>
+                                </article>
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--student">Student</span>
+                                    <p>Learner account. Accesses enrolled courses and submits work.</p>
+                                </article>
                             </div>
                         </div>
+
+                        <div class="admin-role-guide-section">
+                            <h4 class="admin-role-guide-heading">Course assignments</h4>
+                            <div class="admin-role-guide-grid admin-role-guide-grid--two">
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--supervisor">Course Supervisor</span>
+                                    <p>Course-level assignment. Can manage the assigned module and oversee teaching activity for that module.</p>
+                                </article>
+                                <article class="admin-role-card">
+                                    <span class="admin-badge admin-badge--teacher">Course Teacher</span>
+                                    <p>Course-level assignment. Can manage materials, folders, announcements, discussions, and submissions on assigned modules.</p>
+                                </article>
+                            </div>
+                        </div>
+
+                        <p class="admin-role-guide-note">Course assignments are set per module. A teacher can be a Course Supervisor on one module and a Course Teacher on another.</p>
                     </article>
                 </div>
             </section>
@@ -728,7 +747,6 @@ ob_start();
                             <select name="role">
                                 <option value="student" selected>Student</option>
                                 <option value="teacher">Teacher</option>
-                                <option value="supervisor">Supervisor</option>
                                 <option value="admin">Admin</option>
                             </select>
                         </label>
@@ -760,7 +778,6 @@ ob_start();
                                 <option value="all"<?= $userRole === 'all' ? ' selected' : '' ?>>All roles</option>
                                 <option value="owner"<?= $userRole === 'owner' ? ' selected' : '' ?>>Owner</option>
                                 <option value="admin"<?= $userRole === 'admin' ? ' selected' : '' ?>>Admin</option>
-                                <option value="supervisor"<?= $userRole === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
                                 <option value="teacher"<?= $userRole === 'teacher' ? ' selected' : '' ?>>Teacher</option>
                                 <option value="student"<?= $userRole === 'student' ? ' selected' : '' ?>>Student</option>
                             </select>
@@ -807,7 +824,6 @@ ob_start();
                                                 <select name="role" class="admin-role-select" onchange="this.form.submit()" title="Change role">
                                                     <option value="student"<?= $u['role'] === 'student' ? ' selected' : '' ?>>Student</option>
                                                     <option value="teacher"<?= $u['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
-                                                    <option value="supervisor"<?= $u['role'] === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
                                                     <option value="admin"<?= $u['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
                                                 </select>
                                             </form>
@@ -1014,12 +1030,14 @@ ob_start();
                             <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>"
                                    data-enroll-search="<?= portal_escape(strtolower($course['title'] . ' ' . $course['code'])) ?>">
                                 <input type="checkbox" name="course_ids[]" value="<?= (int) $course['id'] ?>"<?= $checked ? ' checked' : '' ?>>
-                                <span class="admin-course-dot" style="background:<?= portal_escape($course['accent']) ?>"></span>
-                                <div class="admin-enroll-text">
-                                    <strong><?= portal_escape($course['title']) ?></strong>
-                                    <span><?= portal_escape($course['code']) ?></span>
+                                <span class="admin-enroll-accent" style="background:<?= portal_escape($course['accent']) ?>"></span>
+                                <div class="admin-enroll-body">
+                                    <div class="admin-enroll-text">
+                                        <strong><?= portal_escape($course['title']) ?></strong>
+                                        <span><?= portal_escape($course['code']) ?></span>
+                                    </div>
+                                    <span class="admin-badge <?= portal_escape($cBadge) ?>"><?= portal_escape($course['status_label']) ?></span>
                                 </div>
-                                <span class="admin-badge <?= portal_escape($cBadge) ?>"><?= portal_escape($course['status_label']) ?></span>
                             </label>
                             <?php endforeach; ?>
                         </div>
@@ -1119,13 +1137,16 @@ ob_start();
                             <div class="admin-enroll-grid">
                                 <?php foreach ($integrityCourses as $ic): ?>
                                 <?php $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1; ?>
-                                <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
-                                    <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
-                                    <div class="admin-enroll-text">
-                                        <strong><?= portal_escape((string) $ic['title']) ?></strong>
-                                        <span><?= portal_escape((string) $ic['code']) ?></span>
-                                    </div>
-                                </label>
+                        <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
+                            <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
+                            <span class="admin-enroll-accent admin-enroll-accent--muted"></span>
+                            <div class="admin-enroll-body">
+                                <div class="admin-enroll-text">
+                                    <strong><?= portal_escape((string) $ic['title']) ?></strong>
+                                    <span><?= portal_escape((string) $ic['code']) ?></span>
+                                </div>
+                            </div>
+                        </label>
                                 <?php endforeach; ?>
                             </div>
                         </div>

@@ -395,7 +395,7 @@ if (!function_exists('portal_user_course_catalog')) {
             return portal_course_catalog();
         }
 
-        if (in_array($role, ['teacher', 'supervisor'], true)) {
+        if ($role === 'teacher') {
             $assigned = $pdo->prepare(
                 "SELECT course_id FROM course_teachers WHERE user_id = ?"
             );
