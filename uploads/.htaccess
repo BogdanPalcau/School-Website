@@ -1,6 +1,3 @@
-# Uploaded files are only served through download.php / view.php after an
-# access check. Block all direct web access, and as defence-in-depth make sure
-# nothing in here can ever be executed as a script.
 Require all denied
 <IfModule !mod_authz_core.c>
     Order allow,deny

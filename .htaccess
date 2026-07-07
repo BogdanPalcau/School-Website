@@ -27,3 +27,10 @@ Options -Indexes
         Deny from all
     </IfModule>
 </FilesMatch>
+
+# Block direct HTTP access to sensitive folders (defence in depth).
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^database(?:/|$) - [F,L,NC]
+RewriteRule ^uploads(?:/|$) - [F,L,NC]
+</IfModule>

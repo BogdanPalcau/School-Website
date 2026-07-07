@@ -671,7 +671,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'post_announcement') {
             $title = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
-            $body  = substr(trim((string) ($_POST['body'] ?? '')), 0, 2000);
+            $body  = substr(portal_sanitize_rich_text(trim((string) ($_POST['body'] ?? ''))), 0, 2000);
             if ($title !== '') {
                 $db->prepare(
                     "INSERT INTO course_announcements (course_id, user_id, title, body) VALUES (?,?,?,?)"
@@ -853,7 +853,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'create_topic') {
             $title = substr(trim((string)($_POST['title'] ?? '')), 0, 200);
-            $body  = substr(trim((string)($_POST['body'] ?? '')), 0, 3000);
+            $body  = substr(portal_sanitize_rich_text(trim((string)($_POST['body'] ?? ''))), 0, 3000);
             if ($title !== '') {
                 $db->prepare(
                     "INSERT INTO course_discussion_topics (course_id, user_id, title, body) VALUES (?,?,?,?)"
@@ -892,7 +892,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Any logged-in user: reply to topic ───────────────────────────────────
     if ($action === 'post_reply') {
         $topicId = (int)($_POST['topic_id'] ?? 0);
-        $body    = substr(trim((string)($_POST['body'] ?? '')), 0, 3000);
+        $body    = substr(portal_sanitize_rich_text(trim((string)($_POST['body'] ?? ''))), 0, 3000);
         // Verify topic belongs to this course
         $tChk = $db->prepare("SELECT id FROM course_discussion_topics WHERE id = ? AND course_id = ?");
         $tChk->execute([$topicId, $courseId]);

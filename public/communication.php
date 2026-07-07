@@ -21,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'post_site_announcement' && $isAdmin) {
         $title    = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
-        $body     = substr(trim((string) ($_POST['body'] ?? '')), 0, 20000);
+        $body     = substr(portal_sanitize_rich_text(trim((string) ($_POST['body'] ?? ''))), 0, 20000);
         $priority = ((string) ($_POST['priority'] ?? 'normal')) === 'urgent' ? 'urgent' : 'normal';
         $pinned   = isset($_POST['pinned']) && $_POST['pinned'] === '1' ? 1 : 0;
 

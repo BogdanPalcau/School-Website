@@ -30,16 +30,209 @@ if (!function_exists('portal_escape')) {
     }
 }
 
+if (!function_exists('portal_is_safe_rich_text_href')) {
+    function portal_is_safe_rich_text_href(string $href): bool
+    {
+        $href = trim($href);
+        if ($href === '') {
+            return false;
+        }
+        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $href)) {
+            return false;
+        }
+
+        $lower = strtolower($href);
+        foreach (['javascript:', 'data:', 'vbscript:', 'file:'] as $blocked) {
+            if (str_starts_with($lower, $blocked)) {
+                return false;
+            }
+        }
+
+        return (bool) preg_match('#^(https?:|mailto:)#i', $href);
+    }
+}
+
+if (!function_exists('portal_rich_text_strip_tags')) {
+    /** Tags removed entirely with all descendant content (never unwrapped). */
+    function portal_rich_text_strip_tags(): array
+    {
+        return [
+            'script', 'style', 'iframe', 'object', 'embed', 'svg', 'math',
+            'meta', 'link', 'base', 'form', 'input', 'button', 'textarea',
+            'select', 'option',
+        ];
+    }
+}
+
+if (!function_exists('portal_sanitize_rich_text_element')) {
+    /**
+     * @param array<string, list<string>> $allowedTags
+     * @param list<string> $allowedSpanClasses
+     * @param list<string> $stripTags
+     */
+    function portal_sanitize_rich_text_element(
+        DOMElement $element,
+        array $allowedTags,
+        array $allowedSpanClasses,
+        array $stripTags
+    ): void {
+        $tag = strtolower($element->tagName);
+        if (in_array($tag, $stripTags, true)) {
+            $parent = $element->parentNode;
+            if ($parent !== null) {
+                $parent->removeChild($element);
+            }
+            return;
+        }
+
+        $children = [];
+        foreach ($element->childNodes as $child) {
+            $children[] = $child;
+        }
+        foreach ($children as $child) {
+            if ($child instanceof DOMElement) {
+                portal_sanitize_rich_text_element($child, $allowedTags, $allowedSpanClasses, $stripTags);
+            }
+        }
+
+        if (!array_key_exists($tag, $allowedTags)) {
+            $parent = $element->parentNode;
+            if ($parent !== null) {
+                while ($element->firstChild !== null) {
+                    $parent->insertBefore($element->firstChild, $element);
+                }
+                $parent->removeChild($element);
+            }
+            return;
+        }
+
+        $allowedAttrs = $allowedTags[$tag];
+        $removeAttrs = [];
+        if ($element->hasAttributes()) {
+            foreach ($element->attributes as $attr) {
+                $name = strtolower($attr->name);
+                if (str_starts_with($name, 'on')) {
+                    $removeAttrs[] = $attr->name;
+                    continue;
+                }
+                if (!in_array($name, $allowedAttrs, true)) {
+                    $removeAttrs[] = $attr->name;
+                    continue;
+                }
+                if ($name === 'class' && $tag === 'span') {
+                    $classes = preg_split('/\s+/', trim($attr->value)) ?: [];
+                    $classes = array_values(array_intersect($classes, $allowedSpanClasses));
+                    if ($classes === []) {
+                        $removeAttrs[] = $attr->name;
+                    } else {
+                        $element->setAttribute('class', implode(' ', $classes));
+                    }
+                }
+                if ($name === 'href' && $tag === 'a' && !portal_is_safe_rich_text_href($attr->value)) {
+                    $removeAttrs[] = $attr->name;
+                }
+            }
+        }
+        foreach ($removeAttrs as $name) {
+            $element->removeAttribute($name);
+        }
+
+        if ($tag === 'a') {
+            if (!$element->hasAttribute('href')) {
+                $parent = $element->parentNode;
+                if ($parent !== null) {
+                    while ($element->firstChild !== null) {
+                        $parent->insertBefore($element->firstChild, $element);
+                    }
+                    $parent->removeChild($element);
+                }
+                return;
+            }
+            // External http(s) links open in a new tab with tab-nabbing protection.
+            // mailto: links keep a plain anchor (no target="_blank").
+            $href = trim($element->getAttribute('href'));
+            if (preg_match('#^https?://#i', $href)) {
+                $element->setAttribute('target', '_blank');
+                $element->setAttribute('rel', 'noopener noreferrer');
+            }
+        }
+    }
+}
+
+if (!function_exists('portal_sanitize_rich_text')) {
+    /**
+     * Allowlist HTML sanitizer for stored rich text (Quill output, announcements,
+     * discussion posts). Strips dangerous tags/attributes instead of regex filtering.
+     */
+    function portal_sanitize_rich_text(string $body): string
+    {
+        $body = trim($body);
+        if ($body === '') {
+            return '';
+        }
+
+        if (!class_exists(DOMDocument::class)) {
+            return portal_escape(strip_tags($body));
+        }
+
+        $allowedTags = [
+            'p'          => [],
+            'br'         => [],
+            'strong'     => [],
+            'b'          => [],
+            'em'         => [],
+            'i'          => [],
+            'u'          => [],
+            's'          => [],
+            'h1'         => [],
+            'h2'         => [],
+            'h3'         => [],
+            'ul'         => [],
+            'ol'         => [],
+            'li'         => [],
+            'blockquote' => [],
+            'span'       => ['class'],
+            'a'          => ['href'],
+        ];
+        $allowedSpanClasses = ['ql-align-center', 'ql-align-right', 'ql-align-justify'];
+        $stripTags = portal_rich_text_strip_tags();
+
+        $dom = new DOMDocument();
+        libxml_use_internal_errors(true);
+        $dom->loadHTML(
+            '<?xml encoding="utf-8"?><div id="portal-rich-root">' . $body . '</div>',
+            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
+        );
+        libxml_clear_errors();
+
+        $root = $dom->getElementById('portal-rich-root');
+        if ($root === null) {
+            return portal_escape(strip_tags($body));
+        }
+
+        $rootChildren = [];
+        foreach ($root->childNodes as $child) {
+            $rootChildren[] = $child;
+        }
+        foreach ($rootChildren as $child) {
+            if ($child instanceof DOMElement) {
+                portal_sanitize_rich_text_element($child, $allowedTags, $allowedSpanClasses, $stripTags);
+            }
+        }
+
+        $clean = '';
+        foreach ($root->childNodes as $child) {
+            $clean .= $dom->saveHTML($child);
+        }
+
+        return $clean;
+    }
+}
+
 if (!function_exists('portal_render_rich_text')) {
     function portal_render_rich_text(string $body): string
     {
-        if ($body === '') return '';
-        $allowed = '<p><br><strong><b><em><i><u><s><h1><h2><h3><ul><ol><li><blockquote><span>';
-        $clean   = strip_tags($body, $allowed);
-        // Strip any event handler or javascript: attributes that sneak through
-        $clean   = preg_replace('/\s*on\w+\s*=\s*["\'][^"\']*["\']/i', '', $clean) ?? $clean;
-        $clean   = preg_replace('/\s*javascript\s*:/i', '', $clean) ?? $clean;
-        return $clean;
+        return portal_sanitize_rich_text($body);
     }
 }
 
@@ -201,14 +394,106 @@ if (!function_exists('portal_render_submission_deadline')) {
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
+if (!function_exists('portal_db_path')) {
+    /**
+     * Absolute path to the SQLite database file.
+     * Override with PORTAL_DB_PATH to store the DB outside the web root, e.g.
+     * PORTAL_DB_PATH=C:\xampp\schoolwebsite-data\portal.db
+     */
+    function portal_db_path(): string
+    {
+        static $path = null;
+        if ($path !== null) {
+            return $path;
+        }
+
+        $envPath = getenv('PORTAL_DB_PATH');
+        if ($envPath !== false && trim($envPath) !== '') {
+            $path = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, trim($envPath));
+            return $path;
+        }
+
+        $path = __DIR__ . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'portal.db';
+        return $path;
+    }
+}
+
+if (!function_exists('portal_document_root')) {
+    function portal_document_root(): string
+    {
+        $root = (string) ($_SERVER['DOCUMENT_ROOT'] ?? '');
+        if ($root === '') {
+            return '';
+        }
+
+        return rtrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $root), DIRECTORY_SEPARATOR);
+    }
+}
+
+if (!function_exists('portal_db_is_in_webroot')) {
+    /** True when the SQLite file lives under the web-served app tree. */
+    function portal_db_is_in_webroot(): bool
+    {
+        $dbPath = portal_db_path();
+        $comparePath = is_file($dbPath) ? $dbPath : dirname($dbPath);
+        $realDb = realpath($comparePath);
+        if ($realDb === false) {
+            return false;
+        }
+
+        $realApp = realpath(__DIR__);
+        if ($realApp !== false) {
+            $appPrefix = rtrim(strtolower($realApp), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            if (str_starts_with(strtolower($realDb), $appPrefix)) {
+                return true;
+            }
+        }
+
+        $docRoot = portal_document_root();
+        if ($docRoot === '') {
+            return false;
+        }
+
+        $realDoc = realpath($docRoot);
+        if ($realDoc === false) {
+            return false;
+        }
+
+        $docPrefix = rtrim(strtolower($realDoc), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        $target = strtolower($realDb);
+
+        return $target === strtolower($realDoc) || str_starts_with($target, $docPrefix);
+    }
+}
+
+if (!function_exists('portal_db_security_warning')) {
+    /** Human-readable warning when the DB is still web-accessible. */
+    function portal_db_security_warning(): ?string
+    {
+        if (!portal_db_is_in_webroot()) {
+            return null;
+        }
+
+        return 'Security warning: the SQLite database is stored inside the web root at '
+            . portal_db_path()
+            . '. Move it outside htdocs using PORTAL_DB_PATH, or confirm Apache .htaccess '
+            . 'rules return 403 for /database/portal.db before going to production.';
+    }
+}
+
 if (!function_exists('portal_db')) {
     function portal_db(): PDO
     {
         static $pdo = null;
 
         if ($pdo === null) {
-            $path = __DIR__ . '/database/portal.db';
-            $pdo  = new PDO('sqlite:' . $path);
+            $path = portal_db_path();
+            $dir  = dirname($path);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            $pdo = new PDO('sqlite:' . $path);
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
             $pdo->exec('PRAGMA foreign_keys = ON');
@@ -603,24 +888,58 @@ if (!function_exists('portal_upload_mime_ok')) {
 if (!function_exists('portal_protect_sensitive_paths')) {
     function portal_protect_sensitive_paths(): void
     {
-        // Apache 2.4 directive that denies all direct HTTP access to a folder.
         $deny = "Require all denied\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
 
-        foreach (['database', 'uploads'] as $folder) {
-            $dir = __DIR__ . DIRECTORY_SEPARATOR . $folder;
+        $uploadsDeny = $deny
+            . "\n<IfModule mod_php.c>\n    php_admin_flag engine off\n</IfModule>\n"
+            . "<IfModule mod_php7.c>\n    php_admin_flag engine off\n</IfModule>\n"
+            . "<IfModule mod_php8.c>\n    php_admin_flag engine off\n</IfModule>\n"
+            . "\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .phar\n"
+            . "RemoveType .php .phtml .php3 .php4 .php5 .php7 .phar\n";
+
+        $protectedDirs = [
+            __DIR__ . DIRECTORY_SEPARATOR . 'database' => $deny,
+            __DIR__ . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'integrity_references' => $deny,
+            __DIR__ . DIRECTORY_SEPARATOR . 'uploads' => $uploadsDeny,
+            __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'cache' => $uploadsDeny,
+            __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'submissions' => $uploadsDeny,
+            __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'courses' => $uploadsDeny,
+        ];
+
+        foreach ($protectedDirs as $dir => $content) {
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
             if (!is_dir($dir)) {
                 continue;
             }
             $htaccess = $dir . DIRECTORY_SEPARATOR . '.htaccess';
-            if (!is_file($htaccess)) {
-                @file_put_contents($htaccess, $deny);
+            if (!is_file($htaccess) || trim((string) file_get_contents($htaccess)) !== trim($content)) {
+                @file_put_contents($htaccess, $content);
+            }
+        }
+
+        $rootHtaccess = __DIR__ . DIRECTORY_SEPARATOR . '.htaccess';
+        if (is_file($rootHtaccess)) {
+            $rootContents = (string) file_get_contents($rootHtaccess);
+            $rewriteBlock = <<<'HTACCESS'
+
+# Block direct HTTP access to sensitive folders (defence in depth).
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^database(?:/|$) - [F,L,NC]
+RewriteRule ^uploads(?:/|$) - [F,L,NC]
+</IfModule>
+HTACCESS;
+            if (!str_contains($rootContents, 'RewriteRule ^database(?:/|$)')) {
+                @file_put_contents($rootHtaccess, rtrim($rootContents) . $rewriteBlock . "\n");
             }
         }
     }
 }
 
 // ── Auto-initialise database on first run ─────────────────────────────────────
-if (!file_exists(__DIR__ . '/database/portal.db')) {
+if (!file_exists(portal_db_path())) {
     require_once __DIR__ . '/db_init.php';
 }
 

@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 
-$_db_path = __DIR__ . '/database/portal.db';
+$_db_path = function_exists('portal_db_path')
+    ? portal_db_path()
+    : __DIR__ . '/database/portal.db';
 $_db_dir  = dirname($_db_path);
 
 if (!is_dir($_db_dir)) {

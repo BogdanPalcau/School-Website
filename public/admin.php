@@ -201,6 +201,7 @@ $active_page  = 'admin';
 $page_eyebrow = 'Management';
 $page_heading = 'Admin panel';
 $page_description = 'Manage student accounts, assign roles, and control course enrollments.';
+$dbSecurityWarning = portal_db_security_warning();
 
 ob_start();
 ?>
@@ -208,6 +209,12 @@ ob_start();
 
     <!-- ── Left column: users + enrollment ── -->
     <div class="stack">
+
+        <?php if ($dbSecurityWarning): ?>
+        <div class="admin-flash error">
+            <?= portal_escape($dbSecurityWarning) ?>
+        </div>
+        <?php endif; ?>
 
         <?php if ($flash): ?>
         <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>">
