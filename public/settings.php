@@ -109,7 +109,12 @@ ob_start();
 
     <?php if ($flash): ?>
     <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>" style="grid-column:1/-1;">
-        <?= portal_escape($flash[1]) ?>
+        <?php if ($flash[0] === 'success'): ?>
+            <span><?= portal_escape($flash[1]) ?></span>
+        <?php else: ?>
+            <?= portal_icon('lock', 'admin-flash-icon') ?>
+            <span><?= portal_escape($flash[1]) ?></span>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
 

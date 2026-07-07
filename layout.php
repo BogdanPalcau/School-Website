@@ -47,7 +47,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260707e';
+$asset_version = '20260707f';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
@@ -142,5 +142,49 @@ $style_src = '../style.css?v=' . $asset_version;
             </main>
         </div>
     <?php endif; ?>
+    <script>
+    (function () {
+        function restartShake(node) {
+            if (!node || !node.classList) return;
+            node.classList.remove('is-validation-shaking');
+            void node.offsetWidth;
+            node.classList.add('is-validation-shaking');
+        }
+
+        function validationTarget(field) {
+            if (!field || !field.closest) return field;
+            return field.closest('.login-input, .admin-field, .settings-field, .folder-form-label, .submit-form, label') || field;
+        }
+
+        function showInvalidField(field, shouldReport) {
+            if (!field) return;
+            restartShake(field);
+            restartShake(validationTarget(field));
+            if (typeof field.focus === 'function') {
+                try {
+                    field.focus({ preventScroll: false });
+                } catch (err) {
+                    field.focus();
+                }
+            }
+            if (shouldReport && typeof field.reportValidity === 'function') {
+                field.reportValidity();
+            }
+        }
+
+        document.addEventListener('submit', function (event) {
+            var form = event.target;
+            if (!(form instanceof HTMLFormElement) || form.hasAttribute('data-skip-smooth-validation')) return;
+            if (form.checkValidity()) return;
+
+            event.preventDefault();
+            showInvalidField(form.querySelector(':invalid'), true);
+        }, true);
+
+        document.addEventListener('invalid', function (event) {
+            showInvalidField(event.target, false);
+        }, true);
+    })();
+    </script>
 </body>
 </html>

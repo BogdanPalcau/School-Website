@@ -52,11 +52,14 @@ ob_start();
 </div>
 
 <?php if ($loggedOut): ?>
-    <div class="auth-message success">You have been signed out.</div>
+    <div class="auth-message success"><span>You have been signed out.</span></div>
 <?php endif; ?>
 
 <?php if ($error !== ''): ?>
-    <div class="auth-message error"><?= portal_escape($error) ?></div>
+    <div class="auth-message error">
+        <?= portal_icon('lock', 'auth-message-icon') ?>
+        <span><?= portal_escape($error) ?></span>
+    </div>
 <?php endif; ?>
 
 <form class="login-form" method="post" action="login.php" novalidate>

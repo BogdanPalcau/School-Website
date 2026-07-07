@@ -381,15 +381,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $policy = 'disabled';
         }
 
-        portal_site_setting_set('external_ai_policy', $policy);
+        $apiKey = trim((string) ($_POST['gptzero_api_key'] ?? ''));
+        $clearGptZeroKey = isset($_POST['clear_gptzero_api_key']) && $_POST['clear_gptzero_api_key'] === '1';
+        $hasExistingGptZeroKey = portal_gptzero_key_configured();
+        $willHaveGptZeroKey = $apiKey !== '' || ($hasExistingGptZeroKey && !$clearGptZeroKey);
 
-        $apiKey = trim((string) ($_POST['zerogpt_api_key'] ?? ''));
-        if ($apiKey !== '') {
-            portal_site_setting_set('zerogpt_api_key', $apiKey);
+        if ($clearGptZeroKey && $apiKey === '' && $policy !== 'disabled') {
+            $_SESSION['admin_flash'] = ['error', 'You cannot remove the GPTZero key while external AI checks are enabled. Disable GPTZero checks first.'];
+            $redirectSection('integrity');
         }
 
-        if (isset($_POST['clear_zerogpt_api_key']) && $_POST['clear_zerogpt_api_key'] === '1') {
-            portal_site_setting_set('zerogpt_api_key', '');
+        if ($policy === 'site_wide' && !$willHaveGptZeroKey) {
+            $_SESSION['admin_flash'] = ['error', 'Add a GPTZero API key before enabling site-wide external AI checks.'];
+            $redirectSection('integrity');
+        }
+
+        if ($policy === 'per_module' && !$willHaveGptZeroKey) {
+            $_SESSION['admin_flash'] = ['error', 'Add a GPTZero API key before enabling selected-module external AI checks.'];
+            $redirectSection('integrity');
+        }
+
+        $gptZeroKeyToValidate = '';
+        if ($apiKey !== '') {
+            $gptZeroKeyToValidate = $apiKey;
+        } elseif ($policy !== 'disabled' && !$clearGptZeroKey) {
+            $gptZeroKeyToValidate = portal_gptzero_api_key();
+        }
+
+        if ($gptZeroKeyToValidate !== '') {
+            $validation = portal_gptzero_validate_api_key($gptZeroKeyToValidate);
+            if (!$validation['ok']) {
+                $_SESSION['admin_flash'] = ['error', $validation['error']];
+                $redirectSection('integrity');
+            }
         }
 
         $safeBrowsingKey = trim((string) ($_POST['google_safe_browsing_api_key'] ?? ''));
@@ -398,6 +422,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if (isset($_POST['clear_google_safe_browsing_api_key']) && $_POST['clear_google_safe_browsing_api_key'] === '1') {
             portal_site_setting_set('google_safe_browsing_api_key', '');
+        }
+
+        portal_site_setting_set('external_ai_policy', $policy);
+
+        if ($apiKey !== '') {
+            portal_gptzero_key_save($apiKey);
+        } elseif ($clearGptZeroKey) {
+            portal_gptzero_key_clear();
         }
 
         $pdo->exec('UPDATE courses SET external_ai_detection = 0');
@@ -411,7 +443,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        $_SESSION['admin_flash'] = ['success', 'Integrity and link safety settings saved.'];
+        $message = 'Integrity and link safety settings saved.';
+        if ($apiKey !== '' && $policy === 'site_wide') {
+            $message = 'GPTZero key saved. Site-wide checks are now enabled.';
+        } elseif ($apiKey !== '' && $policy === 'per_module') {
+            $message = 'GPTZero key saved. Selected-module checks are now enabled.';
+        }
+
+        $_SESSION['admin_flash'] = ['success', $message];
         $redirectSection('integrity');
     }
 
@@ -493,12 +532,40 @@ $stats = [
 ];
 
 $integrityPolicy    = portal_external_ai_policy();
-$integrityKeySet    = portal_site_setting_has('zerogpt_api_key') || trim((string) getenv('ZEROGPT_API_KEY')) !== '';
+$integrityKeySet    = portal_gptzero_key_configured();
 $safeBrowsingKeySet = portal_site_setting_has('google_safe_browsing_api_key')
     || trim((string) getenv('GOOGLE_SAFE_BROWSING_API_KEY')) !== '';
 $integrityCourses   = $pdo->query(
-    'SELECT id, title, code, external_ai_detection FROM courses ORDER BY title ASC'
+    'SELECT id, title, code, status, status_label, accent, external_ai_detection FROM courses ORDER BY title ASC'
 )->fetchAll();
+
+$integrityPolicyLabel = [
+    'disabled' => 'Disabled',
+    'site_wide' => 'Site-wide',
+    'per_module' => 'Selected modules',
+][$integrityPolicy] ?? 'Disabled';
+$integrityPolicyIncomplete = $integrityPolicy !== 'disabled' && !$integrityKeySet;
+if ($integrityPolicy === 'disabled') {
+    $integrityPolicySummary = 'Internal integrity checks still run.';
+    $integrityPolicyBadge = 'Disabled';
+    $integrityPolicyBadgeClass = 'admin-badge--draft';
+} elseif ($integrityPolicyIncomplete && $integrityPolicy === 'site_wide') {
+    $integrityPolicySummary = 'Add a GPTZero API key to activate site-wide checks.';
+    $integrityPolicyBadge = 'Configuration incomplete';
+    $integrityPolicyBadgeClass = 'admin-badge--warning';
+} elseif ($integrityPolicyIncomplete && $integrityPolicy === 'per_module') {
+    $integrityPolicySummary = 'Add a GPTZero API key to activate selected-module checks.';
+    $integrityPolicyBadge = 'Configuration incomplete';
+    $integrityPolicyBadgeClass = 'admin-badge--warning';
+} elseif ($integrityPolicy === 'site_wide') {
+    $integrityPolicySummary = 'GPTZero checks run for every submission.';
+    $integrityPolicyBadge = 'Enabled';
+    $integrityPolicyBadgeClass = 'admin-badge--open';
+} else {
+    $integrityPolicySummary = 'GPTZero checks run only for selected modules.';
+    $integrityPolicyBadge = 'Enabled';
+    $integrityPolicyBadgeClass = 'admin-badge--open';
+}
 
 $dbSecurityWarning = portal_db_security_warning();
 $showDeveloperSecurity = portal_is_owner() && portal_show_developer_security();
@@ -572,7 +639,12 @@ ob_start();
 
     <?php if ($flash): ?>
     <div class="admin-flash <?= $flash[0] === 'success' ? 'success' : 'error' ?>">
-        <?= portal_escape($flash[1]) ?>
+        <?php if ($flash[0] === 'success'): ?>
+            <span><?= portal_escape($flash[1]) ?></span>
+        <?php else: ?>
+            <?= portal_icon('lock', 'admin-flash-icon') ?>
+            <span><?= portal_escape($flash[1]) ?></span>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
 
@@ -1055,25 +1127,24 @@ ob_start();
 
             <!-- Integrity -->
             <section id="admin-section-integrity" class="admin-section<?= $section === 'integrity' ? ' is-active' : '' ?>">
-                <div class="admin-status-row">
-                    <article class="admin-card admin-card--compact">
+                <div class="admin-status-row admin-integrity-summary">
+                    <article class="admin-card admin-card--compact admin-summary-card">
                         <p class="admin-stat-label">External AI policy</p>
-                        <strong><?= portal_escape(ucwords(str_replace('_', ' ', $integrityPolicy))) ?></strong>
-                        <span class="admin-badge <?= $integrityPolicy === 'disabled' ? 'admin-badge--draft' : 'admin-badge--open' ?>">
-                            <?= $integrityPolicy === 'disabled' ? 'Disabled' : 'Enabled' ?>
-                        </span>
+                        <strong><?= portal_escape($integrityPolicyLabel) ?></strong>
+                        <p><?= portal_escape($integrityPolicySummary) ?></p>
+                        <span class="admin-badge <?= portal_escape($integrityPolicyBadgeClass) ?>"><?= portal_escape($integrityPolicyBadge) ?></span>
                     </article>
-                    <article class="admin-card admin-card--compact">
-                        <p class="admin-stat-label">ZeroGPT API key</p>
-                        <span class="admin-badge <?= $integrityKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>">
-                            <?= $integrityKeySet ? 'Configured' : 'Missing key' ?>
-                        </span>
+                    <article class="admin-card admin-card--compact admin-summary-card">
+                        <p class="admin-stat-label">GPTZero API key</p>
+                        <strong><?= $integrityKeySet ? 'Configured' : 'Missing key' ?></strong>
+                        <p><?= $integrityKeySet ? 'External AI checks available.' : 'External AI checks unavailable.' ?></p>
+                        <span class="admin-badge <?= $integrityKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>"><?= $integrityKeySet ? 'Configured' : 'Missing key' ?></span>
                     </article>
-                    <article class="admin-card admin-card--compact">
+                    <article class="admin-card admin-card--compact admin-summary-card">
                         <p class="admin-stat-label">Google Safe Browsing</p>
-                        <span class="admin-badge <?= $safeBrowsingKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>">
-                            <?= $safeBrowsingKeySet ? 'Configured' : 'Missing key' ?>
-                        </span>
+                        <strong><?= $safeBrowsingKeySet ? 'Configured' : 'Missing key' ?></strong>
+                        <p><?= $safeBrowsingKeySet ? 'External link checks enabled.' : 'External link checks unavailable.' ?></p>
+                        <span class="admin-badge <?= $safeBrowsingKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>"><?= $safeBrowsingKeySet ? 'Configured' : 'Missing key' ?></span>
                     </article>
                 </div>
 
@@ -1082,7 +1153,7 @@ ob_start();
                         <div>
                             <p class="eyebrow">Integrity</p>
                             <h3>Integrity and link safety</h3>
-                            <p class="admin-card-lead">Configure ZeroGPT for optional external AI checks and Google Safe Browsing for safer external course links.</p>
+                            <p class="admin-card-lead">GPTZero is used for optional external AI detection when configured. Google Safe Browsing checks external course links before users open them.</p>
                         </div>
                     </header>
 
@@ -1090,69 +1161,126 @@ ob_start();
                         <?= portal_csrf_field() ?>
                         <input type="hidden" name="action" value="save_integrity_settings">
 
-                        <label class="admin-field">
-                            <span>ZeroGPT API key</span>
-                            <input type="password" name="zerogpt_api_key" autocomplete="new-password"
-                                   placeholder="<?= $integrityKeySet ? 'Leave blank to keep current key' : 'Paste your ZeroGPT API key' ?>">
-                            <?php if ($integrityKeySet): ?>
-                            <label class="admin-checkbox-inline">
-                                <input type="checkbox" name="clear_zerogpt_api_key" value="1">
-                                Remove saved API key
-                            </label>
-                            <?php endif; ?>
-                            <small class="admin-field-hint">Keys are stored in the site database and never shown after saving.</small>
-                        </label>
+                        <div class="admin-key-grid">
+                            <section class="admin-key-card" aria-labelledby="gptzero-key-title">
+                                <div class="admin-key-card__header">
+                                    <div>
+                                        <h4 id="gptzero-key-title">GPTZero API Key</h4>
+                                        <p>GPTZero external AI checks use this key when the policy allows them.</p>
+                                    </div>
+                                    <span class="admin-badge <?= $integrityKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>"><?= $integrityKeySet ? 'Configured' : 'Missing key' ?></span>
+                                </div>
+                                <label class="admin-field" for="gptzero-api-key">
+                                    <span class="visually-hidden">GPTZero API Key</span>
+                                    <input id="gptzero-api-key" type="password" name="gptzero_api_key" autocomplete="new-password" placeholder="Paste your GPTZero API key" data-gptzero-saved-key="<?= $integrityKeySet ? '1' : '0' ?>">
+                                </label>
+                                <small class="admin-field-hint">Leave blank to keep the current key. Keys are stored in the site database and never shown after saving.</small>
+                                <?php if ($integrityKeySet): ?>
+                                <label class="admin-remove-key">
+                                    <input type="checkbox" name="clear_gptzero_api_key" value="1" data-remove-key>
+                                    <span>
+                                        <strong>Remove saved GPTZero key</strong>
+                                        <small>This saved key will be removed when you save settings.</small>
+                                    </span>
+                                </label>
+                                <?php endif; ?>
+                            </section>
 
-                        <label class="admin-field">
-                            <span>Google Safe Browsing API key</span>
-                            <input type="password" name="google_safe_browsing_api_key" autocomplete="new-password"
-                                   placeholder="<?= $safeBrowsingKeySet ? 'Leave blank to keep current key' : 'Paste your Google Safe Browsing API key' ?>">
-                            <?php if ($safeBrowsingKeySet): ?>
-                            <label class="admin-checkbox-inline">
-                                <input type="checkbox" name="clear_google_safe_browsing_api_key" value="1">
-                                Remove saved Google Safe Browsing key
-                            </label>
-                            <?php endif; ?>
-                            <small class="admin-field-hint">Used server-side before users open external link items.</small>
-                        </label>
+                            <section class="admin-key-card" aria-labelledby="safe-browsing-key-title">
+                                <div class="admin-key-card__header">
+                                    <div>
+                                        <h4 id="safe-browsing-key-title">Google Safe Browsing API Key</h4>
+                                        <p>Used server-side before users open external course links.</p>
+                                    </div>
+                                    <span class="admin-badge <?= $safeBrowsingKeySet ? 'admin-badge--open' : 'admin-badge--archived' ?>"><?= $safeBrowsingKeySet ? 'Configured' : 'Missing key' ?></span>
+                                </div>
+                                <label class="admin-field" for="google-safe-browsing-api-key">
+                                    <span class="visually-hidden">Google Safe Browsing API Key</span>
+                                    <input id="google-safe-browsing-api-key" type="password" name="google_safe_browsing_api_key" autocomplete="new-password" placeholder="Paste your Google Safe Browsing API key">
+                                </label>
+                                <small class="admin-field-hint">Used server-side before users open external course links.</small>
+                                <?php if ($safeBrowsingKeySet): ?>
+                                <label class="admin-remove-key">
+                                    <input type="checkbox" name="clear_google_safe_browsing_api_key" value="1" data-remove-key>
+                                    <span>
+                                        <strong>Remove saved Google Safe Browsing key</strong>
+                                        <small>This saved key will be removed when you save settings.</small>
+                                    </span>
+                                </label>
+                                <?php endif; ?>
+                            </section>
+                        </div>
 
                         <fieldset class="admin-policy-fieldset">
                             <legend>When should external AI detection run?</legend>
-                            <label class="admin-radio">
+                            <label class="admin-policy-card">
                                 <input type="radio" name="external_ai_policy" value="disabled"<?= $integrityPolicy === 'disabled' ? ' checked' : '' ?>>
-                                <span><strong>Disabled</strong> — never call ZeroGPT (internal checks still run).</span>
+                                <span class="admin-policy-card__body">
+                                    <strong>Disabled</strong>
+                                    <small>Internal integrity checks still run. No GPTZero API call is made.</small>
+                                </span>
                             </label>
-                            <label class="admin-radio">
+                            <label class="admin-policy-card">
                                 <input type="radio" name="external_ai_policy" value="site_wide"<?= $integrityPolicy === 'site_wide' ? ' checked' : '' ?>>
-                                <span><strong>Site-wide</strong> — run for every submission when an API key is configured.</span>
+                                <span class="admin-policy-card__body">
+                                    <strong>Site-wide</strong>
+                                    <small>Run GPTZero checks for every submission when an API key is configured.</small>
+                                    <small class="admin-key-required-warning<?= $integrityKeySet ? ' is-hidden' : '' ?>" data-gptzero-required-warning>Requires GPTZero API key.</small>
+                                </span>
                             </label>
-                            <label class="admin-radio">
+                            <label class="admin-policy-card">
                                 <input type="radio" name="external_ai_policy" value="per_module"<?= $integrityPolicy === 'per_module' ? ' checked' : '' ?>>
-                                <span><strong>Selected modules only</strong> — enable specific courses below.</span>
+                                <span class="admin-policy-card__body">
+                                    <strong>Selected modules</strong>
+                                    <small>Only selected modules can use GPTZero checks.</small>
+                                    <small class="admin-key-required-warning<?= $integrityKeySet ? ' is-hidden' : '' ?>" data-gptzero-required-warning>Requires GPTZero API key.</small>
+                                </span>
                             </label>
                         </fieldset>
 
-                        <div class="admin-ai-modules" id="admin-ai-modules"<?= $integrityPolicy === 'per_module' ? '' : ' hidden' ?>>
-                            <p class="admin-field-hint">Choose which modules can use external AI detection.</p>
-                            <div class="admin-enroll-grid">
+                        <p class="admin-policy-help" id="admin-ai-policy-help" aria-live="polite">
+                            <?= $integrityPolicy === 'disabled'
+                                ? 'External GPTZero checks are disabled. Internal integrity checks still run.'
+                                : ($integrityPolicy === 'site_wide'
+                                    ? ($integrityKeySet ? 'GPTZero checks will run for every submission.' : 'Add a GPTZero API key before site-wide checks can run.')
+                                    : ($integrityKeySet ? 'Choose which modules can use GPTZero external AI detection.' : 'A GPTZero API key is required before selected-module checks can run.')) ?>
+                        </p>
+
+                        <div class="admin-ai-modules admin-collapse<?= $integrityPolicy === 'per_module' ? ' admin-collapse--open is-visible' : ' is-hidden' ?>" id="admin-ai-modules"<?= $integrityPolicy === 'per_module' ? '' : ' hidden' ?>>
+                            <p class="admin-key-required-warning admin-key-required-warning--block<?= $integrityKeySet ? ' is-hidden' : '' ?>" data-gptzero-module-warning>A GPTZero API key is required before selected-module checks can run.</p>
+                            <p class="admin-field-hint">Choose which modules can use GPTZero external AI detection.</p>
+                            <div class="admin-ai-module-grid">
                                 <?php foreach ($integrityCourses as $ic): ?>
-                                <?php $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1; ?>
-                        <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>">
-                            <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
-                            <span class="admin-enroll-accent admin-enroll-accent--muted"></span>
-                            <div class="admin-enroll-body">
-                                <div class="admin-enroll-text">
-                                    <strong><?= portal_escape((string) $ic['title']) ?></strong>
-                                    <span><?= portal_escape((string) $ic['code']) ?></span>
-                                </div>
-                            </div>
-                        </label>
+                                <?php
+                                    $checked = (int) ($ic['external_ai_detection'] ?? 0) === 1;
+                                    $accent = (string) ($ic['accent'] ?? '#c1202f');
+                                    if (!portal_valid_course_accent($accent)) {
+                                        $accent = '#c1202f';
+                                    }
+                                    $status = trim((string) ($ic['status'] ?? ''));
+                                    $statusLabel = trim((string) ($ic['status_label'] ?? ''));
+                                    if ($statusLabel === '' && $status !== '') {
+                                        $statusLabel = ucfirst($status);
+                                    }
+                                    $statusClass = preg_replace('/[^a-z0-9_-]+/i', '-', strtolower($status !== '' ? $status : $statusLabel));
+                                ?>
+                                <label class="admin-ai-module-card<?= $checked ? ' is-selected' : '' ?>" style="--course-accent: <?= portal_escape($accent) ?>">
+                                    <input type="checkbox" name="external_ai_courses[]" value="<?= (int) $ic['id'] ?>"<?= $checked ? ' checked' : '' ?>>
+                                    <span class="admin-ai-module-accent" aria-hidden="true"></span>
+                                    <span class="admin-ai-module-check" aria-hidden="true"></span>
+                                    <span class="admin-ai-module-text">
+                                        <strong><?= portal_escape((string) $ic['title']) ?></strong>
+                                        <small><?= portal_escape((string) $ic['code']) ?></small>
+                                    </span>
+                                    <?php if ($statusLabel !== ''): ?>
+                                    <span class="admin-course-status admin-course-status--<?= portal_escape((string) $statusClass) ?>"><?= portal_escape($statusLabel) ?></span>
+                                    <?php endif; ?>
+                                </label>
                                 <?php endforeach; ?>
                             </div>
                         </div>
-
                         <div class="admin-form-actions">
-                            <button type="submit" class="admin-btn admin-btn--primary">Save settings</button>
+                            <button type="submit" class="admin-btn admin-btn--primary admin-btn--save"><?= portal_icon('settings', 'icon-sm') ?> Save settings</button>
                         </div>
                     </form>
                 </article>
@@ -1162,7 +1290,8 @@ ob_start();
             <section id="admin-section-security" class="admin-section<?= $section === 'security' ? ' is-active' : '' ?>">
                 <?php if ($systemNeedsDevReview): ?>
                 <div class="admin-flash error">
-                    System configuration requires developer review. Contact your system developer if this message persists.
+                    <?= portal_icon('lock', 'admin-flash-icon') ?>
+                    <span>System configuration requires developer review. Contact your system developer if this message persists.</span>
                 </div>
                 <?php endif; ?>
 
@@ -1367,7 +1496,8 @@ ob_start();
                     </div>
                     <?php if ($dbSecurityWarning): ?>
                     <div class="admin-flash error admin-flash--compact">
-                        <?= portal_escape($dbSecurityWarning) ?>
+                        <?= portal_icon('lock', 'admin-flash-icon') ?>
+                        <span><?= portal_escape($dbSecurityWarning) ?></span>
                     </div>
                     <?php endif; ?>
                     <ul class="admin-checklist">
@@ -1511,17 +1641,138 @@ ob_start();
         });
     });
 
+    var syncModules = function () {};
+    var gptZeroKeyInput = document.getElementById('gptzero-api-key');
+    var gptZeroRemoveInput = document.querySelector('input[name="clear_gptzero_api_key"]');
+    var gptZeroSavedKey = !!gptZeroKeyInput && gptZeroKeyInput.getAttribute('data-gptzero-saved-key') === '1';
+
+    function restartValidationShake(node) {
+        if (!node || !node.classList) return;
+        node.classList.remove('is-validation-shaking');
+        void node.offsetWidth;
+        node.classList.add('is-validation-shaking');
+    }
+
+    function hasEffectiveGptZeroKey() {
+        var typedKey = gptZeroKeyInput && gptZeroKeyInput.value.trim() !== '';
+        var removingSavedKey = gptZeroRemoveInput && gptZeroRemoveInput.checked;
+        return typedKey || (gptZeroSavedKey && !removingSavedKey);
+    }
+
+    function selectedExternalPolicy() {
+        var selected = document.querySelector('input[name="external_ai_policy"]:checked');
+        return selected ? selected.value : 'disabled';
+    }
+
+    function syncGptZeroWarnings() {
+        var hasKey = hasEffectiveGptZeroKey();
+        document.querySelectorAll('[data-gptzero-required-warning], [data-gptzero-module-warning]').forEach(function (warning) {
+            warning.classList.toggle('is-hidden', hasKey);
+        });
+    }
+
+    if (gptZeroKeyInput) {
+        gptZeroKeyInput.addEventListener('input', function () {
+            syncGptZeroWarnings();
+            syncModules();
+        });
+    }
+
+    var integrityForm = document.querySelector('.admin-integrity-form');
+    if (integrityForm) {
+        integrityForm.addEventListener('submit', function (event) {
+            var policy = selectedExternalPolicy();
+            if ((policy !== 'site_wide' && policy !== 'per_module') || hasEffectiveGptZeroKey()) return;
+
+            event.preventDefault();
+            syncGptZeroWarnings();
+            var help = document.getElementById('admin-ai-policy-help');
+            if (help) {
+                help.textContent = policy === 'site_wide'
+                    ? 'Add a GPTZero API key before site-wide checks can run.'
+                    : 'A GPTZero API key is required before selected-module checks can run.';
+                restartValidationShake(help);
+            }
+            if (gptZeroKeyInput) {
+                restartValidationShake(gptZeroKeyInput);
+                restartValidationShake(gptZeroKeyInput.closest('.admin-field'));
+                try {
+                    gptZeroKeyInput.focus({ preventScroll: false });
+                } catch (err) {
+                    gptZeroKeyInput.focus();
+                }
+            }
+            var selectedCard = document.querySelector('input[name="external_ai_policy"]:checked');
+            restartValidationShake(selectedCard ? selectedCard.closest('.admin-policy-card') : null);
+            document.querySelectorAll('[data-gptzero-required-warning], [data-gptzero-module-warning]').forEach(function (warning) {
+                restartValidationShake(warning);
+            });
+        });
+    }
+
     var modules = document.getElementById('admin-ai-modules');
     if (modules) {
-        function syncModules() {
+        var help = document.getElementById('admin-ai-policy-help');
+        var messages = {
+            disabled: 'External GPTZero checks are disabled. Internal integrity checks still run.',
+            site_wide: 'GPTZero checks will run for every submission.',
+            site_wide_missing: 'Add a GPTZero API key before site-wide checks can run.',
+            per_module: 'Choose which modules can use GPTZero external AI detection.',
+            per_module_missing: 'A GPTZero API key is required before selected-module checks can run.'
+        };
+
+        syncModules = function () {
             var sel = document.querySelector('input[name="external_ai_policy"]:checked');
-            modules.hidden = !sel || sel.value !== 'per_module';
-        }
+            var showModules = !!sel && sel.value === 'per_module';
+            var hasKey = hasEffectiveGptZeroKey();
+            if (help && sel) {
+                if (sel.value === 'site_wide' && !hasKey) {
+                    help.textContent = messages.site_wide_missing;
+                } else if (sel.value === 'per_module' && !hasKey) {
+                    help.textContent = messages.per_module_missing;
+                } else if (messages[sel.value]) {
+                    help.textContent = messages[sel.value];
+                }
+            }
+            modules.classList.toggle('admin-collapse--open', showModules);
+            modules.classList.toggle('is-visible', showModules);
+            modules.classList.toggle('is-hidden', !showModules);
+            if (showModules) {
+                modules.hidden = false;
+            } else {
+                window.setTimeout(function () {
+                    if (!modules.classList.contains('admin-collapse--open')) {
+                        modules.hidden = true;
+                    }
+                }, 190);
+            }
+        };
         document.querySelectorAll('input[name="external_ai_policy"]').forEach(function (radio) {
             radio.addEventListener('change', syncModules);
         });
+        syncGptZeroWarnings();
         syncModules();
     }
+
+    document.querySelectorAll('.admin-ai-module-card input[type="checkbox"]').forEach(function (box) {
+        function syncCard() {
+            var card = box.closest('.admin-ai-module-card');
+            if (card) card.classList.toggle('is-selected', box.checked);
+        }
+        box.addEventListener('change', syncCard);
+        syncCard();
+    });
+
+    document.querySelectorAll('[data-remove-key]').forEach(function (box) {
+        function syncRemove() {
+            var row = box.closest('.admin-remove-key');
+            if (row) row.classList.toggle('is-selected', box.checked);
+            syncGptZeroWarnings();
+            syncModules();
+        }
+        box.addEventListener('change', syncRemove);
+        syncRemove();
+    });
 
     var enrollFilter = document.getElementById('enroll-course-filter');
     var enrollGrid = document.getElementById('enroll-course-grid');

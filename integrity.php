@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Academic integrity helpers: text extraction, similarity, and optional ZeroGPT checks.
+ * Academic integrity helpers: text extraction, similarity, and optional GPTZero checks.
  */
 
 if (!function_exists('portal_load_env_file')) {
@@ -2354,13 +2354,13 @@ if (!function_exists('portal_course_external_ai_enabled')) {
 if (!function_exists('portal_external_ai_configured')) {
     function portal_external_ai_configured(): bool
     {
-        return portal_zero_gpt_api_key() !== '';
+        return portal_gptzero_key_configured();
     }
 }
 
 if (!function_exists('portal_external_ai_should_run')) {
     /**
-     * Whether ZeroGPT should run for a submission.
+     * Whether GPTZero should run for a submission.
      *
      * @param array<string, mixed> $context item row or submission context with course_id and optional submission_ai_detection
      */
@@ -2400,27 +2400,55 @@ if (!function_exists('portal_show_submission_external_ai_option')) {
     }
 }
 
-if (!function_exists('portal_zero_gpt_api_key')) {
-    function portal_zero_gpt_api_key(): string
+if (!function_exists('portal_gptzero_api_key')) {
+    function portal_gptzero_api_key(): string
     {
-        $fromDb = portal_site_setting_get('zerogpt_api_key', '');
+        $fromDb = portal_site_setting_get('gptzero_api_key', '');
         if ($fromDb !== '') {
             return $fromDb;
         }
-        return trim((string) getenv('ZEROGPT_API_KEY'));
+        $legacy = portal_site_setting_get('zerogpt_api_key', '');
+        if ($legacy !== '') {
+            portal_site_setting_set('gptzero_api_key', $legacy);
+            return $legacy;
+        }
+        return trim((string) getenv('GPTZERO_API_KEY'));
     }
 }
 
-if (!function_exists('portal_zero_gpt_request')) {
+if (!function_exists('portal_gptzero_key_configured')) {
+    function portal_gptzero_key_configured(): bool
+    {
+        return portal_gptzero_api_key() !== '';
+    }
+}
+
+if (!function_exists('portal_gptzero_key_save')) {
+    function portal_gptzero_key_save(string $apiKey): void
+    {
+        portal_site_setting_set('gptzero_api_key', trim($apiKey));
+        portal_site_setting_set('zerogpt_api_key', '');
+    }
+}
+
+if (!function_exists('portal_gptzero_key_clear')) {
+    function portal_gptzero_key_clear(): void
+    {
+        portal_site_setting_set('gptzero_api_key', '');
+        portal_site_setting_set('zerogpt_api_key', '');
+    }
+}
+
+if (!function_exists('portal_gptzero_request_with_key')) {
     /**
      * @param array<string, mixed> $payload
      * @return array{ok: bool, http: int, body: string, error: string}
      */
-    function portal_zero_gpt_request(string $url, array $payload): array
+    function portal_gptzero_request_with_key(string $url, array $payload, string $apiKey): array
     {
-        $apiKey = portal_zero_gpt_api_key();
+        $apiKey = trim($apiKey);
         if ($apiKey === '') {
-            return ['ok' => false, 'http' => 0, 'body' => '', 'error' => 'ZEROGPT_API_KEY is not configured.'];
+            return ['ok' => false, 'http' => 0, 'body' => '', 'error' => 'GPTZero API key is not configured.'];
         }
         if (!function_exists('curl_init')) {
             return ['ok' => false, 'http' => 0, 'body' => '', 'error' => 'PHP cURL is not enabled.'];
@@ -2435,8 +2463,7 @@ if (!function_exists('portal_zero_gpt_request')) {
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
                 'Accept: application/json',
-                'Authorization: Bearer ' . $apiKey,
-                'ApiKey: ' . $apiKey,
+                'x-api-key: ' . $apiKey,
             ],
             CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
         ]);
@@ -2454,8 +2481,59 @@ if (!function_exists('portal_zero_gpt_request')) {
     }
 }
 
-if (!function_exists('portal_zero_gpt_pick_numeric')) {
-    function portal_zero_gpt_pick_numeric(array $data, array $paths): ?float
+if (!function_exists('portal_gptzero_request')) {
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{ok: bool, http: int, body: string, error: string}
+     */
+    function portal_gptzero_request(string $url, array $payload): array
+    {
+        return portal_gptzero_request_with_key($url, $payload, portal_gptzero_api_key());
+    }
+}
+
+if (!function_exists('portal_gptzero_validate_api_key')) {
+    /**
+     * @return array{ok: bool, error: string}
+     */
+    function portal_gptzero_validate_api_key(string $apiKey): array
+    {
+        $apiKey = trim($apiKey);
+        if ($apiKey === '') {
+            return ['ok' => false, 'error' => 'Add a GPTZero API key before saving GPTZero settings.'];
+        }
+
+        $validationText = 'This validation request checks whether the supplied GPTZero API key can authenticate against the text prediction endpoint. It is ordinary prose written for a system configuration test. The result is not used as an academic integrity decision, and the submitted key is only saved after GPTZero accepts this request.';
+        $response = portal_gptzero_request_with_key('https://api.gptzero.me/v2/predict/text', [
+            'document' => $validationText,
+        ], $apiKey);
+
+        if ($response['ok']) {
+            $data = json_decode($response['body'], true);
+            if (is_array($data)) {
+                return ['ok' => true, 'error' => ''];
+            }
+            return ['ok' => false, 'error' => 'GPTZero accepted the request but returned an unreadable validation response.'];
+        }
+
+        if (in_array($response['http'], [401, 403], true)) {
+            return ['ok' => false, 'error' => 'GPTZero rejected this API key. Check the key and try again.'];
+        }
+
+        if ($response['http'] === 429) {
+            return ['ok' => false, 'error' => 'GPTZero could not validate this key because the API rate limit was reached. Try again later.'];
+        }
+
+        if ($response['http'] > 0) {
+            return ['ok' => false, 'error' => 'GPTZero could not validate this key. The validation request returned HTTP ' . $response['http'] . '.'];
+        }
+
+        return ['ok' => false, 'error' => $response['error'] !== '' ? $response['error'] : 'GPTZero could not validate this key.'];
+    }
+}
+
+if (!function_exists('portal_gptzero_pick_numeric')) {
+    function portal_gptzero_pick_numeric(array $data, array $paths): ?float
     {
         foreach ($paths as $path) {
             $cursor = $data;
@@ -2474,10 +2552,70 @@ if (!function_exists('portal_zero_gpt_pick_numeric')) {
     }
 }
 
-if (!function_exists('portal_zero_gpt_detection')) {
-    function portal_zero_gpt_detection(string $text): array
+if (!function_exists('portal_gptzero_score_percent')) {
+    function portal_gptzero_score_percent(float $score): float
     {
-        if (portal_zero_gpt_api_key() === '') {
+        return $score <= 1.0 ? $score * 100.0 : $score;
+    }
+}
+
+if (!function_exists('portal_gptzero_probability_value')) {
+    /**
+     * @param array<string, mixed> $probabilities
+     */
+    function portal_gptzero_probability_value(array $probabilities, array $keys): ?float
+    {
+        foreach ($keys as $key) {
+            if (isset($probabilities[$key]) && is_numeric($probabilities[$key])) {
+                return (float) $probabilities[$key];
+            }
+        }
+        return null;
+    }
+}
+
+if (!function_exists('portal_gptzero_ai_score')) {
+    function portal_gptzero_ai_score(array $data): ?float
+    {
+        $explicit = portal_gptzero_pick_numeric($data, [
+            ['ai_probability'],
+            ['ai_score'],
+            ['generated_probability'],
+            ['completely_generated_prob'],
+            ['result', 'ai_probability'],
+            ['document', 'ai_probability'],
+        ]);
+        if ($explicit !== null) {
+            return portal_gptzero_score_percent($explicit);
+        }
+
+        $probabilitySets = [
+            $data['class_probabilities'] ?? null,
+            $data['document']['class_probabilities'] ?? null,
+            $data['result']['class_probabilities'] ?? null,
+            $data['documents'][0]['class_probabilities'] ?? null,
+        ];
+
+        foreach ($probabilitySets as $probabilities) {
+            if (!is_array($probabilities)) {
+                continue;
+            }
+
+            $aiOnly = portal_gptzero_probability_value($probabilities, ['AI_ONLY', 'ai_only', 'AI_GENERATED', 'ai_generated']);
+            $mixed = portal_gptzero_probability_value($probabilities, ['MIXED', 'mixed']);
+            if ($aiOnly !== null || $mixed !== null) {
+                return min(100.0, portal_gptzero_score_percent(($aiOnly ?? 0.0) + ($mixed ?? 0.0)));
+            }
+        }
+
+        return null;
+    }
+}
+
+if (!function_exists('portal_gptzero_detection')) {
+    function portal_gptzero_detection(string $text): array
+    {
+        if (portal_gptzero_api_key() === '') {
             return ['status' => 'not_configured', 'score' => null, 'report' => 'External AI detection is disabled. An admin can enable it in Admin → External AI detection.'];
         }
         if ($text === '') {
@@ -2486,37 +2624,26 @@ if (!function_exists('portal_zero_gpt_detection')) {
 
         $limitedText = function_exists('mb_substr') ? mb_substr($text, 0, 15000) : substr($text, 0, 15000);
         $endpoints = [
-            'https://api.zerogpt.org/api/v1/developer/ai-detection',
-            'https://api.zerogpt.org/api/v1/developer/detect',
+            'https://api.gptzero.me/v2/predict/text',
         ];
 
-        $lastError = 'ZeroGPT AI detection failed.';
+        $lastError = 'GPTZero AI detection failed.';
         foreach ($endpoints as $endpoint) {
-            $response = portal_zero_gpt_request($endpoint, [
-                'text' => $limitedText,
-                'include_sentence_analysis' => true,
+            $response = portal_gptzero_request($endpoint, [
+                'document' => $limitedText,
             ]);
             if (!$response['ok']) {
-                $lastError = $response['error'] !== '' ? $response['error'] : 'ZeroGPT returned HTTP ' . $response['http'] . '.';
+                $lastError = $response['error'] !== '' ? $response['error'] : 'GPTZero returned HTTP ' . $response['http'] . '.';
                 continue;
             }
 
             $data = json_decode($response['body'], true);
             if (!is_array($data)) {
-                $lastError = 'ZeroGPT returned an unreadable response.';
+                $lastError = 'GPTZero returned an unreadable response.';
                 continue;
             }
 
-            $score = portal_zero_gpt_pick_numeric($data, [
-                ['data', 'ai_percentage'],
-                ['data', 'aiPercentage'],
-                ['data', 'fakePercentage'],
-                ['data', 'is_gpt_generated'],
-                ['data', 'isAI'],
-                ['fakePercentage'],
-                ['aiPercentage'],
-                ['score'],
-            ]);
+            $score = portal_gptzero_ai_score($data);
 
             if ($score !== null) {
                 return [
@@ -2526,83 +2653,19 @@ if (!function_exists('portal_zero_gpt_detection')) {
                 ];
             }
 
-            $lastError = 'ZeroGPT response did not include an AI score.';
+            $lastError = 'GPTZero response did not include an AI score.';
         }
 
         return ['status' => 'error', 'score' => null, 'report' => $lastError];
     }
 }
 
-if (!function_exists('portal_zero_gpt_plagiarism')) {
+if (!function_exists('portal_gptzero_plagiarism')) {
     /**
      * @return array{status: string, score: ?float, report: string, matches: array<int, array<string, mixed>>}
      */
-    function portal_zero_gpt_plagiarism(string $text): array
+    function portal_gptzero_plagiarism(string $text): array
     {
-        if (portal_zero_gpt_api_key() === '') {
-            return ['status' => 'not_configured', 'score' => null, 'report' => '', 'matches' => []];
-        }
-        if ($text === '') {
-            return ['status' => 'no_text', 'score' => null, 'report' => '', 'matches' => []];
-        }
-
-        $limitedText = function_exists('mb_substr') ? mb_substr($text, 0, 20000) : substr($text, 0, 20000);
-        $endpoints = [
-            'https://api.zerogpt.org/api/v1/developer/plagiarism',
-            'https://api.zerogpt.com/api/detect/detectPlagiarism',
-        ];
-
-        foreach ($endpoints as $endpoint) {
-            $payload = str_contains($endpoint, 'detectPlagiarism')
-                ? ['input_text' => $limitedText]
-                : ['text' => $limitedText];
-
-            $response = portal_zero_gpt_request($endpoint, $payload);
-            if (!$response['ok']) {
-                continue;
-            }
-
-            $data = json_decode($response['body'], true);
-            if (!is_array($data)) {
-                continue;
-            }
-
-            $score = portal_zero_gpt_pick_numeric($data, [
-                ['data', 'plagiarism_percentage'],
-                ['data', 'plagiarismPercentage'],
-                ['data', 'percent_plagiarized'],
-                ['plagiarism_percentage'],
-                ['plagiarismPercentage'],
-                ['score'],
-            ]);
-
-            $matches = [];
-            $rawMatches = $data['data']['matches'] ?? $data['data']['sources'] ?? $data['matches'] ?? [];
-            if (is_array($rawMatches)) {
-                foreach (array_slice($rawMatches, 0, 5) as $match) {
-                    if (!is_array($match)) {
-                        continue;
-                    }
-                    $matches[] = [
-                        'source' => (string) ($match['url'] ?? $match['source'] ?? $match['title'] ?? 'Web source'),
-                        'type' => 'web source',
-                        'score' => isset($match['score']) && is_numeric($match['score']) ? (float) $match['score'] : ($score ?? 0.0),
-                        'matched_phrases' => [],
-                        'snippet' => (string) ($match['snippet'] ?? $match['text'] ?? ''),
-                    ];
-                }
-            }
-
-            if ($score !== null || $matches !== []) {
-                return [
-                    'status' => 'checked',
-                    'score' => $score,
-                    'report' => function_exists('mb_substr') ? mb_substr($response['body'], 0, 4000) : substr($response['body'], 0, 4000),
-                    'matches' => $matches,
-                ];
-            }
-        }
-
         return ['status' => 'not_configured', 'score' => null, 'report' => '', 'matches' => []];
     }
 }
@@ -2648,7 +2711,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
                     'summary' => 'Not enough readable text was available to produce a similarity report. Try DOCX or TXT, or install LibreOffice for better PDF/DOC extraction.',
                     'scope' => [
                         'institutional_database' => 'checked',
-                        'global_web' => portal_zero_gpt_api_key() !== '' ? 'pending' : 'not_configured',
+                        'global_web' => 'not_configured',
                         'academic_journals' => 'not_configured',
                     ],
                     'matches' => [],
@@ -2875,7 +2938,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $webMatches = [];
         $web = ['status' => 'not_configured', 'score' => null, 'report' => '', 'matches' => []];
         if ($submissionContext !== null && portal_external_ai_should_run($submissionContext)) {
-            $web = portal_zero_gpt_plagiarism($cleanText);
+            $web = portal_gptzero_plagiarism($cleanText);
         }
         if ($web['status'] === 'checked' && ($web['score'] !== null || $web['matches'] !== [])) {
             $webScope = 'checked';
@@ -3215,7 +3278,7 @@ if (!function_exists('portal_render_integrity_report')) {
 
             <?php if ($showAi): ?>
                 <div class="integrity-ai-panel">
-                    <strong>External AI detection (ZeroGPT)</strong>
+                    <strong>External AI detection (GPTZero)</strong>
                     <span>
                         <?= portal_escape((string) ($submission['ai_status'] ?? 'not checked')) ?>
                         <?php if (($submission['ai_score'] ?? null) !== null): ?>
@@ -3776,7 +3839,7 @@ if (!function_exists('portal_rerun_submission_integrity')) {
             'course_id' => (int) ($submission['course_id'] ?? 0),
             'submission_ai_detection' => (int) ($submission['submission_ai_detection'] ?? 0),
         ])) {
-            $ai = portal_zero_gpt_detection($text);
+            $ai = portal_gptzero_detection($text);
             $db->prepare(
                 "UPDATE course_submissions
                  SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')

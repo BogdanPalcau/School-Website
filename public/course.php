@@ -1229,7 +1229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'course_id' => $courseId,
                         'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
                     ])) {
-                        $ai = portal_zero_gpt_detection($combinedText);
+                        $ai = portal_gptzero_detection($combinedText);
                         $db->prepare(
                             "UPDATE course_submissions
                              SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
@@ -1673,7 +1673,12 @@ ob_start();
 <section class="course-detail-page">
     <?php if (is_array($courseFlash) && isset($courseFlash[0], $courseFlash[1])): ?>
         <div class="admin-flash <?= $courseFlash[0] === 'success' ? 'success' : 'error' ?>" style="margin-bottom:12px;">
-            <?= portal_escape((string) $courseFlash[1]) ?>
+            <?php if ($courseFlash[0] === 'success'): ?>
+                <span><?= portal_escape((string) $courseFlash[1]) ?></span>
+            <?php else: ?>
+                <?= portal_icon('lock', 'admin-flash-icon') ?>
+                <span><?= portal_escape((string) $courseFlash[1]) ?></span>
+            <?php endif; ?>
         </div>
     <?php endif; ?>
 
@@ -2159,7 +2164,7 @@ ob_start();
                                                                                 <?php if ($showExternalAiSlotOption): ?>
                                                                                 <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                                                     <input type="checkbox" name="submission_ai_detection" value="1" <?= !empty($item['submission_ai_detection']) ? 'checked' : '' ?>>
-                                                                                    External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
+                                                                                    External AI detection <small style="font-weight:400">(GPTZero for this assignment)</small>
                                                                                 </label>
                                                                                 <?php elseif ($externalAiSiteWide): ?>
                                                                                 <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
@@ -2405,7 +2410,7 @@ ob_start();
                                                 <?php if ($showExternalAiSlotOption): ?>
                                                 <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                     <input type="checkbox" name="submission_ai_detection" value="1">
-                                                    External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
+                                                    External AI detection <small style="font-weight:400">(GPTZero for this assignment)</small>
                                                 </label>
                                                 <?php elseif ($externalAiSiteWide): ?>
                                                 <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
@@ -2765,7 +2770,7 @@ ob_start();
                             <div>
                                 <p class="eyebrow">Integrity tool EULA</p>
                                 <h3><?= $integrityEulaAcceptedAt !== '' ? 'Accepted' : 'Action needed before external providers' ?></h3>
-                                <p>Built-in checks include school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past work. Optional ZeroGPT external AI detection can be configured by an admin in <strong>Admin → External AI detection</strong>.</p>
+                                <p>Built-in checks include school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past work. Optional GPTZero external AI detection can be configured by an admin in <strong>Admin → External AI detection</strong>.</p>
                                 <?php if ($integrityEulaAcceptedAt !== ''): ?>
                                     <span>Accepted <?= portal_escape(date('j M Y H:i', strtotime($integrityEulaAcceptedAt))) ?></span>
                                 <?php endif; ?>
