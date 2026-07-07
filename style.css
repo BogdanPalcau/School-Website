@@ -6056,6 +6056,31 @@ body {
     line-height: 1.4;
 }
 
+.sub-slot-attempts-limit {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--muted);
+    background: var(--surface-muted, rgba(0,0,0,0.05));
+    border-radius: 999px;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.sub-slot-attempts-note {
+    margin: 3px 0 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.sub-slot-attempts-note--header {
+    margin: 4px 0 0;
+    color: inherit;
+    opacity: 0.85;
+}
+
 /* ── Submission deadline badge ────────────────────────────────────────── */
 
 .sub-slot-deadline {
@@ -6260,6 +6285,26 @@ body.sub-slot-body-lock {
     border-bottom: 1px solid var(--border);
     background: var(--surface-muted);
     flex-shrink: 0;
+}
+
+.sub-slot-dialog-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.sub-slot-card-edit {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.sub-slot-edit-panel {
+    margin-bottom: 16px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
 }
 
 .sub-slot-dialog-heading h3 {

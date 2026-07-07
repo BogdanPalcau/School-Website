@@ -56,6 +56,7 @@ try {
 foreach ([
     "ALTER TABLE course_folder_items ADD COLUMN submission_deadline TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE course_folder_items ADD COLUMN submission_ai_detection INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_folder_items ADD COLUMN submission_max_attempts INTEGER NOT NULL DEFAULT 0",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
@@ -503,6 +504,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $url      = portal_course_normalize_external_url(substr(trim((string) ($_POST['url'] ?? '')), 0, 2000));
             $submissionDeadline = '';
             $submissionAiDetection = 0;
+            $submissionMaxAttempts = 0;
             $filePath = '';
             $fileName = '';
             $createItemError = null;
@@ -547,6 +549,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $submissionDeadline = date('Y-m-d H:i:s', $deadlineTs);
                     $submissionAiDetection = isset($_POST['submission_ai_detection']) && $_POST['submission_ai_detection'] === '1' ? 1 : 0;
+                    $submissionMaxAttempts = (int) ($_POST['submission_max_attempts'] ?? 0);
+                    if (!in_array($submissionMaxAttempts, [0, 1, 2], true)) {
+                        $submissionMaxAttempts = 0;
+                    }
                     $url = '';
                 }
             }
@@ -559,9 +565,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $allowDl = (isset($_POST['allow_download']) && $_POST['allow_download'] === '1') ? 1 : 0;
                 $db->prepare(
                     "INSERT INTO course_folder_items
-                     (folder_id, course_id, type, title, description, url, file_path, file_name, allow_download, submission_deadline, submission_ai_detection)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-                )->execute([$folderId, $courseId, $type, $title, $desc, $url, $filePath, $fileName, $allowDl, $submissionDeadline, $submissionAiDetection]);
+                     (folder_id, course_id, type, title, description, url, file_path, file_name, allow_download, submission_deadline, submission_ai_detection, submission_max_attempts)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                )->execute([$folderId, $courseId, $type, $title, $desc, $url, $filePath, $fileName, $allowDl, $submissionDeadline, $submissionAiDetection, $submissionMaxAttempts]);
                 $_SESSION['course_flash'] = ['success', 'Item added successfully.'];
             } else {
                 $_SESSION['course_flash'] = ['error', 'Could not add item. Check the folder and title, then try again.'];
@@ -579,6 +585,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $allowDl = isset($_POST['allow_download']) && $_POST['allow_download'] === '1' ? 1 : 0;
                 $deadline = (string) ($itemRow['submission_deadline'] ?? '');
                 $aiDetection = (int) ($itemRow['submission_ai_detection'] ?? 0);
+                $maxAttempts = (int) ($itemRow['submission_max_attempts'] ?? 0);
                 $error = null;
 
                 if ($title === '') {
@@ -605,6 +612,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         $deadline = date('Y-m-d H:i:s', $deadlineTs);
                         $aiDetection = isset($_POST['submission_ai_detection']) && $_POST['submission_ai_detection'] === '1' ? 1 : 0;
+                        $maxAttempts = (int) ($_POST['submission_max_attempts'] ?? 0);
+                        if (!in_array($maxAttempts, [0, 1, 2], true)) {
+                            $maxAttempts = 0;
+                        }
                     }
                 }
 
@@ -614,9 +625,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->prepare(
                         "UPDATE course_folder_items
                          SET title = ?, description = ?, url = ?, allow_download = ?,
-                             submission_deadline = ?, submission_ai_detection = ?
+                             submission_deadline = ?, submission_ai_detection = ?, submission_max_attempts = ?
                          WHERE id = ? AND course_id = ?"
-                    )->execute([$title, $desc, $url, $allowDl, $deadline, $aiDetection, $itemId, $courseId]);
+                    )->execute([$title, $desc, $url, $allowDl, $deadline, $aiDetection, $maxAttempts, $itemId, $courseId]);
                     $_SESSION['course_flash'] = ['success', 'Item settings saved.'];
                 }
             }
@@ -965,13 +976,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $itemId = (int) ($_POST['item_id'] ?? 0);
         $slotChk = $db->prepare(
-            "SELECT id, submission_deadline, submission_ai_detection
+            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts
              FROM course_folder_items
              WHERE id = ? AND course_id = ? AND type = 'submission'"
         );
         $slotChk->execute([$itemId, $courseId]);
         $slot = $slotChk->fetch();
         if ($slot) {
+            $maxAttempts = (int) ($slot['submission_max_attempts'] ?? 0);
+            $attemptsUsed = 0;
+            if ($maxAttempts > 0) {
+                $attemptsStmt = $db->prepare(
+                    "SELECT COUNT(*) FROM course_submission_versions WHERE item_id = ? AND user_id = ?"
+                );
+                $attemptsStmt->execute([$itemId, (int) $me['id']]);
+                $attemptsUsed = (int) $attemptsStmt->fetchColumn();
+            }
             $pastedText = portal_integrity_normalize_text((string) ($_POST['submission_text'] ?? ''));
             $subError = (int) ($_FILES['submission_file']['error'] ?? UPLOAD_ERR_NO_FILE);
             $hasFile = $subError !== UPLOAD_ERR_NO_FILE;
@@ -1033,6 +1053,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($submissionTooShort) {
                 $msg = 'Your submission is too short (' . $precheckWordCount . ' word' . ($precheckWordCount === 1 ? '' : 's')
                      . '). Please write a more complete response of at least ' . $minWords . ' words before submitting.';
+                $_SESSION['course_flash'] = ['error', $msg];
+                $submitJsonExit(false, [], $msg);
+            } elseif ($maxAttempts > 0 && $attemptsUsed >= $maxAttempts) {
+                $msg = 'You have already used all ' . $maxAttempts . ' allowed submission attempt' . ($maxAttempts === 1 ? '' : 's') . ' for this assignment.';
                 $_SESSION['course_flash'] = ['error', $msg];
                 $submitJsonExit(false, [], $msg);
             } else {
@@ -1223,6 +1247,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'receipt_number'     => $receiptNumber,
                         'is_resubmit'        => (bool) $prev,
                         'message'            => 'Submission received. Receipt: ' . $receiptNumber,
+                        'max_attempts'       => $maxAttempts,
+                        'attempts_used'      => $maxAttempts > 0 ? $attemptsUsed + 1 : 0,
+                        'attempts_reached'   => $maxAttempts > 0 && ($attemptsUsed + 1) >= $maxAttempts,
                     ]);
                 } else {
                     $_SESSION['course_flash'] = ['error', 'Upload failed while saving your submission. Please try again.'];
@@ -1912,7 +1939,7 @@ ob_start();
                                                     </span>
                                                     <?php endif; ?>
 
-                                                    <?php if (portal_can_manage_course($courseId)): ?>
+                                                    <?php if (portal_can_manage_course($courseId) && $item['type'] !== 'submission'): ?>
                                                         <?php
                                                             $itemDeadlineValue = $item['submission_deadline'] !== ''
                                                                 ? date('Y-m-d\TH:i', strtotime((string) $item['submission_deadline']))
@@ -1939,22 +1966,6 @@ ob_start();
                                                                         <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://... or www.example.com">
                                                                     </label>
                                                                 <?php endif; ?>
-                                                                <?php if ($item['type'] === 'submission'): ?>
-                                                                    <div class="folder-form-row">
-                                                                        <label class="folder-form-label">
-                                                                            <span>Deadline</span>
-                                                                            <input type="datetime-local" name="submission_deadline" required value="<?= portal_escape($itemDeadlineValue) ?>">
-                                                                        </label>
-                                                                        <?php if ($showExternalAiSlotOption): ?>
-                                                                        <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
-                                                                            <input type="checkbox" name="submission_ai_detection" value="1" <?= !empty($item['submission_ai_detection']) ? 'checked' : '' ?>>
-                                                                            External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
-                                                                        </label>
-                                                                        <?php elseif ($externalAiSiteWide): ?>
-                                                                        <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
-                                                                        <?php endif; ?>
-                                                                    </div>
-                                                                <?php endif; ?>
                                                                 <?php if ($item['type'] === 'document' && $item['file_path'] !== ''): ?>
                                                                     <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                                         <input type="checkbox" name="allow_download" value="1" <?= !empty($item['allow_download']) ? 'checked' : '' ?>>
@@ -1968,13 +1979,20 @@ ob_start();
 
                                                     <?php if ($item['type'] === 'submission'): ?>
                                                         <?php
+                                                            $itemDeadlineValue = $item['submission_deadline'] !== ''
+                                                                ? date('Y-m-d\TH:i', strtotime((string) $item['submission_deadline']))
+                                                                : '';
                                                             $deadlineInfo = portal_submission_deadline_info((string) $item['submission_deadline']);
                                                             $deadlinePassed = $deadlineInfo['passed'];
                                                             $modalId = 'sub-slot-modal-' . (int) $item['id'];
+                                                            $slotEditPanelId = 'sub-slot-edit-' . (int) $item['id'];
+                                                            $slotMaxAttempts = (int) ($item['submission_max_attempts'] ?? 0);
                                                             if (portal_can_manage_course($courseId)) {
                                                                 $subs = $slotSubmissions[(int)$item['id']] ?? [];
                                                             } else {
                                                                 $mySub = $mySubmissions[(int)$item['id']] ?? null;
+                                                                $mySubAttemptsUsed = $mySub ? count($submissionVersions[(int) $mySub['id']] ?? []) : 0;
+                                                                $attemptsReached = $slotMaxAttempts > 0 && $mySubAttemptsUsed >= $slotMaxAttempts;
                                                             }
                                                         ?>
                                                         <div class="sub-slot-card"
@@ -1990,6 +2008,17 @@ ob_start();
                                                                         <?= portal_icon('upload', 'icon-xs') ?>
                                                                         <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
                                                                     </span>
+                                                                    <?php if ($slotMaxAttempts > 0): ?>
+                                                                    <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
+                                                                    <?php endif; ?>
+                                                                    <button type="button"
+                                                                            class="button button--sm sub-slot-card-edit"
+                                                                            data-sub-open-edit="<?= portal_escape($modalId) ?>"
+                                                                            data-sub-open-edit-form="1"
+                                                                            title="Edit slot">
+                                                                        <?= portal_icon('edit', 'icon-xs') ?>
+                                                                        Edit slot
+                                                                    </button>
                                                                 </div>
                                                             <?php else: ?>
                                                                 <div class="sub-slot-card-row" data-sub-card-row>
@@ -2018,6 +2047,11 @@ ob_start();
                                                             <?php elseif (!portal_can_manage_course($courseId)): ?>
                                                             <p class="sub-slot-card-meta is-hidden" data-sub-card-meta></p>
                                                             <?php endif; ?>
+                                                            <?php if (!portal_can_manage_course($courseId) && $slotMaxAttempts > 0): ?>
+                                                            <p class="sub-slot-attempts-note" data-sub-attempts-note data-max-attempts="<?= $slotMaxAttempts ?>">
+                                                                Attempt <?= min($mySubAttemptsUsed, $slotMaxAttempts) ?> of <?= $slotMaxAttempts ?> used
+                                                            </p>
+                                                            <?php endif; ?>
                                                         </div>
 
                                                         <?php ob_start(); ?>
@@ -2034,12 +2068,73 @@ ob_start();
                                                                         <p class="eyebrow">Submission</p>
                                                                         <h3 id="<?= portal_escape($modalId) ?>-title"><?= portal_escape($item['title']) ?></h3>
                                                                         <?= portal_render_submission_deadline((string) $item['submission_deadline'], 'sub-slot-deadline--header') ?>
+                                                                        <?php if ($slotMaxAttempts > 0): ?>
+                                                                        <p class="sub-slot-attempts-note sub-slot-attempts-note--header" <?= portal_can_manage_course($courseId) ? '' : 'data-sub-attempts-note data-max-attempts="' . $slotMaxAttempts . '"' ?>>
+                                                                            <?= portal_can_manage_course($courseId) ? 'Max ' . $slotMaxAttempts . ' attempt' . ($slotMaxAttempts === 1 ? '' : 's') . ' per student' : 'Attempt ' . min($mySubAttemptsUsed, $slotMaxAttempts) . ' of ' . $slotMaxAttempts . ' used' ?>
+                                                                        </p>
+                                                                        <?php endif; ?>
                                                                     </div>
-                                                                    <button type="button" class="sub-slot-dialog-close" aria-label="Close">&times;</button>
+                                                                    <div class="sub-slot-dialog-header-actions">
+                                                                        <?php if (portal_can_manage_course($courseId)): ?>
+                                                                        <button type="button"
+                                                                                class="button button--sm settings-toggle"
+                                                                                data-settings-target="<?= portal_escape($slotEditPanelId) ?>"
+                                                                                aria-label="Edit slot">
+                                                                            <?= portal_icon('edit', 'icon-xs') ?>
+                                                                            Edit slot
+                                                                        </button>
+                                                                        <?php endif; ?>
+                                                                        <button type="button" class="sub-slot-dialog-close" aria-label="Close">&times;</button>
+                                                                    </div>
                                                                 </header>
 
                                                                 <div class="sub-slot-dialog-body">
                                                                 <?php if (portal_can_manage_course($courseId)): ?>
+                                                                    <div class="settings-panel sub-slot-edit-panel" id="<?= portal_escape($slotEditPanelId) ?>" data-sub-slot-edit-panel hidden>
+                                                                        <form method="POST" class="folder-admin-form folder-admin-form--inner">
+                                                                            <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                                            <input type="hidden" name="action" value="update_item_settings">
+                                                                            <input type="hidden" name="item_id" value="<?= (int)$item['id'] ?>">
+                                                                            <div class="folder-form-row">
+                                                                                <label class="folder-form-label">
+                                                                                    <span>Title</span>
+                                                                                    <input type="text" name="title" required maxlength="200" value="<?= portal_escape($item['title']) ?>">
+                                                                                </label>
+                                                                                <label class="folder-form-label">
+                                                                                    <span>Description <small>(optional)</small></span>
+                                                                                    <input type="text" name="description" maxlength="500" value="<?= portal_escape($item['description']) ?>">
+                                                                                </label>
+                                                                            </div>
+                                                                            <div class="folder-form-row">
+                                                                                <label class="folder-form-label">
+                                                                                    <span>Deadline</span>
+                                                                                    <input type="datetime-local" name="submission_deadline" required value="<?= portal_escape($itemDeadlineValue) ?>">
+                                                                                </label>
+                                                                                <label class="folder-form-label">
+                                                                                    <span>Re-submissions allowed</span>
+                                                                                    <select name="submission_max_attempts">
+                                                                                        <option value="0" <?= (int) ($item['submission_max_attempts'] ?? 0) === 0 ? 'selected' : '' ?>>Unlimited</option>
+                                                                                        <option value="1" <?= (int) ($item['submission_max_attempts'] ?? 0) === 1 ? 'selected' : '' ?>>1 (no resubmission)</option>
+                                                                                        <option value="2" <?= (int) ($item['submission_max_attempts'] ?? 0) === 2 ? 'selected' : '' ?>>2</option>
+                                                                                    </select>
+                                                                                </label>
+                                                                                <?php if ($showExternalAiSlotOption): ?>
+                                                                                <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                                                                    <input type="checkbox" name="submission_ai_detection" value="1" <?= !empty($item['submission_ai_detection']) ? 'checked' : '' ?>>
+                                                                                    External AI detection <small style="font-weight:400">(ZeroGPT for this assignment)</small>
+                                                                                </label>
+                                                                                <?php elseif ($externalAiSiteWide): ?>
+                                                                                <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
+                                                                                <?php endif; ?>
+                                                                            </div>
+                                                                            <div class="button-row">
+                                                                                <button type="submit" class="button button--sm">Save slot settings</button>
+                                                                                <button type="button"
+                                                                                        class="button-secondary button--sm settings-toggle"
+                                                                                        data-settings-target="<?= portal_escape($slotEditPanelId) ?>">Cancel</button>
+                                                                            </div>
+                                                                        </form>
+                                                                    </div>
                                                                     <?php if (!empty($subs)): ?>
                                                                         <p class="sub-modal-count"><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></p>
                                                                         <?php foreach ($subs as $sub): ?>
@@ -2095,8 +2190,12 @@ ob_start();
                                                                         <?php if (!$mySub): ?>
                                                                             <p class="sub-empty sub-empty--closed">This submission slot is closed.</p>
                                                                         <?php endif; ?>
+                                                                    <?php elseif ($attemptsReached): ?>
+                                                                        <p class="sub-empty sub-empty--closed">You have used all <?= $slotMaxAttempts ?> allowed submission attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?> for this assignment.</p>
                                                                     <?php else: ?>
                                                                     <section class="sub-modal-section sub-modal-section--submit" data-sub-submit-section>
+                                                                        <p class="sub-empty sub-empty--closed is-hidden" data-sub-attempts-closed-msg><?= $slotMaxAttempts > 0 ? 'You have used all ' . $slotMaxAttempts . ' allowed submission attempt' . ($slotMaxAttempts === 1 ? '' : 's') . ' for this assignment.' : '' ?></p>
+                                                                        <div data-sub-submit-fields>
                                                                         <h4 class="sub-modal-section-title" data-sub-submit-title><?= $mySub ? 'Re-submit work' : 'Submit work' ?></h4>
                                                                         <form method="POST" enctype="multipart/form-data" class="submit-work-form submit-work-form--modal" data-item-id="<?= (int) $item['id'] ?>">
                                                                             <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
@@ -2117,6 +2216,7 @@ ob_start();
                                                                             </label>
                                                                             <button type="submit" class="button" data-sub-submit-btn><?= $mySub ? 'Re-submit' : 'Submit work' ?></button>
                                                                         </form>
+                                                                        </div>
                                                                     </section>
                                                                     <?php endif; ?>
                                                                     </div>
@@ -2175,12 +2275,23 @@ ob_start();
                                                                 aria-label="<?= $itemLocked ? 'Unlock item' : 'Lock item' ?>">
                                                             <?= portal_icon('lock', 'icon-sm') ?>
                                                         </button>
+                                                        <?php if ($item['type'] === 'submission'): ?>
+                                                        <button type="button"
+                                                                class="folder-settings-button"
+                                                                data-sub-open-edit="sub-slot-modal-<?= (int)$item['id'] ?>"
+                                                                data-sub-open-edit-form="1"
+                                                                title="Edit slot"
+                                                                aria-label="Edit slot">
+                                                            <?= portal_icon('edit', 'icon-sm') ?>
+                                                        </button>
+                                                        <?php else: ?>
                                                         <button type="button"
                                                                 class="folder-settings-button settings-toggle"
                                                                 data-settings-target="item-settings-<?= (int)$item['id'] ?>"
                                                                 aria-label="Item settings">
                                                             <?= portal_icon('settings', 'icon-sm') ?>
                                                         </button>
+                                                        <?php endif; ?>
                                                         <form method="POST" class="folder-item-delete-form">
                                                             <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                                             <input type="hidden" name="action" value="delete_item">
@@ -2244,6 +2355,14 @@ ob_start();
                                                 <label class="folder-form-label">
                                                     <span>Deadline</span>
                                                     <input type="datetime-local" name="submission_deadline">
+                                                </label>
+                                                <label class="folder-form-label">
+                                                    <span>Re-submissions allowed</span>
+                                                    <select name="submission_max_attempts">
+                                                        <option value="0">Unlimited</option>
+                                                        <option value="1">1 (no resubmission)</option>
+                                                        <option value="2">2</option>
+                                                    </select>
                                                 </label>
                                                 <?php if ($showExternalAiSlotOption): ?>
                                                 <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
@@ -3409,7 +3528,8 @@ ob_start();
     }
 
     document.querySelectorAll('.sub-slot-card[data-sub-modal]').forEach(card => {
-        card.addEventListener('click', () => {
+        card.addEventListener('click', e => {
+            if (e.target.closest('[data-sub-open-edit]')) return;
             const modal = document.getElementById(card.dataset.subModal || '');
             if (modal) openSubSlot(modal);
         });
@@ -3418,6 +3538,20 @@ ob_start();
                 e.preventDefault();
                 const modal = document.getElementById(card.dataset.subModal || '');
                 if (modal) openSubSlot(modal);
+            }
+        });
+    });
+
+    document.querySelectorAll('[data-sub-open-edit]').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const modal = document.getElementById(btn.dataset.subOpenEdit || '');
+            if (!modal) return;
+            openSubSlot(modal);
+            if (btn.dataset.subOpenEditForm === '1') {
+                const panel = modal.querySelector('[data-sub-slot-edit-panel]');
+                if (panel) panel.hidden = false;
             }
         });
     });
@@ -3552,6 +3686,14 @@ ob_start();
             window.setTimeout(() => card.classList.remove('sub-slot-card--flash'), 1200);
         }
 
+        document.querySelectorAll('[data-sub-attempts-note][data-max-attempts]').forEach(el => {
+            const cardOrModal = el.closest('.sub-slot-card, .sub-slot-overlay');
+            const belongsToItem = cardOrModal && cardOrModal.dataset.itemId === String(itemId);
+            if (belongsToItem && data.max_attempts) {
+                el.textContent = 'Attempt ' + Math.min(data.attempts_used, data.max_attempts) + ' of ' + data.max_attempts + ' used';
+            }
+        });
+
         if (modal) {
             const mine = modal.querySelector('[data-sub-mine]');
             if (mine) {
@@ -3591,6 +3733,13 @@ ob_start();
             if (section) {
                 section.classList.add('sub-modal-section--done');
                 window.setTimeout(() => section.classList.remove('sub-modal-section--done'), 1200);
+
+                if (data.attempts_reached) {
+                    const fields = section.querySelector('[data-sub-submit-fields]');
+                    const closedMsg = section.querySelector('[data-sub-attempts-closed-msg]');
+                    if (fields) fields.classList.add('is-hidden');
+                    if (closedMsg) closedMsg.classList.remove('is-hidden');
+                }
             }
         }
 

@@ -742,6 +742,10 @@ if (!function_exists('portal_run_migrations')) {
         if (!in_array('submission_ai_detection', $cols, true)) {
             $db->exec("ALTER TABLE course_folder_items ADD COLUMN submission_ai_detection INTEGER NOT NULL DEFAULT 0");
         }
+        if (!in_array('submission_max_attempts', $cols, true)) {
+            // 0 = unlimited resubmissions; otherwise the max number of submit attempts allowed.
+            $db->exec("ALTER TABLE course_folder_items ADD COLUMN submission_max_attempts INTEGER NOT NULL DEFAULT 0");
+        }
 
         // ── Class schedule ────────────────────────────────────────────────────
         $db->exec("
