@@ -657,7 +657,41 @@ if (!function_exists('portal_run_migrations')) {
             $db->exec('PRAGMA foreign_keys = ON');
         }
 
-        // ── Course teachers (junction: teacher accounts → courses) ─────────────
+        // ── Add supervisor role to users table if not already present ─────────
+        // Supervisors are course-level staff (see portal_is_course_staff()):
+        // higher than a teacher but never full admins/owners. They only ever
+        // gain access through course_teachers assignments, never site-wide.
+        $tableSQL = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        )->fetchColumn() ?: '');
+        if ($tableSQL !== '' && strpos($tableSQL, "'supervisor'") === false) {
+            $db->exec('PRAGMA foreign_keys = OFF');
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS _users_new (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                    email         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT    NOT NULL,
+                    name          TEXT    NOT NULL,
+                    year          TEXT    NOT NULL DEFAULT 'Year 11',
+                    programme     TEXT    NOT NULL DEFAULT 'General',
+                    initials      TEXT    NOT NULL DEFAULT 'ST',
+                    role          TEXT    NOT NULL DEFAULT 'student'
+                                          CHECK(role IN ('owner','admin','supervisor','teacher','student')),
+                    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                )
+            ");
+            $db->exec("INSERT INTO _users_new SELECT * FROM users");
+            $db->exec("DROP TABLE users");
+            $db->exec("ALTER TABLE _users_new RENAME TO users");
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
+
+        // ── Course teachers (junction: assigned course staff → courses) ────────
+        // Despite the historical name, this table now stores ANY assigned
+        // course staff account — both 'teacher' and 'supervisor' roles. It is
+        // the single source of truth that portal_assigned_course_ids() and
+        // portal_can_manage_course() read from.
         $db->exec("
             CREATE TABLE IF NOT EXISTS course_teachers (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -984,9 +1018,33 @@ portal_protect_sensitive_paths();
 // ── Teacher / course-manager permission helpers ───────────────────────────────
 
 if (!function_exists('portal_is_teacher')) {
+    // Strictly the 'teacher' role. Kept narrow on purpose — code that means
+    // "any assigned course staff member" (teacher OR supervisor) should call
+    // portal_is_course_staff() instead of loosening this check.
     function portal_is_teacher(): bool
     {
         return portal_current_user_role() === 'teacher';
+    }
+}
+
+if (!function_exists('portal_is_supervisor')) {
+    // A Supervisor is course-level staff: higher than a teacher, but never a
+    // full admin/owner. They only gain access to courses an admin/owner has
+    // explicitly assigned them to via course_teachers.
+    function portal_is_supervisor(): bool
+    {
+        return portal_current_user_role() === 'supervisor';
+    }
+}
+
+if (!function_exists('portal_is_course_staff')) {
+    // True for any account that manages courses at the course level (teacher
+    // or supervisor), as opposed to site-wide admin/owner access. Use this
+    // wherever "teacher-like course management" is intended so supervisors
+    // are included automatically.
+    function portal_is_course_staff(): bool
+    {
+        return in_array(portal_current_user_role(), ['teacher', 'supervisor'], true);
     }
 }
 
@@ -1009,7 +1067,7 @@ if (!function_exists('portal_my_announcement_course_ids')) {
     /**
      * Courses whose announcements should show up on the Communication page for
      * the current user: enrolled courses for students, plus assigned courses
-     * for teachers. Admins/owners see every module for oversight.
+     * for teachers/supervisors. Admins/owners see every module for oversight.
      *
      * @return int[]
      */
@@ -1023,7 +1081,7 @@ if (!function_exists('portal_my_announcement_course_ids')) {
         }
         $user = portal_current_user();
         $ids = portal_enrolled_course_ids((int) $user['id']);
-        if (portal_is_teacher()) {
+        if (portal_is_course_staff()) {
             $ids = array_merge($ids, portal_assigned_course_ids());
         }
         return array_values(array_unique(array_map('intval', $ids)));
@@ -1070,12 +1128,15 @@ if (!function_exists('portal_json_response')) {
 }
 
 if (!function_exists('portal_can_manage_course')) {
+    // owner/admin manage every course; teacher/supervisor manage only the
+    // specific courses an admin/owner has assigned them to via
+    // course_teachers. Students never manage courses.
     function portal_can_manage_course(int $courseId): bool
     {
         if (portal_is_admin()) {
             return true;
         }
-        if (!portal_is_teacher()) {
+        if (!portal_is_course_staff()) {
             return false;
         }
         return in_array($courseId, portal_assigned_course_ids(), true);

@@ -30,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password  = (string) ($_POST['password'] ?? '');
         $newRole   = $isOwner ? (string) ($_POST['role'] ?? 'student') : 'student';
 
-        if (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+        if (!in_array($newRole, ['admin', 'supervisor', 'teacher', 'student'], true)) {
             $newRole = 'student';
         }
 
@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['admin_flash'] = ['error', 'You cannot change your own role.'];
         } elseif ($target['role'] === 'owner') {
             $_SESSION['admin_flash'] = ['error', 'Owner role cannot be reassigned.'];
-        } elseif (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+        } elseif (!in_array($newRole, ['admin', 'supervisor', 'teacher', 'student'], true)) {
             $_SESSION['admin_flash'] = ['error', 'Invalid role.'];
         } else {
             $pdo->prepare("UPDATE users SET role = ? WHERE id = ?")->execute([$newRole, $targetId]);
@@ -182,6 +182,7 @@ $stats = [
     'total_users'       => count($users),
     'owners'            => count(array_filter($users, fn($u) => $u['role'] === 'owner')),
     'admins'            => count(array_filter($users, fn($u) => $u['role'] === 'admin')),
+    'supervisors'       => count(array_filter($users, fn($u) => $u['role'] === 'supervisor')),
     'teachers'          => count(array_filter($users, fn($u) => $u['role'] === 'teacher')),
     'students'          => count(array_filter($users, fn($u) => $u['role'] === 'student')),
     'total_courses'     => count($allCourses),
@@ -263,6 +264,7 @@ ob_start();
                         <select name="role">
                             <option value="student" selected>Student</option>
                             <option value="teacher">Teacher</option>
+                            <option value="supervisor">Supervisor</option>
                             <option value="admin">Admin</option>
                         </select>
                     </label>
@@ -310,6 +312,7 @@ ob_start();
                             <select name="role" class="admin-role-select" onchange="this.form.submit()">
                                 <option value="student"<?= $u['role'] === 'student' ? ' selected' : '' ?>>Student</option>
                                 <option value="teacher"<?= $u['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
+                                <option value="supervisor"<?= $u['role'] === 'supervisor' ? ' selected' : '' ?>>Supervisor</option>
                                 <option value="admin"<?= $u['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
                             </select>
                         </form>
@@ -393,6 +396,10 @@ ob_start();
                 <div class="admin-stat">
                     <strong><?= $stats['teachers'] ?></strong>
                     <span>Teachers</span>
+                </div>
+                <div class="admin-stat">
+                    <strong><?= $stats['supervisors'] ?></strong>
+                    <span>Supervisors</span>
                 </div>
                 <div class="admin-stat">
                     <strong><?= $stats['admins'] ?></strong>
@@ -525,6 +532,10 @@ ob_start();
                 <div class="admin-role-row">
                     <span class="admin-role-badge role-teacher">Teacher</span>
                     <p>Manage folders, materials, and announcements for assigned courses only.</p>
+                </div>
+                <div class="admin-role-row">
+                    <span class="admin-role-badge role-supervisor">Supervisor</span>
+                    <p>Same course-management tools as a teacher, but only on courses an admin/owner assigns to them. No admin panel access.</p>
                 </div>
                 <div class="admin-role-row">
                     <span class="admin-role-badge role-student">Student</span>

@@ -40,7 +40,7 @@ if (portal_is_admin()) {
             c.title ASC"
     );
     $scheduleRows = $stmt->fetchAll();
-} elseif (($me['role'] ?? '') === 'teacher') {
+} elseif (portal_is_course_staff()) {
     $stmt = $db->prepare(
         "SELECT cs.*, c.id AS course_id, c.slug, c.title, c.code, c.accent
          FROM course_schedule cs

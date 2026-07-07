@@ -5647,6 +5647,16 @@ body {
     color: #0369a1;
 }
 
+.admin-role-badge.role-supervisor {
+    background: #ede9fe;
+    color: #6d28d9;
+}
+
+.supervisor-avatar {
+    background: linear-gradient(135deg, #ede9fe, #ddd6fe) !important;
+    color: #6d28d9 !important;
+}
+
 .teacher-avatar {
     background: linear-gradient(135deg, #e0f2fe, #bae6fd) !important;
     color: #0369a1 !important;
@@ -7257,9 +7267,10 @@ body.sub-slot-body-lock {
     width: fit-content;
 }
 
-.sidebar-role-badge--teacher { background: rgba(14,165,233,0.35); }
-.sidebar-role-badge--admin   { background: rgba(239,68,68,0.35); }
-.sidebar-role-badge--owner   { background: rgba(168,85,247,0.35); }
+.sidebar-role-badge--teacher    { background: rgba(14,165,233,0.35); }
+.sidebar-role-badge--supervisor { background: rgba(124,58,237,0.35); }
+.sidebar-role-badge--admin      { background: rgba(239,68,68,0.35); }
+.sidebar-role-badge--owner      { background: rgba(168,85,247,0.35); }
 
 .sidebar-user-actions {
     display: flex;

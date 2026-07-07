@@ -23,7 +23,7 @@ $_pdo->exec("
         programme     TEXT    NOT NULL DEFAULT 'General',
         initials      TEXT    NOT NULL DEFAULT 'ST',
         role          TEXT    NOT NULL DEFAULT 'student'
-                              CHECK(role IN ('owner','admin','teacher','student')),
+                              CHECK(role IN ('owner','admin','supervisor','teacher','student')),
         created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
     )
 ");
@@ -68,6 +68,8 @@ $_pdo->exec("
     )
 ");
 
+// Despite the name, this table stores ANY assigned course staff account
+// (role 'teacher' or 'supervisor'), not just teachers. See portal_is_course_staff().
 $_pdo->exec("
     CREATE TABLE IF NOT EXISTS course_teachers (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,

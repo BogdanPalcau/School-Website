@@ -108,6 +108,8 @@ $style_src = '../style.css?v=' . $asset_version;
                         $__sidebarMeta = 'Administrator';
                     } elseif ($__sidebarRole === 'teacher') {
                         $__sidebarMeta = 'Teacher account';
+                    } elseif ($__sidebarRole === 'supervisor') {
+                        $__sidebarMeta = 'Supervisor account';
                     }
                 ?>
                 <div class="sidebar-user-card">

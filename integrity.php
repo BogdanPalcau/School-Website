@@ -3664,7 +3664,7 @@ if (!function_exists('portal_render_submission_review')) {
                         </div>
                         <?php if ($feedback !== ''): ?>
                             <div class="rvw-feedback-box is-visible">
-                                <p class="rvw-feedback-box-label">Teacher feedback</p>
+                                <p class="rvw-feedback-box-label">Feedback</p>
                                 <p class="rvw-feedback-box-text"><?= portal_escape($feedback) ?></p>
                             </div>
                         <?php endif; ?>

@@ -428,11 +428,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // ── Admin-only: assign / remove teacher ───────────────────────────────────
+    // ── Admin-only: assign / remove course staff (teacher or supervisor) ──────
     if (portal_is_admin()) {
         if ($action === 'assign_teacher') {
             $uid = (int) ($_POST['user_id'] ?? 0);
-            $chk = $db->prepare("SELECT id FROM users WHERE id = ? AND role = 'teacher'");
+            $chk = $db->prepare("SELECT id FROM users WHERE id = ? AND role IN ('teacher', 'supervisor')");
             $chk->execute([$uid]);
             if ($chk->fetch()) {
                 $db->prepare("INSERT OR IGNORE INTO course_teachers (course_id, user_id) VALUES (?,?)")
@@ -1330,9 +1330,10 @@ unset($_folder);
 
 $submissionModals = '';
 
-// Assigned teachers for this course (with user info)
+// Assigned course staff for this course — teacher or supervisor accounts
+// (course_teachers stores both; see comment on that table in bootstrap.php)
 $_tStmt = $_db->prepare(
-    "SELECT u.id, u.name, u.initials, u.email
+    "SELECT u.id, u.name, u.initials, u.email, u.role
      FROM course_teachers ct
      JOIN users u ON u.id = ct.user_id
      WHERE ct.course_id = ?
@@ -1341,11 +1342,11 @@ $_tStmt = $_db->prepare(
 $_tStmt->execute([$courseId]);
 $courseTeachers = $_tStmt->fetchAll();
 
-// Teachers not yet assigned (for admin "+" dropdown)
+// Teacher/supervisor accounts not yet assigned (for admin "+" dropdown)
 $courseTeacherIds = array_column($courseTeachers, 'id');
 $availableTeachers = [];
 if (portal_is_admin()) {
-    $_atStmt = $_db->query("SELECT id, name, initials FROM users WHERE role = 'teacher' ORDER BY name ASC");
+    $_atStmt = $_db->query("SELECT id, name, initials, role FROM users WHERE role IN ('teacher', 'supervisor') ORDER BY name ASC");
     foreach ($_atStmt->fetchAll() as $_t) {
         if (!in_array((int) $_t['id'], $courseTeacherIds, true)) {
             $availableTeachers[] = $_t;
@@ -2890,22 +2891,23 @@ ob_start();
 
                 <div class="course-staff-list">
                     <?php if (empty($courseTeachers)): ?>
-                        <p class="folder-empty-note" style="padding:4px 0;">No teachers assigned yet.</p>
+                        <p class="folder-empty-note" style="padding:4px 0;">No teachers or supervisors assigned yet.</p>
                     <?php else: ?>
                         <?php foreach ($courseTeachers as $teacher): ?>
+                            <?php $_staffIsSupervisor = ($teacher['role'] ?? 'teacher') === 'supervisor'; ?>
                             <div class="course-staff-item">
-                                <div class="course-staff-avatar teacher-avatar"><?= portal_escape($teacher['initials']) ?></div>
+                                <div class="course-staff-avatar <?= $_staffIsSupervisor ? 'supervisor-avatar' : 'teacher-avatar' ?>"><?= portal_escape($teacher['initials']) ?></div>
                                 <div class="course-staff-info">
                                     <h4><?= portal_escape($teacher['name']) ?></h4>
-                                    <p>Teacher</p>
-                                    <span class="admin-role-badge role-teacher" style="margin-top:4px;font-size:0.68rem;">Can manage course</span>
+                                    <p><?= $_staffIsSupervisor ? 'Supervisor' : 'Teacher' ?></p>
+                                    <span class="admin-role-badge <?= $_staffIsSupervisor ? 'role-supervisor' : 'role-teacher' ?>" style="margin-top:4px;font-size:0.68rem;">Can manage course</span>
                                 </div>
                                 <?php if (portal_is_admin()): ?>
                                     <form method="POST" class="staff-remove-form">
                                         <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                         <input type="hidden" name="action" value="remove_teacher">
                                         <input type="hidden" name="user_id" value="<?= (int) $teacher['id'] ?>">
-                                        <button type="submit" class="btn-icon-danger" title="Remove teacher from course">
+                                        <button type="submit" class="btn-icon-danger" title="Remove from course">
                                             <?= portal_icon('trash', 'icon-sm') ?>
                                         </button>
                                     </form>
@@ -2920,16 +2922,16 @@ ob_start();
                         <details class="folder-admin-panel" style="margin-top:14px;">
                             <summary class="folder-admin-trigger folder-admin-trigger--sm">
                                 <?= portal_icon('plus', 'icon-sm') ?>
-                                <span>Assign teacher</span>
+                                <span>Assign teacher/supervisor</span>
                             </summary>
                             <form method="POST" class="folder-admin-form folder-admin-form--inner">
                                 <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                 <input type="hidden" name="action" value="assign_teacher">
                                 <label class="folder-form-label">
-                                    <span>Select teacher</span>
+                                    <span>Select teacher or supervisor</span>
                                     <select name="user_id">
                                         <?php foreach ($availableTeachers as $t): ?>
-                                            <option value="<?= (int) $t['id'] ?>"><?= portal_escape($t['name']) ?></option>
+                                            <option value="<?= (int) $t['id'] ?>"><?= portal_escape($t['name']) ?> (<?= $t['role'] === 'supervisor' ? 'Supervisor' : 'Teacher' ?>)</option>
                                         <?php endforeach; ?>
                                     </select>
                                 </label>
@@ -2937,7 +2939,7 @@ ob_start();
                             </form>
                         </details>
                     <?php elseif (empty($courseTeachers)): ?>
-                        <p class="folder-empty-note" style="margin-top:10px;">No teacher accounts exist yet. Create one in the admin panel.</p>
+                        <p class="folder-empty-note" style="margin-top:10px;">No teacher or supervisor accounts exist yet. Create one in the admin panel.</p>
                     <?php endif; ?>
                 <?php endif; ?>
             </article>
