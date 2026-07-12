@@ -67,13 +67,13 @@ if (!function_exists('portal_rich_text_strip_tags')) {
 if (!function_exists('portal_sanitize_rich_text_element')) {
     /**
      * @param array<string, list<string>> $allowedTags
-     * @param list<string> $allowedSpanClasses
+     * @param list<string> $allowedClasses
      * @param list<string> $stripTags
      */
     function portal_sanitize_rich_text_element(
         DOMElement $element,
         array $allowedTags,
-        array $allowedSpanClasses,
+        array $allowedClasses,
         array $stripTags
     ): void {
         $tag = strtolower($element->tagName);
@@ -91,7 +91,7 @@ if (!function_exists('portal_sanitize_rich_text_element')) {
         }
         foreach ($children as $child) {
             if ($child instanceof DOMElement) {
-                portal_sanitize_rich_text_element($child, $allowedTags, $allowedSpanClasses, $stripTags);
+                portal_sanitize_rich_text_element($child, $allowedTags, $allowedClasses, $stripTags);
             }
         }
 
@@ -119,9 +119,9 @@ if (!function_exists('portal_sanitize_rich_text_element')) {
                     $removeAttrs[] = $attr->name;
                     continue;
                 }
-                if ($name === 'class' && $tag === 'span') {
+                if ($name === 'class') {
                     $classes = preg_split('/\s+/', trim($attr->value)) ?: [];
-                    $classes = array_values(array_intersect($classes, $allowedSpanClasses));
+                    $classes = array_values(array_intersect($classes, $allowedClasses));
                     if ($classes === []) {
                         $removeAttrs[] = $attr->name;
                     } else {
@@ -176,7 +176,7 @@ if (!function_exists('portal_sanitize_rich_text')) {
         }
 
         $allowedTags = [
-            'p'          => [],
+            'p'          => ['class'],
             'br'         => [],
             'strong'     => [],
             'b'          => [],
@@ -184,17 +184,22 @@ if (!function_exists('portal_sanitize_rich_text')) {
             'i'          => [],
             'u'          => [],
             's'          => [],
-            'h1'         => [],
-            'h2'         => [],
-            'h3'         => [],
+            'h1'         => ['class'],
+            'h2'         => ['class'],
+            'h3'         => ['class'],
             'ul'         => [],
             'ol'         => [],
-            'li'         => [],
-            'blockquote' => [],
+            'li'         => ['class'],
+            'blockquote' => ['class'],
             'span'       => ['class'],
             'a'          => ['href'],
         ];
-        $allowedSpanClasses = ['ql-align-center', 'ql-align-right', 'ql-align-justify'];
+        // Quill class-based formats that survive save/render.
+        $allowedClasses = [
+            'ql-align-center', 'ql-align-right', 'ql-align-justify',
+            'ql-font-serif', 'ql-font-monospace',
+            'ql-size-small', 'ql-size-large', 'ql-size-huge',
+        ];
         $stripTags = portal_rich_text_strip_tags();
 
         $dom = new DOMDocument();
@@ -216,7 +221,7 @@ if (!function_exists('portal_sanitize_rich_text')) {
         }
         foreach ($rootChildren as $child) {
             if ($child instanceof DOMElement) {
-                portal_sanitize_rich_text_element($child, $allowedTags, $allowedSpanClasses, $stripTags);
+                portal_sanitize_rich_text_element($child, $allowedTags, $allowedClasses, $stripTags);
             }
         }
 

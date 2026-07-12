@@ -18,8 +18,7 @@ $db = portal_db();
 $role = (string) ($me['role'] ?? 'student');
 $isStudent = $role === 'student';
 $isOwner = $role === 'owner';
-$isStaffAccount = in_array($role, ['teacher', 'admin', 'owner'], true);
-$yearOptions = portal_year_group_options();
+$canEditEmail = $isStudent || $isOwner;
 $prefs = portal_user_preferences($meId);
 
 $flash = [];
@@ -34,29 +33,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     if ($action === 'update_profile') {
         $name = substr(trim((string) ($_POST['name'] ?? '')), 0, 150);
-        $programme = substr(trim((string) ($_POST['programme'] ?? '')), 0, 100);
-        $year = substr(trim((string) ($_POST['year'] ?? '')), 0, 50);
         $email = strtolower(substr(trim((string) ($_POST['email'] ?? '')), 0, 190));
+        $year = (string) ($me['year'] ?? '');
+        $programme = (string) ($me['programme'] ?? '');
 
         if ($name === '') {
             $_SESSION['settings_flash'] = ['error', 'Name cannot be empty.'];
             portal_redirect('settings.php');
         }
 
-        if ($isStudent) {
-            if ($year === '' || (!in_array($year, $yearOptions, true) && $year !== (string) $me['year'])) {
-                if (!in_array($year, $yearOptions, true)) {
-                    $year = in_array((string) $me['year'], $yearOptions, true)
-                        ? (string) $me['year']
-                        : 'Other';
-                }
-            }
-        } else {
-            $year = (string) ($me['year'] ?? '');
-        }
-
-        if ($isOwner && $email !== '') {
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        if ($canEditEmail) {
+            if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 $_SESSION['settings_flash'] = ['error', 'Enter a valid email address.'];
                 portal_redirect('settings.php');
             }
@@ -65,6 +52,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if ($dup->fetch()) {
                 $_SESSION['settings_flash'] = ['error', 'That email is already used by another account.'];
                 portal_redirect('settings.php');
+            }
+            $currentEmail = strtolower(trim((string) ($me['email'] ?? '')));
+            if ($email !== $currentEmail) {
+                $emailConfirmPassword = (string) ($_POST['email_confirm_password'] ?? '');
+                if ($emailConfirmPassword === '') {
+                    $_SESSION['settings_flash'] = ['error', 'Enter your current password to change your email.'];
+                    portal_redirect('settings.php');
+                }
+                if (!password_verify($emailConfirmPassword, (string) ($me['password_hash'] ?? ''))) {
+                    $_SESSION['settings_flash'] = ['error', 'Current password is incorrect.'];
+                    portal_redirect('settings.php');
+                }
             }
         } else {
             $email = (string) $me['email'];
@@ -138,10 +137,6 @@ if (isset($_SESSION['settings_flash'])) {
 
 $me = portal_find_user_by_id($meId) ?? $me;
 $prefs = portal_user_preferences($meId);
-$currentYear = (string) ($me['year'] ?? '');
-if ($currentYear !== '' && !in_array($currentYear, $yearOptions, true)) {
-    $yearOptions[] = $currentYear;
-}
 
 $page_title = 'Settings | ' . portal_school_name();
 $active_page = 'settings';
@@ -187,35 +182,23 @@ ob_start();
                 <input type="hidden" name="action" value="update_profile">
 
                 <div class="settings-grid">
-                    <label class="settings-field">
+                    <label class="settings-field<?= $canEditEmail ? '' : ' settings-field--wide' ?>">
                         <span>Display name</span>
                         <input class="settings-input" type="text" name="name"
                                value="<?= portal_escape((string) $me['name']) ?>" required maxlength="150" autocomplete="name">
                     </label>
 
-                    <?php if ($isStudent): ?>
+                    <?php if ($canEditEmail): ?>
                     <label class="settings-field">
-                        <span>Year group</span>
-                        <select class="settings-input" name="year">
-                            <?php foreach ($yearOptions as $opt): ?>
-                                <option value="<?= portal_escape($opt) ?>"<?= $currentYear === $opt ? ' selected' : '' ?>><?= portal_escape($opt) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </label>
-                    <?php endif; ?>
-
-                    <label class="settings-field<?= $isStudent ? '' : ' settings-field--wide' ?>">
-                        <span><?= $isStaffAccount ? 'Subject focus' : 'Programme' ?></span>
-                        <input class="settings-input" type="text" name="programme"
-                               value="<?= portal_escape((string) ($me['programme'] ?? '')) ?>" maxlength="100"
-                               placeholder="<?= $isStaffAccount ? 'e.g. Mathematics' : 'e.g. STEM pathway' ?>">
-                    </label>
-
-                    <?php if ($isOwner): ?>
-                    <label class="settings-field settings-field--wide">
                         <span>Email</span>
                         <input class="settings-input" type="email" name="email"
                                value="<?= portal_escape((string) $me['email']) ?>" required maxlength="190" autocomplete="email">
+                    </label>
+                    <label class="settings-field settings-field--wide">
+                        <span>Current password</span>
+                        <input class="settings-input" type="password" name="email_confirm_password"
+                               autocomplete="current-password">
+                        <small class="settings-hint">Required if you change your email</small>
                     </label>
                     <?php endif; ?>
                 </div>
@@ -225,7 +208,7 @@ ob_start();
                         <span>Username</span>
                         <strong><?= portal_escape((string) $me['username']) ?></strong>
                     </div>
-                    <?php if (!$isOwner): ?>
+                    <?php if (!$canEditEmail): ?>
                     <div>
                         <span>Email</span>
                         <strong><?= portal_escape((string) $me['email']) ?></strong>

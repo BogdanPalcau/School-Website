@@ -725,8 +725,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 )->execute([$courseId, (int) $me['id'], $title, $body]);
                 $newAnnId = (int) $db->lastInsertId();
                 if ($newAnnId > 0) {
+                    $posterId = (int) $me['id'];
                     $db->prepare("INSERT OR IGNORE INTO announcement_reads (user_id, announcement_id) VALUES (?,?)")
-                       ->execute([(int) $me['id'], $newAnnId]);
+                       ->execute([$posterId, $newAnnId]);
+
+                    // Personal alerts for enrolled students (respects notify_announcements).
+                    $enrolledStmt = $db->prepare(
+                        "SELECT user_id FROM enrollments WHERE course_id = ?"
+                    );
+                    $enrolledStmt->execute([$courseId]);
+                    $annLink = 'course.php?course=' . urlencode((string) $course['slug'])
+                        . '&section=announcements';
+                    $courseTitle = (string) ($course['title'] ?? 'Module');
+                    $notifTitle = 'New announcement in “' . substr($courseTitle, 0, 80) . '”';
+                    $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
+                    $snippet = $title . ($plainBody !== '' ? ' — ' . substr($plainBody, 0, 100) : '');
+                    foreach ($enrolledStmt->fetchAll(PDO::FETCH_COLUMN) as $studentId) {
+                        $studentId = (int) $studentId;
+                        if ($studentId <= 0 || $studentId === $posterId) {
+                            continue;
+                        }
+                        portal_notify_user(
+                            $studentId,
+                            'announcement',
+                            $notifTitle,
+                            substr($snippet, 0, 200),
+                            $annLink,
+                            $courseId
+                        );
+                    }
                 }
             }
 
@@ -2694,11 +2721,11 @@ ob_start();
                                 <span>Title</span>
                                 <input type="text" name="title" required maxlength="200" placeholder="Announcement title">
                             </label>
-                            <label class="folder-form-label">
+                            <div class="folder-form-label">
                                 <span>Message <small>(optional)</small></span>
                                 <div class="quill-wrap"><div class="quill-editor" data-target="ann-body"></div></div>
                                 <textarea name="body" id="ann-body" class="rich-textarea" maxlength="20000" hidden></textarea>
-                            </label>
+                            </div>
                             <button type="submit" class="button">Post</button>
                         </form>
                     </details>
@@ -2822,11 +2849,11 @@ ob_start();
                                 <span>Topic title</span>
                                 <input type="text" name="title" required maxlength="200" placeholder="e.g. Chapter 3 discussion">
                             </label>
-                            <label class="folder-form-label">
+                            <div class="folder-form-label">
                                 <span>Opening message <small>(optional)</small></span>
                                 <div class="quill-wrap"><div class="quill-editor" data-target="topic-body"></div></div>
                                 <textarea name="body" id="topic-body" class="rich-textarea" maxlength="20000" hidden></textarea>
-                            </label>
+                            </div>
                             <button type="submit" class="button">Create topic</button>
                         </form>
                     </details>
@@ -3395,6 +3422,7 @@ ob_start();
 </div>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
+<script src="assets/portal-quill.js?v=20260713m"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -3768,42 +3796,6 @@ ob_start();
         sel.addEventListener('change', update);
         update();
     });
-
-    // ── Rich text editors (Quill) ─────────────────────────────────────────────
-    if (typeof Quill !== 'undefined') {
-        const toolbarOptions = [
-            [{ header: [2, 3, false] }],
-            ['bold', 'italic', 'underline', 'strike'],
-            [{ list: 'ordered' }, { list: 'bullet' }],
-            ['blockquote'],
-            ['clean'],
-        ];
-
-        document.querySelectorAll('.quill-editor[data-target]').forEach(container => {
-            const targetId = container.dataset.target;
-            const textarea = document.getElementById(targetId);
-            if (!textarea) return;
-
-            const quill = new Quill(container, {
-                theme: 'snow',
-                placeholder: 'Write something…',
-                modules: { toolbar: toolbarOptions },
-            });
-
-            // Sync to hidden textarea on every change
-            quill.on('text-change', () => {
-                textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
-            });
-
-            // Also sync on form submit in case text-change didn't fire
-            const form = textarea.closest('form');
-            if (form) {
-                form.addEventListener('submit', () => {
-                    textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
-                });
-            }
-        });
-    }
 
     // ── Unread announcement notification ──────────────────────────────────────
     (function () {

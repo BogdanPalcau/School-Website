@@ -136,7 +136,7 @@ ob_start();
             <div>
                 <p class="eyebrow">Personal</p>
                 <h2 class="comm-section-title"><?= portal_icon('sparkles', 'icon-sm') ?> For you</h2>
-                <p class="comm-section-desc">Alerts just for you — like when a teacher answers your lesson question.</p>
+                <p class="comm-section-desc">Alerts just for you — lesson replies, new module announcements, and similar updates.</p>
             </div>
             <div class="button-row" style="align-items:center;gap:10px;">
                 <?php if ($unreadNotifCount > 0): ?>
@@ -216,11 +216,11 @@ ob_start();
                     <span>Title</span>
                     <input type="text" name="title" required maxlength="200" placeholder="e.g. Half-term dates confirmed">
                 </label>
-                <label class="folder-form-label">
+                <div class="folder-form-label">
                     <span>Message <small>(optional)</small></span>
                     <div class="quill-wrap"><div class="quill-editor" data-target="site-ann-body"></div></div>
                     <textarea name="body" id="site-ann-body" class="rich-textarea" maxlength="20000" hidden></textarea>
-                </label>
+                </div>
                 <div class="comm-post-options">
                     <label class="folder-form-label comm-priority-field">
                         <span>Priority</span>
@@ -352,42 +352,7 @@ ob_start();
 <?php if ($isAdmin): ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    if (typeof Quill === 'undefined') return;
-
-    const toolbarOptions = [
-        [{ header: [2, 3, false] }],
-        ['bold', 'italic', 'underline', 'strike'],
-        [{ list: 'ordered' }, { list: 'bullet' }],
-        ['blockquote'],
-        ['clean'],
-    ];
-
-    document.querySelectorAll('.quill-editor[data-target]').forEach(container => {
-        const targetId = container.dataset.target;
-        const textarea = document.getElementById(targetId);
-        if (!textarea) return;
-
-        const quill = new Quill(container, {
-            theme: 'snow',
-            placeholder: 'Write something…',
-            modules: { toolbar: toolbarOptions },
-        });
-
-        quill.on('text-change', () => {
-            textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
-        });
-
-        const form = textarea.closest('form');
-        if (form) {
-            form.addEventListener('submit', () => {
-                textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
-            });
-        }
-    });
-});
-</script>
+<script src="assets/portal-quill.js?v=20260713m"></script>
 <?php endif; ?>
 <?php
 $page_content = ob_get_clean();

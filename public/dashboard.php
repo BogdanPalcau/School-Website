@@ -351,6 +351,8 @@ $majorAnnouncements = $db->query(
 )->fetchAll();
 
 $moduleAnnouncements = [];
+$unreadCourseAnnouncements = [];
+$unreadAnnouncementCount = 0;
 $annCourseIds = portal_my_announcement_course_ids();
 if (!empty($annCourseIds)) {
     $placeholders = implode(',', array_fill(0, count($annCourseIds), '?'));
@@ -365,6 +367,36 @@ if (!empty($annCourseIds)) {
     );
     $stmt->execute($annCourseIds);
     $moduleAnnouncements = $stmt->fetchAll();
+
+    $unreadCountStmt = $db->prepare(
+        "SELECT COUNT(*)
+         FROM course_announcements ca
+         WHERE ca.course_id IN ($placeholders)
+           AND NOT EXISTS (
+             SELECT 1 FROM announcement_reads ar
+             WHERE ar.announcement_id = ca.id AND ar.user_id = ?
+           )"
+    );
+    $unreadCountStmt->execute(array_merge($annCourseIds, [$uid]));
+    $unreadAnnouncementCount = (int) $unreadCountStmt->fetchColumn();
+
+    if ($unreadAnnouncementCount > 0) {
+        $unreadListStmt = $db->prepare(
+            "SELECT ca.id, ca.title, ca.created_at,
+                    c.title AS course_title, c.slug AS course_slug, c.accent AS course_accent
+             FROM course_announcements ca
+             JOIN courses c ON c.id = ca.course_id
+             WHERE ca.course_id IN ($placeholders)
+               AND NOT EXISTS (
+                 SELECT 1 FROM announcement_reads ar
+                 WHERE ar.announcement_id = ca.id AND ar.user_id = ?
+               )
+             ORDER BY ca.created_at DESC
+             LIMIT 3"
+        );
+        $unreadListStmt->execute(array_merge($annCourseIds, [$uid]));
+        $unreadCourseAnnouncements = $unreadListStmt->fetchAll();
+    }
 }
 
 $notifStmt = $db->prepare(
@@ -755,7 +787,7 @@ ob_start();
                 </div>
 
                 <?php if (empty($recentAnswers)): ?>
-                    <p class="dash-empty">No personal alerts yet. Teacher replies to your lesson questions will show here.</p>
+                    <p class="dash-empty">No personal alerts yet. Lesson replies and new module announcements will show here.</p>
                 <?php else: ?>
                     <ul class="dash-announce-list">
                         <?php foreach ($recentAnswers as $n): ?>
@@ -809,6 +841,31 @@ ob_start();
                     </ul>
                 <?php endif; ?>
             </article>
+
+            <?php if ($unreadAnnouncementCount > 0): ?>
+            <article class="card-shell">
+                <div class="section-head">
+                    <div>
+                        <p class="eyebrow">Unread</p>
+                        <h3 class="card-title">
+                            <?= $unreadAnnouncementCount ?> announcement<?= $unreadAnnouncementCount !== 1 ? 's' : '' ?>
+                        </h3>
+                    </div>
+                    <a class="inline-action" href="communication.php#module-announcements">All</a>
+                </div>
+                <ul class="dash-announce-list">
+                    <?php foreach ($unreadCourseAnnouncements as $ann): ?>
+                        <li>
+                            <a class="is-unread" href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">
+                                <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape((string) $ann['course_title']) ?></span>
+                                <strong><?= portal_escape((string) $ann['title']) ?></strong>
+                                <span><?= portal_escape($relativeWhen((string) $ann['created_at'])) ?></span>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            </article>
+            <?php endif; ?>
 
             <article class="card-shell">
                 <div class="section-head">

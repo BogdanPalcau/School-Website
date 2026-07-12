@@ -16,6 +16,9 @@ $payloads = [
     '<iframe srcdoc="<script>alert(1)</script>"></iframe>hello',
     '<p><strong>Safe</strong> formatting</p>',
     '<span class="ql-align-center">centred</span>',
+    '<p class="ql-align-right">right aligned</p>',
+    '<span class="ql-font-serif">serif text</span>',
+    '<span class="ql-size-large">large text</span>',
     '<a href="https://example.com">safe link</a>',
     '<a href="data:text/html,<script>alert(1)</script>">bad</a>',
     '<a href="mailto:test@example.com">email me</a>',
@@ -29,6 +32,9 @@ $expected = [
     '<a href="javascript:alert(1)">click me</a>' => 'click me',
     '<a href="data:text/html,<script>alert(1)</script>">bad</a>' => 'bad',
     '<a href="mailto:test@example.com">email me</a>' => '<a href="mailto:test@example.com">email me</a>',
+    '<span class="ql-font-serif">serif text</span>' => '<span class="ql-font-serif">serif text</span>',
+    '<span class="ql-size-large">large text</span>' => '<span class="ql-size-large">large text</span>',
+    '<p class="ql-align-right">right aligned</p>' => '<p class="ql-align-right">right aligned</p>',
 ];
 
 /** @var array<string, callable(string): bool> $expectedChecks */
