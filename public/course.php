@@ -965,21 +965,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── Students: join / leave group ─────────────────────────────────────────
     if ($action === 'join_group') {
         $gid = (int)($_POST['group_id'] ?? 0);
-        // Check max_members
+        $uid = (int)$me['id'];
         $gStmt = $db->prepare("SELECT max_members FROM course_groups WHERE id = ? AND course_id = ?");
         $gStmt->execute([$gid, $courseId]);
         $gRow = $gStmt->fetch();
-        if ($gRow) {
-            $maxM = (int)$gRow['max_members'];
-            $canJoin = true;
-            if ($maxM > 0) {
-                $cntStmt = $db->prepare("SELECT COUNT(*) FROM course_group_members WHERE group_id = ?");
-                $cntStmt->execute([$gid]);
-                $canJoin = $cntStmt->fetchColumn() < $maxM;
-            }
-            if ($canJoin) {
-                $db->prepare("INSERT OR IGNORE INTO course_group_members (group_id, user_id) VALUES (?,?)")
-                   ->execute([$gid, (int)$me['id']]);
+        if (!$gRow) {
+            $_SESSION['course_flash'] = ['error', 'That group could not be found.'];
+        } else {
+            $alreadyIn = $db->prepare(
+                "SELECT cgm.group_id
+                 FROM course_group_members cgm
+                 JOIN course_groups cg ON cg.id = cgm.group_id
+                 WHERE cg.course_id = ? AND cgm.user_id = ?
+                 LIMIT 1"
+            );
+            $alreadyIn->execute([$courseId, $uid]);
+            $existingGroupId = (int) ($alreadyIn->fetchColumn() ?: 0);
+
+            if ($existingGroupId > 0 && $existingGroupId !== $gid) {
+                $_SESSION['course_flash'] = ['error', 'You are already in a group for this module. Leave it before joining another.'];
+            } elseif ($existingGroupId === $gid) {
+                $_SESSION['course_flash'] = ['success', 'You are already in that group.'];
+            } else {
+                $maxM = (int)$gRow['max_members'];
+                $canJoin = true;
+                if ($maxM > 0) {
+                    $cntStmt = $db->prepare("SELECT COUNT(*) FROM course_group_members WHERE group_id = ?");
+                    $cntStmt->execute([$gid]);
+                    $canJoin = ((int) $cntStmt->fetchColumn()) < $maxM;
+                }
+                if (!$canJoin) {
+                    $_SESSION['course_flash'] = ['error', 'That group is full.'];
+                } else {
+                    $db->prepare("INSERT OR IGNORE INTO course_group_members (group_id, user_id) VALUES (?,?)")
+                       ->execute([$gid, $uid]);
+                    $_SESSION['course_flash'] = ['success', 'You joined the group.'];
+                }
             }
         }
     }
@@ -996,6 +1017,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      AND course_groups.course_id = ?
                )"
         )->execute([$gid, (int)$me['id'], $courseId]);
+        $_SESSION['course_flash'] = ['success', 'You left the group.'];
     }
 
     // ── Teacher: re-run originality / AI checks on a submission ───────────────
@@ -3077,6 +3099,10 @@ ob_start();
                         <p>No groups yet<?= portal_can_manage_course($courseId) ? '. Create one above.' : '.' ?></p>
                     </article>
                 <?php else: ?>
+                <?php $alreadyInAGroup = !empty($myGroupIds) && !portal_can_manage_course($courseId); ?>
+                <?php if ($alreadyInAGroup): ?>
+                    <p class="group-single-note">You can only be in one group on this module. Leave your current group before joining another.</p>
+                <?php endif; ?>
                 <div class="groups-grid">
                     <?php foreach ($dbGroups as $group): ?>
                     <?php
@@ -3119,6 +3145,8 @@ ob_start();
                                 <input type="hidden" name="group_id" value="<?= $gid ?>">
                                 <button type="submit" class="btn-danger-sm">Leave</button>
                             </form>
+                        <?php elseif ($alreadyInAGroup): ?>
+                            <span class="group-locked-badge">Leave your current group to join this one</span>
                         <?php elseif (!$isFull): ?>
                             <form method="POST">
                                 <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">

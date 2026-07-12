@@ -9049,6 +9049,23 @@ body.sub-slot-body-lock {
 }
 
 .group-full-badge { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.group-locked-badge {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-weight: 600;
+    line-height: 1.35;
+}
+.group-single-note {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(193, 32, 47, 0.14);
+    background: rgba(193, 32, 47, 0.05);
+    color: var(--primary-strong);
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
 .group-delete-form { margin: 0; }
 
 /* ── File viewer modal ───────────────────────────────────────────────────────── */
@@ -13648,6 +13665,10 @@ a.grades-simple-row:hover {
         display: grid;
         gap: 8px;
         min-width: 0;
+    }
+
+    .course-detail-layout:not(:has(.course-main-stack--content)) .course-aside-wrap {
+        display: none !important;
     }
 
     .course-hero-banner {
