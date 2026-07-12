@@ -1378,6 +1378,21 @@ foreach ($courseFolders as &$_folder) {
 }
 unset($_folder);
 
+// Open lesson Q&A counts (teachers) — keyed by video item id
+$videoOpenQuestionCounts = [];
+if (portal_can_manage_course($courseId)) {
+    $_oqStmt = $_db->prepare(
+        "SELECT item_id, COUNT(*) AS open_count
+         FROM course_video_questions
+         WHERE course_id = ? AND answer = ''
+         GROUP BY item_id"
+    );
+    $_oqStmt->execute([$courseId]);
+    foreach ($_oqStmt->fetchAll() as $_oq) {
+        $videoOpenQuestionCounts[(int) $_oq['item_id']] = (int) $_oq['open_count'];
+    }
+}
+
 $submissionModals = '';
 
 // Assigned course staff for this course (course-level teacher / supervisor)
@@ -1998,6 +2013,16 @@ ob_start();
                                                     <span class="item-type-badge item-type-badge--<?= portal_escape($itemKindClass) ?>">
                                                         <?= portal_escape($itemKindLabel) ?>
                                                     </span>
+                                                    <?php endif; ?>
+                                                    <?php
+                                                        $openQs = ($item['type'] === 'video')
+                                                            ? (int) ($videoOpenQuestionCounts[(int) $item['id']] ?? 0)
+                                                            : 0;
+                                                    ?>
+                                                    <?php if ($openQs > 0 && portal_can_manage_course($courseId)): ?>
+                                                    <a class="video-open-q-badge" href="lesson-viewer.php?item=<?= (int) $item['id'] ?>#qa-open" title="Open student questions">
+                                                        <?= $openQs ?> open question<?= $openQs === 1 ? '' : 's' ?>
+                                                    </a>
                                                     <?php endif; ?>
 
                                                     <?php if (portal_can_manage_course($courseId) && $item['type'] !== 'submission'): ?>

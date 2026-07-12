@@ -51,6 +51,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         portal_redirect('communication.php#major-announcements');
     }
 
+    if ($action === 'mark_notification_read') {
+        $id = (int) ($_POST['notification_id'] ?? 0);
+        if ($id > 0) {
+            $db->prepare(
+                "UPDATE portal_notifications SET read_at = datetime('now')
+                 WHERE id = ? AND user_id = ? AND read_at = ''"
+            )->execute([$id, (int) $me['id']]);
+        }
+        portal_redirect('communication.php#for-you');
+    }
+
+    if ($action === 'mark_all_notifications_read') {
+        $db->prepare(
+            "UPDATE portal_notifications SET read_at = datetime('now')
+             WHERE user_id = ? AND read_at = ''"
+        )->execute([(int) $me['id']]);
+        portal_redirect('communication.php#for-you');
+    }
+
     portal_redirect('communication.php');
 }
 
@@ -87,6 +106,17 @@ if (!empty($myCourseIds)) {
     $moduleAnnouncements = $stmt->fetchAll();
 }
 
+// Personal notifications (e.g. lesson Q&A answers)
+$notifStmt = $db->prepare(
+    "SELECT * FROM portal_notifications
+     WHERE user_id = ?
+     ORDER BY CASE WHEN read_at = '' THEN 0 ELSE 1 END, created_at DESC
+     LIMIT 30"
+);
+$notifStmt->execute([(int) $me['id']]);
+$personalNotifications = $notifStmt->fetchAll();
+$unreadNotifCount = count(array_filter($personalNotifications, static fn ($n) => (string) $n['read_at'] === ''));
+
 $page_title = 'Communication | ' . portal_school_name();
 $active_page = 'communication';
 $page_eyebrow = 'School bulletin';
@@ -98,6 +128,58 @@ $page_description = $isAdmin
 ob_start();
 ?>
 <div class="comm-layout">
+
+    <!-- ── Personal notifications ─────────────────────────────────────────── -->
+    <?php if (!empty($personalNotifications)): ?>
+    <section class="comm-section" id="for-you">
+        <div class="comm-section-head">
+            <div>
+                <p class="eyebrow">Personal</p>
+                <h2 class="comm-section-title"><?= portal_icon('sparkles', 'icon-sm') ?> For you</h2>
+                <p class="comm-section-desc">Alerts just for you — like when a teacher answers your lesson question.</p>
+            </div>
+            <div class="button-row" style="align-items:center;gap:10px;">
+                <?php if ($unreadNotifCount > 0): ?>
+                <span class="chip"><?= (int) $unreadNotifCount ?> new</span>
+                <form method="POST" style="margin:0;">
+                    <?= portal_csrf_field() ?>
+                    <input type="hidden" name="action" value="mark_all_notifications_read">
+                    <button type="submit" class="button-secondary button--sm">Mark all read</button>
+                </form>
+                <?php else: ?>
+                <span class="chip"><?= count($personalNotifications) ?></span>
+                <?php endif; ?>
+            </div>
+        </div>
+        <div class="comm-notif-list">
+            <?php foreach ($personalNotifications as $n): ?>
+            <?php $isUnread = (string) $n['read_at'] === ''; ?>
+            <article class="comm-notif-item<?= $isUnread ? ' comm-notif-item--unread' : '' ?>">
+                <div>
+                    <h4><?= portal_escape((string) $n['title']) ?></h4>
+                    <?php if ($n['body'] !== ''): ?>
+                    <p><?= portal_escape((string) $n['body']) ?></p>
+                    <?php endif; ?>
+                    <p class="sub-date" style="margin-top:6px;"><?= portal_escape(date('j M Y · H:i', strtotime((string) $n['created_at']))) ?></p>
+                </div>
+                <div class="button-row" style="flex-shrink:0;">
+                    <?php if ($n['link'] !== ''): ?>
+                    <a class="button button--sm" href="<?= portal_escape((string) $n['link']) ?>">Open</a>
+                    <?php endif; ?>
+                    <?php if ($isUnread): ?>
+                    <form method="POST" style="margin:0;">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="mark_notification_read">
+                        <input type="hidden" name="notification_id" value="<?= (int) $n['id'] ?>">
+                        <button type="submit" class="button-secondary button--sm">Mark read</button>
+                    </form>
+                    <?php endif; ?>
+                </div>
+            </article>
+            <?php endforeach; ?>
+        </div>
+    </section>
+    <?php endif; ?>
 
     <!-- ── Major (school-wide) announcements ─────────────────────────────── -->
     <section class="comm-section" id="major-announcements">

@@ -1674,6 +1674,45 @@ if (!function_exists('portal_run_migrations')) {
         if (!in_array('video_seconds', $vqCols, true)) {
             $db->exec("ALTER TABLE course_video_questions ADD COLUMN video_seconds INTEGER NOT NULL DEFAULT 0");
         }
+        if (!in_array('pinned', $vqCols, true)) {
+            $db->exec("ALTER TABLE course_video_questions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+        }
+        if (!in_array('is_public', $vqCols, true)) {
+            // 1 = visible to whole class once answered; 0 = private reply to asker only
+            $db->exec("ALTER TABLE course_video_questions ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1");
+        }
+
+        // Lesson notes on video items + watch progress + personal notifications
+        $itemColsForNotes = array_column($db->query("PRAGMA table_info(course_folder_items)")->fetchAll(), 'name');
+        if (!in_array('lesson_notes', $itemColsForNotes, true)) {
+            $db->exec("ALTER TABLE course_folder_items ADD COLUMN lesson_notes TEXT NOT NULL DEFAULT ''");
+        }
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS course_video_progress (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id          INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                position_seconds INTEGER NOT NULL DEFAULT 0,
+                updated_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(item_id, user_id)
+            )
+        ");
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS portal_notifications (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                course_id   INTEGER NOT NULL DEFAULT 0,
+                type        TEXT    NOT NULL DEFAULT 'lesson_answer',
+                title       TEXT    NOT NULL,
+                body        TEXT    NOT NULL DEFAULT '',
+                link        TEXT    NOT NULL DEFAULT '',
+                read_at     TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_portal_notifications_user ON portal_notifications(user_id, created_at)");
 
         // ── Groups ────────────────────────────────────────────────────────────
         $db->exec("
