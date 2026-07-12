@@ -316,6 +316,8 @@ if (!function_exists('portal_icon')) {
             'edit'          => '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
             'pin'           => '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
             'alert'         => '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+            'menu'          => '<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>',
+            'x'             => '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
         ];
 
         $body = $icons[$name] ?? $icons['book-open'];
@@ -867,10 +869,152 @@ if (!function_exists('portal_login_time_text')) {
         $value = $_SESSION['portal_login_at'] ?? '';
 
         if (!is_string($value) || $value === '') {
-            return 'Today';
+            return 'This session';
         }
 
-        return $value;
+        // Legacy formatted strings from older logins.
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}/', $value)) {
+            return $value;
+        }
+
+        $ts = portal_db_timestamp($value) ?? strtotime($value);
+        if ($ts === false || $ts === null) {
+            return $value;
+        }
+
+        return date('l j F Y \a\t H:i', $ts);
+    }
+}
+
+if (!function_exists('portal_password_validate')) {
+    /**
+     * @return string Empty string when valid, otherwise an error message.
+     */
+    function portal_password_validate(string $password): string
+    {
+        if (strlen($password) < 8) {
+            return 'Password must be at least 8 characters.';
+        }
+        if (!preg_match('/[A-Za-z]/', $password) || !preg_match('/[0-9]/', $password)) {
+            return 'Password must include at least one letter and one number.';
+        }
+
+        return '';
+    }
+}
+
+if (!function_exists('portal_year_group_options')) {
+    /** @return list<string> */
+    function portal_year_group_options(): array
+    {
+        return [
+            'Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11', 'Year 12', 'Year 13',
+            'Foundation', 'Other',
+        ];
+    }
+}
+
+if (!function_exists('portal_user_preferences')) {
+    /**
+     * @return array{notify_grades:int,notify_qa:int,notify_announcements:int}
+     */
+    function portal_user_preferences(int $userId): array
+    {
+        $defaults = [
+            'notify_grades'        => 1,
+            'notify_qa'            => 1,
+            'notify_announcements' => 1,
+        ];
+        if ($userId <= 0) {
+            return $defaults;
+        }
+
+        try {
+            $stmt = portal_db()->prepare(
+                "SELECT notify_grades, notify_qa, notify_announcements
+                 FROM user_preferences WHERE user_id = ? LIMIT 1"
+            );
+            $stmt->execute([$userId]);
+            $row = $stmt->fetch();
+            if (!$row) {
+                return $defaults;
+            }
+
+            return [
+                'notify_grades'        => (int) $row['notify_grades'] === 1 ? 1 : 0,
+                'notify_qa'            => (int) $row['notify_qa'] === 1 ? 1 : 0,
+                'notify_announcements' => (int) $row['notify_announcements'] === 1 ? 1 : 0,
+            ];
+        } catch (\Throwable $e) {
+            return $defaults;
+        }
+    }
+}
+
+if (!function_exists('portal_save_user_preferences')) {
+    function portal_save_user_preferences(int $userId, array $prefs): void
+    {
+        if ($userId <= 0) {
+            return;
+        }
+
+        portal_db()->prepare(
+            "INSERT INTO user_preferences (user_id, notify_grades, notify_qa, notify_announcements, updated_at)
+             VALUES (?,?,?,?,datetime('now'))
+             ON CONFLICT(user_id) DO UPDATE SET
+                notify_grades = excluded.notify_grades,
+                notify_qa = excluded.notify_qa,
+                notify_announcements = excluded.notify_announcements,
+                updated_at = datetime('now')"
+        )->execute([
+            $userId,
+            !empty($prefs['notify_grades']) ? 1 : 0,
+            !empty($prefs['notify_qa']) ? 1 : 0,
+            !empty($prefs['notify_announcements']) ? 1 : 0,
+        ]);
+    }
+}
+
+if (!function_exists('portal_notify_user')) {
+    function portal_notify_user(
+        int $userId,
+        string $type,
+        string $title,
+        string $body = '',
+        string $link = '',
+        int $courseId = 0
+    ): bool {
+        if ($userId <= 0 || trim($title) === '') {
+            return false;
+        }
+
+        $prefs = portal_user_preferences($userId);
+        $prefKey = match ($type) {
+            'lesson_answer', 'qa' => 'notify_qa',
+            'grade', 'grades' => 'notify_grades',
+            'announcement', 'announcements' => 'notify_announcements',
+            default => null,
+        };
+        if ($prefKey !== null && empty($prefs[$prefKey])) {
+            return false;
+        }
+
+        try {
+            portal_db()->prepare(
+                "INSERT INTO portal_notifications (user_id, course_id, type, title, body, link)
+                 VALUES (?,?,?,?,?,?)"
+            )->execute([
+                $userId,
+                $courseId,
+                $type,
+                substr($title, 0, 200),
+                substr($body, 0, 500),
+                substr($link, 0, 400),
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 }
 
@@ -939,7 +1083,7 @@ if (!function_exists('portal_attempt_login')) {
             'initials'  => $user['initials'],
             'role'      => $user['role'],
         ];
-        $_SESSION['portal_login_at'] = date('l j F Y \a\t H:i');
+        $_SESSION['portal_login_at'] = gmdate('Y-m-d H:i:s');
 
         return true;
     }
@@ -1861,6 +2005,16 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_portal_notifications_user ON portal_notifications(user_id, created_at)");
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id              INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                notify_grades        INTEGER NOT NULL DEFAULT 1,
+                notify_qa            INTEGER NOT NULL DEFAULT 1,
+                notify_announcements INTEGER NOT NULL DEFAULT 1,
+                updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
 
         // ── Groups ────────────────────────────────────────────────────────────
         $db->exec("

@@ -107,17 +107,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notifTitle = $isPublic
                     ? 'Your question on “' . substr((string) $item['title'], 0, 80) . '” was answered'
                     : 'Your teacher replied privately on “' . substr((string) $item['title'], 0, 80) . '”';
-                $db->prepare(
-                    "INSERT INTO portal_notifications (user_id, course_id, type, title, body, link)
-                     VALUES (?,?,?,?,?,?)"
-                )->execute([
+                portal_notify_user(
                     $askerId,
-                    $courseId,
                     'lesson_answer',
                     $notifTitle,
                     $snippet,
                     $viewerUrl . '#q-' . $questionId,
-                ]);
+                    $courseId
+                );
             }
 
             $_SESSION['lesson_flash'] = [
@@ -143,17 +140,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             )->execute([$questionId, $itemId]);
             $askerId = (int) $qRow['user_id'];
             if ($askerId > 0) {
-                $db->prepare(
-                    "INSERT INTO portal_notifications (user_id, course_id, type, title, body, link)
-                     VALUES (?,?,?,?,?,?)"
-                )->execute([
+                portal_notify_user(
                     $askerId,
-                    $courseId,
                     'lesson_answer',
                     'A private reply on “' . substr((string) $item['title'], 0, 80) . '” was shared with the class',
                     substr((string) $qRow['question'], 0, 120),
                     $viewerUrl . '#q-' . $questionId,
-                ]);
+                    $courseId
+                );
             }
             $_SESSION['lesson_flash'] = ['success', 'That answer is now visible to the whole class.'];
         }

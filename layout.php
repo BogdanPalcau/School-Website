@@ -49,7 +49,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260712q';
+$asset_version = '20260712x';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
@@ -80,19 +80,25 @@ $style_src = '../style.css?v=' . $asset_version;
         </main>
     <?php else: ?>
         <div class="portal-shell">
-            <aside class="sidebar">
+            <aside class="sidebar" id="portal-sidebar">
                 <div class="brand-block">
                     <img class="brand-logo" src="<?= portal_escape($logo_src) ?>" width="82" height="82" alt="<?= portal_escape(portal_school_name()) ?> crest">
                     <div>
                         <p class="brand-kicker"><?= portal_escape(portal_school_name()) ?></p>
                         <h1><?= portal_escape(portal_school_short_name()) ?></h1>
                     </div>
+                    <button type="button" class="sidebar-close" data-nav-close aria-label="Close menu">
+                        <?= portal_icon('x', 'sidebar-close-icon') ?>
+                    </button>
                 </div>
 
                 <nav class="sidebar-nav" aria-label="Sidebar">
                     <?php foreach ($navItems as $item): ?>
-                        <?php $isActive = $item['key'] === $active_page; ?>
-                        <a class="nav-link<?= $isActive ? ' active' : '' ?>" href="<?= portal_escape($item['href']) ?>">
+                        <?php
+                            $isActive = $item['key'] === $active_page;
+                            $navExtra = ($item['key'] === 'logout') ? ' nav-link--logout' : '';
+                        ?>
+                        <a class="nav-link<?= $isActive ? ' active' : '' ?><?= $navExtra ?>" href="<?= portal_escape($item['href']) ?>">
                             <?= portal_icon($item['icon'], 'nav-icon') ?>
                             <span><?= portal_escape($item['label']) ?></span>
                         </a>
@@ -129,9 +135,15 @@ $style_src = '../style.css?v=' . $asset_version;
                 </div>
             </aside>
 
+            <div class="nav-backdrop" data-nav-close aria-hidden="true"></div>
+
             <main class="main-panel">
                 <header class="topbar">
-                    <div>
+                    <button type="button" class="nav-toggle" aria-controls="portal-sidebar" aria-expanded="false" aria-label="Open menu">
+                        <?= portal_icon('menu', 'nav-toggle-icon nav-toggle-icon--open') ?>
+                        <?= portal_icon('x', 'nav-toggle-icon nav-toggle-icon--close') ?>
+                    </button>
+                    <div class="topbar-copy">
                         <p class="eyebrow"><?= portal_escape($page_eyebrow) ?></p>
                         <h2><?= portal_escape($page_heading) ?></h2>
                         <p class="lead-copy"><?= portal_escape($page_description) ?></p>
@@ -186,6 +198,38 @@ $style_src = '../style.css?v=' . $asset_version;
         document.addEventListener('invalid', function (event) {
             showInvalidField(event.target, false);
         }, true);
+
+        var toggle = document.querySelector('.nav-toggle');
+        var sidebar = document.getElementById('portal-sidebar');
+        var backdrop = document.querySelector('.nav-backdrop');
+        if (toggle && sidebar) {
+            function setNavOpen(open) {
+                document.body.classList.toggle('nav-open', open);
+                toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                toggle.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+                if (backdrop) backdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
+            }
+
+            toggle.addEventListener('click', function () {
+                setNavOpen(!document.body.classList.contains('nav-open'));
+            });
+
+            document.querySelectorAll('[data-nav-close]').forEach(function (node) {
+                node.addEventListener('click', function () { setNavOpen(false); });
+            });
+
+            sidebar.querySelectorAll('a').forEach(function (link) {
+                link.addEventListener('click', function () { setNavOpen(false); });
+            });
+
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') setNavOpen(false);
+            });
+
+            window.addEventListener('resize', function () {
+                if (window.matchMedia('(min-width: 901px)').matches) setNavOpen(false);
+            });
+        }
     })();
     </script>
 </body>
