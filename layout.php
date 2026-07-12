@@ -47,7 +47,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260707f';
+$asset_version = '20260712f';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>

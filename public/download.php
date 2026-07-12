@@ -43,22 +43,81 @@ function portal_send_file(string $absPath, string $displayName, bool $inline = f
         'pot'  => 'application/vnd.ms-powerpoint',
         'potx' => 'application/vnd.openxmlformats-officedocument.presentationml.template',
         'odp'  => 'application/vnd.oasis.opendocument.presentation',
+        'mp4'  => 'video/mp4',
+        'm4v'  => 'video/mp4',
+        'webm' => 'video/webm',
+        'ogv'  => 'video/ogg',
+        'ogg'  => 'video/ogg',
+        'mov'  => 'video/quicktime',
     ];
     $mime        = $mimeMap[$ext] ?? 'application/octet-stream';
+    $isVideo     = str_starts_with($mime, 'video/');
     $disposition = $inline ? 'inline' : 'attachment';
     $safeName    = str_replace(["\r", "\n", '"'], ['', '', "'"], $displayName !== '' ? $displayName : basename($absPath));
     $encodedName = rawurlencode($safeName);
-
-    header('Content-Type: ' . $mime);
-    header('X-Content-Type-Options: nosniff');
-    header('Content-Disposition: ' . $disposition . '; filename="' . $safeName . '"; filename*=UTF-8\'\'' . $encodedName);
-    header('Content-Length: ' . $size);
-    header('Cache-Control: private, no-cache');
 
     while (ob_get_level() > 0) {
         ob_end_clean();
     }
 
+    header('Content-Type: ' . $mime);
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Disposition: ' . $disposition . '; filename="' . $safeName . '"; filename*=UTF-8\'\'' . $encodedName);
+    header('Cache-Control: private, no-cache');
+
+    // Videos need Range support so the <video> element can seek/scrub.
+    if ($isVideo) {
+        header('Accept-Ranges: bytes');
+
+        $start = 0;
+        $end   = $size - 1;
+        $range = (string) ($_SERVER['HTTP_RANGE'] ?? '');
+
+        if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $m)) {
+            $reqStart = $m[1] === '' ? null : (int) $m[1];
+            $reqEnd   = $m[2] === '' ? null : (int) $m[2];
+
+            if ($reqStart === null && $reqEnd !== null) {
+                // Suffix range: last N bytes.
+                $start = max(0, $size - $reqEnd);
+                $end   = $size - 1;
+            } else {
+                $start = $reqStart ?? 0;
+                $end   = $reqEnd ?? ($size - 1);
+            }
+
+            if ($start > $end || $start >= $size) {
+                http_response_code(416);
+                header('Content-Range: bytes */' . $size);
+                exit;
+            }
+            $end = min($end, $size - 1);
+
+            http_response_code(206);
+            header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+        }
+
+        $length = $end - $start + 1;
+        header('Content-Length: ' . $length);
+
+        $fh = fopen($absPath, 'rb');
+        if ($fh === false) {
+            http_response_code(500);
+            exit('Could not open file.');
+        }
+        fseek($fh, $start);
+        $remaining = $length;
+        while ($remaining > 0 && !feof($fh)) {
+            $chunk = (int) min(8192, $remaining);
+            echo fread($fh, $chunk);
+            $remaining -= $chunk;
+            flush();
+        }
+        fclose($fh);
+        exit;
+    }
+
+    header('Content-Length: ' . $size);
     readfile($absPath);
     exit;
 }

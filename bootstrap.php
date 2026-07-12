@@ -307,6 +307,8 @@ if (!function_exists('portal_icon')) {
             'plus'          => '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
             'trash'         => '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
             'chevron-down'  => '<polyline points="6 9 12 15 18 9"/>',
+            'video'         => '<path d="m22 8.5-6 3.5 6 3.5v-7Z"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+            'play'          => '<polygon points="6 3 20 12 6 21 6 3"/>',
             'grip'          => '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>',
             'download'      => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
             'edit'          => '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
@@ -345,6 +347,55 @@ if (!function_exists('portal_supported_upload_hint')) {
     function portal_supported_upload_hint(): string
     {
         return '.doc .docx .xlsx .pdf .txt .ppt .pptx .pps .ppsx .pot .potx .odp';
+    }
+}
+
+if (!function_exists('portal_video_extensions')) {
+    function portal_video_extensions(): array
+    {
+        return ['mp4', 'webm', 'ogv', 'ogg', 'mov', 'm4v'];
+    }
+}
+
+if (!function_exists('portal_supported_video_upload_hint')) {
+    function portal_supported_video_upload_hint(): string
+    {
+        return '.mp4 .webm .mov .m4v .ogv - max 400 MB';
+    }
+}
+
+if (!function_exists('portal_is_video_file')) {
+    function portal_is_video_file(string $filename): bool
+    {
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        return in_array($ext, portal_video_extensions(), true);
+    }
+}
+
+if (!function_exists('portal_video_mime_for_extension')) {
+    function portal_video_mime_for_extension(string $ext): string
+    {
+        return match (strtolower($ext)) {
+            'mp4', 'm4v' => 'video/mp4',
+            'webm'       => 'video/webm',
+            'ogv', 'ogg' => 'video/ogg',
+            'mov'        => 'video/quicktime',
+            default      => 'application/octet-stream',
+        };
+    }
+}
+
+if (!function_exists('portal_format_video_timestamp')) {
+    function portal_format_video_timestamp(int $seconds): string
+    {
+        $seconds = max(0, $seconds);
+        $h = intdiv($seconds, 3600);
+        $m = intdiv($seconds % 3600, 60);
+        $s = $seconds % 60;
+        if ($h > 0) {
+            return sprintf('%d:%02d:%02d', $h, $m, $s);
+        }
+        return sprintf('%d:%02d', $m, $s);
     }
 }
 
@@ -1224,6 +1275,12 @@ if (!function_exists('portal_upload_mime_ok')) {
             'ppt'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
             'pps'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
             'pot'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
+            'mp4'  => ['video/mp4'],
+            'm4v'  => ['video/mp4', 'video/x-m4v'],
+            'webm' => ['video/webm'],
+            'ogv'  => ['video/ogg', 'application/ogg'],
+            'ogg'  => ['video/ogg', 'application/ogg'],
+            'mov'  => ['video/quicktime'],
         ];
 
         // Unknown extension: extension whitelist already handled this elsewhere.
@@ -1499,6 +1556,64 @@ if (!function_exists('portal_run_migrations')) {
             // 0 = unlimited resubmissions; otherwise the max number of submit attempts allowed.
             $db->exec("ALTER TABLE course_folder_items ADD COLUMN submission_max_attempts INTEGER NOT NULL DEFAULT 0");
         }
+        if (!in_array('allow_download', $cols, true)) {
+            $db->exec("ALTER TABLE course_folder_items ADD COLUMN allow_download TINYINT(1) NOT NULL DEFAULT 0");
+        }
+
+        // ── Item-level lock flag (kept in sync with course.php's own migration) ──
+        if (!in_array('locked', $cols, true)) {
+            $db->exec("ALTER TABLE course_folder_items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0");
+        }
+
+        // ── Allow 'video' folder items (lesson videos) ─────────────────────────
+        // Rebuilds the table to widen the type CHECK constraint. All existing
+        // columns are preserved dynamically so no item data (e.g. lock state,
+        // download permission) is lost in the process.
+        $itemsTableSql = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='course_folder_items'"
+        )->fetchColumn() ?: '');
+        if ($itemsTableSql !== '' && strpos($itemsTableSql, "'video'") === false) {
+            $db->exec('PRAGMA foreign_keys = OFF');
+            $existingCols = array_column($db->query("PRAGMA table_info(course_folder_items)")->fetchAll(), 'name');
+            $db->exec("
+                CREATE TABLE _course_folder_items_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folder_id   INTEGER NOT NULL REFERENCES course_folders(id) ON DELETE CASCADE,
+                    course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                    type        TEXT    NOT NULL DEFAULT 'document'
+                                        CHECK(type IN ('document','link','submission','video')),
+                    title       TEXT    NOT NULL,
+                    description TEXT    NOT NULL DEFAULT '',
+                    url         TEXT    NOT NULL DEFAULT '',
+                    file_path   TEXT    NOT NULL DEFAULT '',
+                    file_name   TEXT    NOT NULL DEFAULT '',
+                    allow_download INTEGER NOT NULL DEFAULT 0,
+                    locked      INTEGER NOT NULL DEFAULT 0,
+                    submission_deadline TEXT NOT NULL DEFAULT '',
+                    submission_ai_detection INTEGER NOT NULL DEFAULT 0,
+                    submission_max_attempts INTEGER NOT NULL DEFAULT 0,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+                )
+            ");
+            $newCols = [
+                'id', 'folder_id', 'course_id', 'type', 'title', 'description', 'url',
+                'file_path', 'file_name', 'allow_download', 'locked', 'submission_deadline',
+                'submission_ai_detection', 'submission_max_attempts', 'sort_order', 'created_at',
+            ];
+            $selectExprs = array_map(
+                static fn (string $c): string => in_array($c, $existingCols, true) ? $c : "0 AS $c",
+                $newCols
+            );
+            $db->exec("
+                INSERT INTO _course_folder_items_new (" . implode(', ', $newCols) . ")
+                SELECT " . implode(', ', $selectExprs) . "
+                FROM course_folder_items
+            ");
+            $db->exec('DROP TABLE course_folder_items');
+            $db->exec('ALTER TABLE _course_folder_items_new RENAME TO course_folder_items');
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
 
         // ── Class schedule ────────────────────────────────────────────────────
         $db->exec("
@@ -1535,6 +1650,30 @@ if (!function_exists('portal_run_migrations')) {
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         ");
+
+        // ── Lesson video Q&A ─────────────────────────────────────────────────────
+        // Questions asked under a lesson video. They are private to the asker and
+        // the course's teaching staff until a teacher/admin answers them, at which
+        // point the Q&A pair becomes visible to every student on the course.
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS course_video_questions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id     INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
+                course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                question    TEXT    NOT NULL,
+                answer      TEXT    NOT NULL DEFAULT '',
+                answered_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                answered_at TEXT    NOT NULL DEFAULT '',
+                video_seconds INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_video_questions_item ON course_video_questions(item_id, created_at)");
+        $vqCols = array_column($db->query("PRAGMA table_info(course_video_questions)")->fetchAll(), 'name');
+        if (!in_array('video_seconds', $vqCols, true)) {
+            $db->exec("ALTER TABLE course_video_questions ADD COLUMN video_seconds INTEGER NOT NULL DEFAULT 0");
+        }
 
         // ── Groups ────────────────────────────────────────────────────────────
         $db->exec("

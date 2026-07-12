@@ -284,6 +284,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $db       = portal_db();
     $me       = portal_current_user();
     $maxUploadBytes = 40 * 1024 * 1024;
+    $maxVideoUploadBytes = 400 * 1024 * 1024;
 
     $uploadErrorMessage = static function (int $code): string {
         return match ($code) {
@@ -518,7 +519,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'create_item') {
             $folderId = (int) ($_POST['folder_id'] ?? 0);
             $type     = (string) ($_POST['type'] ?? 'document');
-            if (!in_array($type, ['document', 'link', 'submission'], true)) {
+            if (!in_array($type, ['document', 'link', 'submission', 'video'], true)) {
                 $type = 'document';
             }
             $title    = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
@@ -531,22 +532,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileName = '';
             $createItemError = null;
 
-            // Handle file upload for document type
-            if ($type === 'document' && isset($_FILES['file'])) {
+            // Handle file upload for document/video types
+            if (($type === 'document' || $type === 'video') && isset($_FILES['file'])) {
+                $isVideoUpload = $type === 'video';
                 $fileError = (int) ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE);
                 $fileSize = (int) ($_FILES['file']['size'] ?? 0);
                 $ext = strtolower(pathinfo((string) ($_FILES['file']['name'] ?? ''), PATHINFO_EXTENSION));
+                $allowedExts = $isVideoUpload ? portal_video_extensions() : portal_supported_upload_extensions();
+                $sizeLimit = $isVideoUpload ? $maxVideoUploadBytes : $maxUploadBytes;
+                $sizeLimitLabel = $isVideoUpload ? '400 MB' : '40 MB';
 
                 if ($fileError !== UPLOAD_ERR_OK) {
                     $createItemError = $uploadErrorMessage($fileError);
-                } elseif (!in_array($ext, portal_supported_upload_extensions(), true)) {
-                    $createItemError = 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.';
+                } elseif (!in_array($ext, $allowedExts, true)) {
+                    $createItemError = $isVideoUpload
+                        ? 'Unsupported video format. Use ' . portal_supported_video_upload_hint() . '.'
+                        : 'Unsupported file type. Use ' . portal_supported_upload_hint() . '.';
                 } elseif ($fileSize <= 0) {
                     $createItemError = 'Uploaded file is empty (0 bytes). Please export/download it again and re-upload.';
                 } elseif (!portal_upload_mime_ok((string) ($_FILES['file']['tmp_name'] ?? ''), $ext)) {
-                    $createItemError = 'This file content does not match its extension. Please upload a genuine document.';
-                } elseif ($fileSize > $maxUploadBytes) {
-                    $createItemError = 'File is too large. Maximum allowed size is 40 MB.';
+                    $createItemError = $isVideoUpload
+                        ? 'This file content does not match its extension. Please upload a genuine video file.'
+                        : 'This file content does not match its extension. Please upload a genuine document.';
+                } elseif ($fileSize > $sizeLimit) {
+                    $createItemError = 'File is too large. Maximum allowed size is ' . $sizeLimitLabel . '.';
                 } else {
                     $dir = portal_uploads_base() . DIRECTORY_SEPARATOR . 'courses' . DIRECTORY_SEPARATOR . $courseId;
                     if (!is_dir($dir)) mkdir($dir, 0755, true);
@@ -563,6 +572,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $createItemError = 'Please enter a valid link URL.';
             } elseif ($type === 'document' && $url === '') {
                 $createItemError = 'Please upload a file or provide a URL for this document item.';
+            } elseif ($type === 'video' && $filePath === '') {
+                $createItemError = 'Please upload a video file for this item.';
             } elseif ($type === 'submission') {
                 $deadlineRaw = trim((string) ($_POST['submission_deadline'] ?? ''));
                 $deadlineTs = $deadlineRaw !== '' ? strtotime($deadlineRaw) : false;
@@ -584,6 +595,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($createItemError !== null) {
                 if (
                     str_contains($createItemError, 'Unsupported file type')
+                    || str_contains($createItemError, 'Unsupported video format')
                     || str_contains($createItemError, 'does not match')
                     || str_contains($createItemError, 'too large')
                     || str_contains($createItemError, 'blocked the upload')
@@ -1919,6 +1931,8 @@ ob_start();
                                                     <?= portal_icon('presentation', 'item-type-icon') ?>
                                                 <?php elseif ($item['type'] === 'document'): ?>
                                                     <?= portal_icon('file', 'item-type-icon') ?>
+                                                <?php elseif ($item['type'] === 'video'): ?>
+                                                    <?= portal_icon('video', 'item-type-icon') ?>
                                                 <?php elseif ($item['type'] === 'link'): ?>
                                                     <?= portal_icon('link', 'item-type-icon') ?>
                                                 <?php else: ?>
@@ -1939,10 +1953,14 @@ ob_start();
                                                         <?php
                                                             $fExt  = strtolower(pathinfo((string) $itemFileName, PATHINFO_EXTENSION));
                                                             $canDl = !portal_can_manage_course($courseId) && !empty($item['allow_download']);
+                                                            $isVideoItem = $item['type'] === 'video';
+                                                            $itemViewerUrl = $isVideoItem
+                                                                ? 'lesson-viewer.php?item=' . (int) $item['id']
+                                                                : 'view.php?item=' . (int) $item['id'];
                                                         ?>
                                                         <div class="file-item-row">
-                                                            <a href="view.php?item=<?= (int)$item['id'] ?>" class="file-view-link" target="_blank">
-                                                                <?= portal_icon($isPresentation ? 'presentation' : 'file', 'icon-xs') ?>
+                                                            <a href="<?= portal_escape($itemViewerUrl) ?>" class="file-view-link" target="_blank">
+                                                                <?= portal_icon($isVideoItem ? 'video' : ($isPresentation ? 'presentation' : 'file'), 'icon-xs') ?>
                                                                 <?= portal_escape($item['title']) ?>
                                                                 <span class="file-ext-badge"><?= portal_escape(strtoupper($fExt)) ?></span>
                                                             </a>
@@ -2009,7 +2027,7 @@ ob_start();
                                                                         <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://... or www.example.com">
                                                                     </label>
                                                                 <?php endif; ?>
-                                                                <?php if ($item['type'] === 'document' && $item['file_path'] !== ''): ?>
+                                                                <?php if (($item['type'] === 'document' || $item['type'] === 'video') && $item['file_path'] !== ''): ?>
                                                                     <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
                                                                         <input type="checkbox" name="allow_download" value="1" <?= !empty($item['allow_download']) ? 'checked' : '' ?>>
                                                                         Allow students to download this file
@@ -2367,6 +2385,7 @@ ob_start();
                                                     <span>Type</span>
                                                     <select name="type" class="item-type-select">
                                                         <option value="document">File upload</option>
+                                                        <option value="video">Video</option>
                                                         <option value="link">Link</option>
                                                         <option value="submission">Submission slot</option>
                                                     </select>
@@ -2378,8 +2397,13 @@ ob_start();
                                             </div>
                                             <div class="folder-form-row item-file-group">
                                                 <label class="folder-form-label" style="grid-column:1/-1;">
-                                                    <span>Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
-                                                    <input type="file" name="file" accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp">
+                                                    <span class="item-file-label">Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
+                                                    <input type="file" name="file" class="item-file-input"
+                                                           accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
+                                                           data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
+                                                           data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
+                                                           data-video-accept=".mp4,.webm,.mov,.m4v,.ogv"
+                                                           data-video-hint="Upload video <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>)</small>">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-url-group">
@@ -3465,18 +3489,25 @@ ob_start();
 
     document.querySelectorAll('.item-type-select').forEach(sel => {
         const update = () => {
-            const form     = sel.closest('form');
-            const fileGrp  = form.querySelector('.item-file-group');
-            const urlGrp   = form.querySelector('.item-url-group');
-            const urlLabel = form.querySelector('.item-url-label');
-            const urlInput = form.querySelector('input[name="url"]');
-            const subGrp   = form.querySelector('.item-submission-group');
-            const dlOpt    = form.querySelector('input[name="allow_download"]')?.closest('label');
-            const type     = sel.value;
+            const form      = sel.closest('form');
+            const fileGrp   = form.querySelector('.item-file-group');
+            const fileInput = form.querySelector('.item-file-input');
+            const fileLabel = form.querySelector('.item-file-label');
+            const urlGrp    = form.querySelector('.item-url-group');
+            const urlLabel  = form.querySelector('.item-url-label');
+            const urlInput  = form.querySelector('input[name="url"]');
+            const subGrp    = form.querySelector('.item-submission-group');
+            const dlOpt     = form.querySelector('input[name="allow_download"]')?.closest('label');
+            const type      = sel.value;
+            const isVideo   = type === 'video';
             if (fileGrp) fileGrp.style.display  = type === 'link' || type === 'submission' ? 'none' : '';
-            if (urlGrp)  urlGrp.style.display   = type === 'submission' ? 'none' : '';
+            if (urlGrp)  urlGrp.style.display   = type === 'submission' || isVideo ? 'none' : '';
             if (subGrp)  subGrp.style.display    = type === 'submission' ? '' : 'none';
-            if (dlOpt)   dlOpt.style.display     = type === 'document' ? '' : 'none';
+            if (dlOpt)   dlOpt.style.display     = (type === 'document' || isVideo) ? '' : 'none';
+            if (fileInput && fileLabel) {
+                fileInput.setAttribute('accept', isVideo ? fileInput.dataset.videoAccept : fileInput.dataset.docAccept);
+                fileLabel.innerHTML = isVideo ? fileInput.dataset.videoHint : fileInput.dataset.docHint;
+            }
             if (urlLabel) {
                 urlLabel.innerHTML = type === 'link'
                     ? 'Link URL <small>(required)</small>'
