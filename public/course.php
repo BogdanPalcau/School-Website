@@ -729,24 +729,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->prepare("INSERT OR IGNORE INTO announcement_reads (user_id, announcement_id) VALUES (?,?)")
                        ->execute([$posterId, $newAnnId]);
 
-                    // Personal alerts for enrolled students (respects notify_announcements).
+                    // Personal alerts for enrolled students + course managers
+                    // (respects notify_announcements; skips the poster).
+                    $recipientIds = [];
                     $enrolledStmt = $db->prepare(
                         "SELECT user_id FROM enrollments WHERE course_id = ?"
                     );
                     $enrolledStmt->execute([$courseId]);
+                    foreach ($enrolledStmt->fetchAll(PDO::FETCH_COLUMN) as $studentId) {
+                        $studentId = (int) $studentId;
+                        if ($studentId > 0) {
+                            $recipientIds[$studentId] = true;
+                        }
+                    }
+                    $managerStmt = $db->prepare(
+                        "SELECT user_id FROM course_teachers WHERE course_id = ?"
+                    );
+                    $managerStmt->execute([$courseId]);
+                    foreach ($managerStmt->fetchAll(PDO::FETCH_COLUMN) as $managerId) {
+                        $managerId = (int) $managerId;
+                        if ($managerId > 0) {
+                            $recipientIds[$managerId] = true;
+                        }
+                    }
+                    foreach ($db->query(
+                        "SELECT id FROM users WHERE role IN ('owner','admin')"
+                    )->fetchAll(PDO::FETCH_COLUMN) as $adminId) {
+                        $adminId = (int) $adminId;
+                        if ($adminId > 0) {
+                            $recipientIds[$adminId] = true;
+                        }
+                    }
                     $annLink = 'course.php?course=' . urlencode((string) $course['slug'])
                         . '&section=announcements';
                     $courseTitle = (string) ($course['title'] ?? 'Module');
                     $notifTitle = 'New announcement in “' . substr($courseTitle, 0, 80) . '”';
                     $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
                     $snippet = $title . ($plainBody !== '' ? ' — ' . substr($plainBody, 0, 100) : '');
-                    foreach ($enrolledStmt->fetchAll(PDO::FETCH_COLUMN) as $studentId) {
-                        $studentId = (int) $studentId;
-                        if ($studentId <= 0 || $studentId === $posterId) {
+                    foreach (array_keys($recipientIds) as $rid) {
+                        $rid = (int) $rid;
+                        if ($rid <= 0 || $rid === $posterId) {
                             continue;
                         }
                         portal_notify_user(
-                            $studentId,
+                            $rid,
                             'announcement',
                             $notifTitle,
                             substr($snippet, 0, 200),
@@ -968,12 +994,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $topicId = (int)($_POST['topic_id'] ?? 0);
         $body    = substr(portal_sanitize_rich_text(trim((string)($_POST['body'] ?? ''))), 0, 3000);
         // Verify topic belongs to this course
-        $tChk = $db->prepare("SELECT id FROM course_discussion_topics WHERE id = ? AND course_id = ?");
+        $tChk = $db->prepare(
+            "SELECT id, user_id, title FROM course_discussion_topics WHERE id = ? AND course_id = ?"
+        );
         $tChk->execute([$topicId, $courseId]);
-        if ($tChk->fetch() && $body !== '') {
+        $topicRow = $tChk->fetch();
+        if ($topicRow && $body !== '') {
+            $posterId = (int) $me['id'];
             $db->prepare(
                 "INSERT INTO course_discussion_replies (topic_id, course_id, user_id, body) VALUES (?,?,?,?)"
-            )->execute([$topicId, $courseId, (int)$me['id'], $body]);
+            )->execute([$topicId, $courseId, $posterId, $body]);
+
+            // Personal alerts for thread starter, prior participants, and
+            // course managers (notify_qa). Poster is excluded below.
+            $recipientIds = [];
+            $topicAuthorId = (int) $topicRow['user_id'];
+            if ($topicAuthorId > 0 && $topicAuthorId !== $posterId) {
+                $recipientIds[$topicAuthorId] = true;
+            }
+            $partStmt = $db->prepare(
+                "SELECT DISTINCT user_id FROM course_discussion_replies
+                 WHERE topic_id = ? AND user_id != ?"
+            );
+            $partStmt->execute([$topicId, $posterId]);
+            foreach ($partStmt->fetchAll(PDO::FETCH_COLUMN) as $pid) {
+                $pid = (int) $pid;
+                if ($pid > 0) {
+                    $recipientIds[$pid] = true;
+                }
+            }
+            $managerStmt = $db->prepare(
+                "SELECT user_id FROM course_teachers WHERE course_id = ?"
+            );
+            $managerStmt->execute([$courseId]);
+            foreach ($managerStmt->fetchAll(PDO::FETCH_COLUMN) as $managerId) {
+                $managerId = (int) $managerId;
+                if ($managerId > 0 && $managerId !== $posterId) {
+                    $recipientIds[$managerId] = true;
+                }
+            }
+            // Site owners/admins manage every course — include them so staff
+            // dashboards receive the same personal alerts students do.
+            foreach ($db->query(
+                "SELECT id FROM users WHERE role IN ('owner','admin')"
+            )->fetchAll(PDO::FETCH_COLUMN) as $adminId) {
+                $adminId = (int) $adminId;
+                if ($adminId > 0 && $adminId !== $posterId) {
+                    $recipientIds[$adminId] = true;
+                }
+            }
+
+            if (!empty($recipientIds)) {
+                $posterName = trim((string) ($me['name'] ?? 'Someone')) ?: 'Someone';
+                $topicTitle = (string) $topicRow['title'];
+                $discLink = 'course.php?course=' . urlencode((string) $course['slug'])
+                    . '&section=discussions&topic=' . $topicId;
+                $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
+                $snippet = substr($plainBody !== '' ? $plainBody : 'New reply in the discussion.', 0, 160);
+                $notifTitle = $posterName . ' replied in “' . substr($topicTitle, 0, 80) . '”';
+                foreach (array_keys($recipientIds) as $rid) {
+                    portal_notify_user(
+                        (int) $rid,
+                        'discussion_reply',
+                        $notifTitle,
+                        $snippet,
+                        $discLink,
+                        $courseId
+                    );
+                }
+            }
         }
     }
 

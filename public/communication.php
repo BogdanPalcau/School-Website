@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  WHERE id = ? AND user_id = ? AND read_at = ''"
             )->execute([$id, (int) $me['id']]);
         }
-        portal_redirect('communication.php#for-you');
+        portal_redirect('notifications.php');
     }
 
     if ($action === 'mark_all_notifications_read') {
@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "UPDATE portal_notifications SET read_at = datetime('now')
              WHERE user_id = ? AND read_at = ''"
         )->execute([(int) $me['id']]);
-        portal_redirect('communication.php#for-you');
+        portal_redirect('notifications.php');
     }
 
     portal_redirect('communication.php');
@@ -106,80 +106,36 @@ if (!empty($myCourseIds)) {
     $moduleAnnouncements = $stmt->fetchAll();
 }
 
-// Personal notifications (e.g. lesson Q&A answers)
-$notifStmt = $db->prepare(
-    "SELECT * FROM portal_notifications
-     WHERE user_id = ?
-     ORDER BY CASE WHEN read_at = '' THEN 0 ELSE 1 END, created_at DESC
-     LIMIT 30"
+// Personal notifications count (badge link to dedicated Notifications tab)
+$unreadNotifStmt = $db->prepare(
+    "SELECT COUNT(*) FROM portal_notifications WHERE user_id = ? AND read_at = ''"
 );
-$notifStmt->execute([(int) $me['id']]);
-$personalNotifications = $notifStmt->fetchAll();
-$unreadNotifCount = count(array_filter($personalNotifications, static fn ($n) => (string) $n['read_at'] === ''));
+$unreadNotifStmt->execute([(int) $me['id']]);
+$unreadNotifCount = (int) $unreadNotifStmt->fetchColumn();
 
 $page_title = 'Communication | ' . portal_school_name();
 $active_page = 'communication';
 $page_eyebrow = 'School bulletin';
 $page_heading = 'Communication';
 $page_description = $isAdmin
-    ? 'Post major school-wide announcements and keep an eye on what every module is telling students.'
-    : 'Major announcements from the school office, plus the latest updates from the modules you\'re enrolled in.';
+    ? 'School-wide announcements you can post, and updates across every module. Personal alerts live under Notifications.'
+    : 'Major announcements from the school office and the latest module updates. Personal alerts live under Notifications.';
+$isStaffViewer = portal_is_course_staff() || $isAdmin;
 
 ob_start();
 ?>
 <div class="comm-layout">
 
-    <!-- ── Personal notifications ─────────────────────────────────────────── -->
-    <?php if (!empty($personalNotifications)): ?>
-    <section class="comm-section" id="for-you">
-        <div class="comm-section-head">
-            <div>
-                <p class="eyebrow">Personal</p>
-                <h2 class="comm-section-title"><?= portal_icon('sparkles', 'icon-sm') ?> For you</h2>
-                <p class="comm-section-desc">Alerts just for you — lesson replies, new module announcements, and similar updates.</p>
-            </div>
-            <div class="button-row" style="align-items:center;gap:10px;">
-                <?php if ($unreadNotifCount > 0): ?>
-                <span class="chip"><?= (int) $unreadNotifCount ?> new</span>
-                <form method="POST" style="margin:0;">
-                    <?= portal_csrf_field() ?>
-                    <input type="hidden" name="action" value="mark_all_notifications_read">
-                    <button type="submit" class="button-secondary button--sm">Mark all read</button>
-                </form>
-                <?php else: ?>
-                <span class="chip"><?= count($personalNotifications) ?></span>
-                <?php endif; ?>
-            </div>
-        </div>
-        <div class="comm-notif-list">
-            <?php foreach ($personalNotifications as $n): ?>
-            <?php $isUnread = (string) $n['read_at'] === ''; ?>
-            <article class="comm-notif-item<?= $isUnread ? ' comm-notif-item--unread' : '' ?>">
-                <div>
-                    <h4><?= portal_escape((string) $n['title']) ?></h4>
-                    <?php if ($n['body'] !== ''): ?>
-                    <p><?= portal_escape((string) $n['body']) ?></p>
-                    <?php endif; ?>
-                    <p class="sub-date" style="margin-top:6px;"><?= portal_escape(date('j M Y · H:i', strtotime((string) $n['created_at']))) ?></p>
-                </div>
-                <div class="button-row" style="flex-shrink:0;">
-                    <?php if ($n['link'] !== ''): ?>
-                    <a class="button button--sm" href="<?= portal_escape((string) $n['link']) ?>">Open</a>
-                    <?php endif; ?>
-                    <?php if ($isUnread): ?>
-                    <form method="POST" style="margin:0;">
-                        <?= portal_csrf_field() ?>
-                        <input type="hidden" name="action" value="mark_notification_read">
-                        <input type="hidden" name="notification_id" value="<?= (int) $n['id'] ?>">
-                        <button type="submit" class="button-secondary button--sm">Mark read</button>
-                    </form>
-                    <?php endif; ?>
-                </div>
-            </article>
-            <?php endforeach; ?>
-        </div>
-    </section>
-    <?php endif; ?>
+    <nav class="comm-jump" aria-label="Communication sections">
+        <a class="comm-jump-link<?= $unreadNotifCount > 0 ? ' has-unread' : '' ?>" href="notifications.php">
+            Notifications
+            <?php if ($unreadNotifCount > 0): ?>
+                <span class="comm-jump-count"><?= (int) $unreadNotifCount ?></span>
+            <?php endif; ?>
+        </a>
+        <a class="comm-jump-link" href="#major-announcements">Major</a>
+        <a class="comm-jump-link" href="#module-announcements">Modules</a>
+    </nav>
 
     <!-- ── Major (school-wide) announcements ─────────────────────────────── -->
     <section class="comm-section" id="major-announcements">
@@ -303,7 +259,9 @@ ob_start();
                 <p class="comm-section-desc">
                     <?= $isAdmin
                         ? 'Everything teachers have posted across every module, newest first.'
-                        : 'Updates from teachers in the modules you\'re enrolled in, newest first.' ?>
+                        : ($isStaffViewer
+                            ? 'Updates across the modules you teach, newest first.'
+                            : 'Updates from teachers in the modules you\'re enrolled in, newest first.') ?>
                 </p>
             </div>
             <span class="chip"><?= count($moduleAnnouncements) ?> posted</span>
@@ -312,12 +270,16 @@ ob_start();
         <?php if (empty($myCourseIds)): ?>
             <div class="folder-empty-state comm-empty">
                 <?= portal_icon('book-open') ?>
-                <p>You're not enrolled in any modules yet. Once you are, announcements from your teachers will show up here.</p>
+                <p><?= $isStaffViewer
+                    ? 'No modules assigned yet. Once you teach a module, its announcements will show up here.'
+                    : 'You\'re not enrolled in any modules yet. Once you are, announcements from your teachers will show up here.' ?></p>
             </div>
         <?php elseif (empty($moduleAnnouncements)): ?>
             <div class="folder-empty-state comm-empty">
                 <?= portal_icon('book-open') ?>
-                <p>No announcements yet from your modules. Check back after your teachers post updates.</p>
+                <p><?= $isStaffViewer
+                    ? 'No announcements yet across your modules.'
+                    : 'No announcements yet from your modules. Check back after your teachers post updates.' ?></p>
             </div>
         <?php else: ?>
         <div class="announcement-feed">

@@ -164,7 +164,7 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
     $rows = $stmt->fetchAll();
 
     $now = time();
-    $horizon = $now + (21 * 86400);
+    $horizon = $now + (30 * 86400);
     foreach ($rows as $row) {
         $info = portal_submission_deadline_info((string) $row['submission_deadline']);
         if (!$info['has_deadline'] || !isset($info['timestamp'])) {
@@ -177,7 +177,8 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
         if ($ts > $horizon) {
             continue;
         }
-        if ($ts < $now - (7 * 86400)) {
+        // Keep overdue work visible for two weeks so students still see missed deadlines
+        if ($ts < $now - (14 * 86400)) {
             continue;
         }
 
@@ -232,16 +233,19 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
     $stmt->execute(array_merge([$uid], $courseIds));
     $continueWatching = $stmt->fetchAll();
 
-    $stmt = $db->prepare(
-        "SELECT id, title, body, link, created_at, read_at
-         FROM portal_notifications
-         WHERE user_id = ?
-         ORDER BY CASE WHEN read_at = '' THEN 0 ELSE 1 END, created_at DESC
-         LIMIT 5"
-    );
-    $stmt->execute([$uid]);
-    $recentAnswers = $stmt->fetchAll();
 }
+
+// Personal alerts (students + staff — discussion replies, Q&A, announcements, etc.)
+$recentAnswers = [];
+$notifListStmt = $db->prepare(
+    "SELECT id, title, body, link, created_at, read_at, type
+     FROM portal_notifications
+     WHERE user_id = ?
+     ORDER BY CASE WHEN read_at = '' THEN 0 ELSE 1 END, created_at DESC
+     LIMIT 8"
+);
+$notifListStmt->execute([$uid]);
+$recentAnswers = $notifListStmt->fetchAll();
 
 if ($isStaff || $isAdmin) {
     $assignedIds = $isAdmin
@@ -420,59 +424,176 @@ $unmarkedTotal = (int) array_sum(array_map(
     static fn(array $m): int => (int) ($m['unmarked'] ?? 0),
     $moduleWorkload
 ));
+$needsAttentionTotal = $openQuestionTotal + $unmarkedTotal;
+
+// Staff work queues — bucketed by kind (mark → Q&A → deadlines), urgency within each
+$staffMarkQueue = [];
+$staffQuestionQueue = [];
+$staffDeadlineQueue = [];
+$waitAgeSeconds = static function (string $raw): int {
+    $ts = portal_db_timestamp($raw);
+    if ($ts === null) {
+        return 0;
+    }
+    return max(0, time() - $ts);
+};
+
+if ($isStaff || $isAdmin) {
+    foreach ($pendingToMark as $row) {
+        $age = $waitAgeSeconds((string) $row['submitted_at']);
+        $staffMarkQueue[] = [
+            'title' => (string) $row['item_title'],
+            'meta'  => (string) $row['student_name'] . ' · ' . (string) $row['course_title'],
+            'time'  => $waitLabel((string) $row['submitted_at']),
+            'href'  => 'course.php?course=' . urlencode((string) $row['slug'])
+                . '&section=content&open_review=rvw-' . (int) $row['id'],
+            'accent'=> (string) ($row['accent'] ?? ''),
+            'age'   => $age,
+            'stale' => $age >= 2 * 86400,
+        ];
+    }
+    usort($staffMarkQueue, static fn(array $a, array $b): int => $b['age'] <=> $a['age']);
+    $staffMarkQueue = array_slice($staffMarkQueue, 0, 8);
+
+    foreach ($pendingQuestions as $q) {
+        $qText = trim((string) $q['question']);
+        if (strlen($qText) > 140) {
+            $qText = substr($qText, 0, 137) . '…';
+        }
+        $stamp = $formatVideoStamp((int) ($q['video_seconds'] ?? 0));
+        $metaParts = [
+            (string) $q['student_name'],
+            (string) $q['lesson_title'],
+            (string) $q['course_title'],
+        ];
+        if ($stamp !== '') {
+            $metaParts[] = 'at ' . $stamp;
+        }
+        $age = $waitAgeSeconds((string) $q['created_at']);
+        $staffQuestionQueue[] = [
+            'title' => $qText,
+            'meta'  => implode(' · ', $metaParts),
+            'time'  => $waitLabel((string) $q['created_at']),
+            'href'  => 'lesson-viewer.php?item=' . (int) $q['item_id'] . '#q-' . (int) $q['id'],
+            'accent'=> (string) ($q['accent'] ?? ''),
+            'age'   => $age,
+            'stale' => $age >= 2 * 86400,
+        ];
+    }
+    usort($staffQuestionQueue, static fn(array $a, array $b): int => $b['age'] <=> $a['age']);
+    $staffQuestionQueue = array_slice($staffQuestionQueue, 0, 8);
+
+    foreach ($teacherDeadlines as $item) {
+        $state = (string) $item['deadline_info']['state'];
+        $missing = max(0, (int) $item['enrolled'] - (int) $item['submitted']);
+        $ts = (int) ($item['deadline_info']['timestamp'] ?? 0);
+        $staffDeadlineQueue[] = [
+            'title' => (string) $item['title'],
+            'meta'  => (string) $item['course_title']
+                . ' · ' . (int) $item['submitted'] . '/' . (int) $item['enrolled'] . ' in'
+                . ($missing > 0 ? ' · ' . $missing . ' missing' : ''),
+            'time'  => 'Due ' . (string) $item['deadline_info']['text'],
+            'href'  => 'course.php?course=' . urlencode((string) $item['slug']) . '&section=gradebook',
+            'accent'=> (string) ($item['accent'] ?? ''),
+            'state' => $state,
+            'ts'    => $ts,
+        ];
+    }
+    usort($staffDeadlineQueue, static function (array $a, array $b): int {
+        $rank = static fn(string $s): int => match ($s) {
+            'closed' => 0,
+            'soon' => 1,
+            default => 2,
+        };
+        $byState = $rank((string) $a['state']) <=> $rank((string) $b['state']);
+        if ($byState !== 0) {
+            return $byState;
+        }
+        return ((int) $a['ts']) <=> ((int) $b['ts']);
+    });
+    $staffDeadlineQueue = array_slice($staffDeadlineQueue, 0, 6);
+}
+
+$staffTodoTotal = count($staffMarkQueue) + count($staffQuestionQueue) + count($staffDeadlineQueue);
+
+// Student priorities — deadlines first (all upcoming), then returned grades
+$studentDeadlineQueue = [];
+if (!$isStaff && !$isAdmin) {
+    foreach ($upcomingDeadlines as $item) {
+        // Marked work moves to "Returned grades"; still list submitted/open deadlines here
+        if (!empty($item['marked'])) {
+            continue;
+        }
+        $state = (string) $item['deadline_info']['state'];
+        $submitted = !empty($item['submitted']);
+        $studentDeadlineQueue[] = $item + [
+            'submitted' => $submitted,
+            'urgency' => $submitted ? 3 : match ($state) {
+                'closed' => 0,
+                'soon' => 1,
+                default => 2,
+            },
+        ];
+    }
+    usort($studentDeadlineQueue, static function (array $a, array $b): int {
+        $byUrgency = ((int) $a['urgency']) <=> ((int) $b['urgency']);
+        if ($byUrgency !== 0) {
+            return $byUrgency;
+        }
+        return ((int) ($a['deadline_info']['timestamp'] ?? 0))
+            <=> ((int) ($b['deadline_info']['timestamp'] ?? 0));
+    });
+    $studentDeadlineQueue = array_slice($studentDeadlineQueue, 0, 8);
+}
+$studentOpenDeadlineCount = count(array_filter(
+    $studentDeadlineQueue,
+    static fn(array $d): bool => empty($d['submitted'])
+));
+$studentPriorityTotal = $studentOpenDeadlineCount + count($returnedGrades);
+$studentHasPriorities = !empty($studentDeadlineQueue) || !empty($returnedGrades) || $unreadAnnouncementCount > 0;
 
 $page_title = 'Dashboard | ' . portal_school_name();
 $active_page = 'dashboard';
 $page_eyebrow = 'Overview';
 $page_heading = $greeting . ', ' . $firstName;
 $page_description = $isStaff || $isAdmin
-    ? 'Action items first — unanswered questions, marking queue, and what’s due across your modules.'
-    : 'Your day at a glance — classes, deadlines, returned work, and lessons to continue.';
+    ? 'Work waiting on you sits in To do. Updates others sent you live in Notifications.'
+    : 'Deadlines and returned work are in Your priorities. Updates others sent you live in Notifications.';
 
 ob_start();
 ?>
 <section class="dash-layout">
 
-    <div class="dash-stat-grid">
-        <article class="dash-stat">
-            <span class="dash-stat-label">Modules</span>
-            <strong class="dash-stat-value"><?= count($catalog) ?></strong>
-            <a class="dash-stat-link" href="courses.php">Browse courses</a>
-        </article>
+    <div class="dash-stat-grid dash-stat-grid--3">
         <article class="dash-stat">
             <span class="dash-stat-label">Today</span>
             <strong class="dash-stat-value"><?= count($todayClasses) ?></strong>
             <a class="dash-stat-link" href="timetable.php">View timetable</a>
         </article>
         <?php if ($isStaff || $isAdmin): ?>
-        <article class="dash-stat<?= $unmarkedTotal > 0 ? ' dash-stat--alert' : '' ?>">
-            <span class="dash-stat-label">To mark</span>
-            <strong class="dash-stat-value"><?= $unmarkedTotal ?></strong>
-            <span class="dash-stat-caption">Across your modules</span>
-        </article>
-        <article class="dash-stat<?= $openQuestionTotal > 0 ? ' dash-stat--alert' : '' ?>">
-            <span class="dash-stat-label">Questions</span>
-            <strong class="dash-stat-value"><?= $openQuestionTotal ?></strong>
-            <span class="dash-stat-caption">Waiting for a reply</span>
+        <article class="dash-stat<?= $needsAttentionTotal > 0 ? ' dash-stat--alert' : '' ?>">
+            <span class="dash-stat-label">To do</span>
+            <strong class="dash-stat-value"><?= $needsAttentionTotal ?></strong>
+            <a class="dash-stat-link" href="#to-do"><?= $unmarkedTotal ?> to mark · <?= $openQuestionTotal ?> Q&amp;A</a>
         </article>
         <?php else: ?>
         <article class="dash-stat<?= $dueSoonCount > 0 ? ' dash-stat--alert' : '' ?>">
             <span class="dash-stat-label">Due soon</span>
             <strong class="dash-stat-value"><?= $dueSoonCount ?></strong>
-            <span class="dash-stat-caption">Needs your attention</span>
-        </article>
-        <article class="dash-stat<?= $unreadNotifCount > 0 ? ' dash-stat--alert' : '' ?>">
-            <span class="dash-stat-label">Alerts</span>
-            <strong class="dash-stat-value"><?= $unreadNotifCount ?></strong>
-            <a class="dash-stat-link" href="communication.php#for-you">Open inbox</a>
+            <a class="dash-stat-link" href="#priorities">View deadlines</a>
         </article>
         <?php endif; ?>
+        <article class="dash-stat<?= $unreadNotifCount > 0 ? ' dash-stat--alert' : '' ?>">
+            <span class="dash-stat-label">Inbox</span>
+            <strong class="dash-stat-value"><?= $unreadNotifCount ?></strong>
+            <a class="dash-stat-link" href="notifications.php">Open notifications</a>
+        </article>
     </div>
 
     <div class="dash-columns">
         <div class="dash-main stack">
 
-            <article class="card-shell">
+            <article class="card-shell dash-work">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Schedule</p>
@@ -488,22 +609,23 @@ ob_start();
                 </div>
 
                 <?php if (!empty($todayClasses)): ?>
-                    <ul class="dash-list">
+                    <ul class="dash-work-list">
                         <?php foreach ($todayClasses as $slot): ?>
                             <?php
                                 $joinUrl = trim((string) ($slot['room'] ?? ''));
                                 $hasJoin = $isJoinUrl($slot);
                             ?>
-                            <li class="dash-list-item<?= $hasJoin ? ' dash-list-item--actions' : '' ?>">
-                                <span class="dash-accent" style="background:<?= portal_escape((string) $slot['accent']) ?>"></span>
-                                <div class="dash-list-body">
+                            <li class="dash-work-row<?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
+                                <div class="dash-work-row-main">
                                     <strong><?= portal_escape((string) $slot['title']) ?></strong>
                                     <span><?= portal_escape($formatTime($slot)) ?> · <?= portal_escape((string) $slot['code']) ?></span>
                                 </div>
-                                <?php if ($hasJoin): ?>
-                                    <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
-                                <?php endif; ?>
-                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $slot['slug']) ?>&section=calendar">Open</a>
+                                <div class="dash-work-row-actions">
+                                    <?php if ($hasJoin): ?>
+                                        <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
+                                    <?php endif; ?>
+                                    <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $slot['slug']) ?>&section=calendar">Open</a>
+                                </div>
                             </li>
                         <?php endforeach; ?>
                     </ul>
@@ -513,17 +635,18 @@ ob_start();
                         $hasJoin = $isJoinUrl($nextClass);
                     ?>
                     <p class="dash-empty">No classes scheduled for today. Here’s your next one:</p>
-                    <ul class="dash-list">
-                        <li class="dash-list-item<?= $hasJoin ? ' dash-list-item--actions' : '' ?>">
-                            <span class="dash-accent" style="background:<?= portal_escape((string) $nextClass['accent']) ?>"></span>
-                            <div class="dash-list-body">
+                    <ul class="dash-work-list">
+                        <li class="dash-work-row<?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
+                            <div class="dash-work-row-main">
                                 <strong><?= portal_escape((string) $nextClass['title']) ?></strong>
                                 <span><?= portal_escape((string) $nextClass['day_of_week']) ?> · <?= portal_escape($formatTime($nextClass)) ?> · <?= portal_escape((string) $nextClass['code']) ?></span>
                             </div>
-                            <?php if ($hasJoin): ?>
-                                <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
-                            <?php endif; ?>
-                            <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $nextClass['slug']) ?>&section=calendar">Open</a>
+                            <div class="dash-work-row-actions">
+                                <?php if ($hasJoin): ?>
+                                    <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
+                                <?php endif; ?>
+                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $nextClass['slug']) ?>&section=calendar">Open</a>
+                            </div>
                         </li>
                     </ul>
                 <?php else: ?>
@@ -533,197 +656,266 @@ ob_start();
 
             <?php if ($isStaff || $isAdmin): ?>
 
-            <article class="card-shell">
+            <article class="card-shell dash-work" id="to-do">
                 <div class="section-head">
                     <div>
-                        <p class="eyebrow">Lesson Q&amp;A</p>
-                        <h3 class="card-title">Student questions</h3>
-                        <p>Oldest unanswered first — start with who has waited longest.</p>
+                        <p class="eyebrow">Queue</p>
+                        <h3 class="card-title">To do</h3>
+                        <p class="dash-section-rule">Work waiting on you — mark, answer, deadlines.</p>
                     </div>
-                    <span class="chip"><?= count($pendingQuestions) ?></span>
+                    <?php if ($staffTodoTotal > 0): ?>
+                        <span class="chip chip--muted"><?= $staffTodoTotal ?></span>
+                    <?php endif; ?>
                 </div>
 
-                <?php if (empty($pendingQuestions)): ?>
-                    <p class="dash-empty">No open questions — students haven’t asked anything new.</p>
+                <?php if ($staffTodoTotal === 0): ?>
+                    <p class="dash-empty">You’re all caught up — nothing to mark and no open questions right now.</p>
                 <?php else: ?>
-                    <ul class="dash-list">
-                        <?php foreach ($pendingQuestions as $q): ?>
-                            <?php
-                                $qText = trim((string) $q['question']);
-                                if (strlen($qText) > 140) {
-                                    $qText = substr($qText, 0, 137) . '…';
-                                }
-                                $stamp = $formatVideoStamp((int) ($q['video_seconds'] ?? 0));
-                                $metaParts = [
-                                    (string) $q['student_name'],
-                                    (string) $q['lesson_title'],
-                                    (string) $q['course_title'],
-                                ];
-                                if ($stamp !== '') {
-                                    $metaParts[] = 'at ' . $stamp;
-                                }
-                            ?>
-                            <li class="dash-list-item dash-list-item--question">
-                                <span class="dash-accent" style="background:<?= portal_escape((string) $q['accent']) ?>"></span>
-                                <div class="dash-list-body">
-                                    <strong><?= portal_escape($qText) ?></strong>
-                                    <span><?= portal_escape(implode(' · ', $metaParts)) ?></span>
-                                </div>
-                                <span class="dash-wait"><?= portal_escape($waitLabel((string) $q['created_at'])) ?></span>
-                                <a class="button-secondary button--sm" href="lesson-viewer.php?item=<?= (int) $q['item_id'] ?>#q-<?= (int) $q['id'] ?>">Answer</a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </article>
+                    <div class="dash-work-panels">
 
-            <article class="card-shell">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Marking</p>
-                        <h3 class="card-title">Waiting for feedback</h3>
-                        <p>Oldest submissions first.</p>
-                    </div>
-                    <span class="chip"><?= count($pendingToMark) ?></span>
-                </div>
-
-                <?php if (empty($pendingToMark)): ?>
-                    <p class="dash-empty">You’re all caught up — no unmarked submissions.</p>
-                <?php else: ?>
-                    <ul class="dash-list">
-                        <?php foreach ($pendingToMark as $row): ?>
-                            <li class="dash-list-item dash-list-item--question">
-                                <span class="dash-accent" style="background:<?= portal_escape((string) $row['accent']) ?>"></span>
-                                <div class="dash-list-body">
-                                    <strong><?= portal_escape((string) $row['item_title']) ?></strong>
-                                    <span><?= portal_escape((string) $row['student_name']) ?> · <?= portal_escape((string) $row['course_title']) ?></span>
-                                </div>
-                                <span class="dash-wait"><?= portal_escape($waitLabel((string) $row['submitted_at'])) ?></span>
-                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">Mark</a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </article>
-
-            <?php if (!empty($teacherDeadlines)): ?>
-            <article class="card-shell">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Deadlines</p>
-                        <h3 class="card-title">Coming up in your modules</h3>
-                        <p>Useful for chasing late or missing work.</p>
-                    </div>
-                    <span class="chip"><?= count($teacherDeadlines) ?></span>
-                </div>
-                <ul class="dash-list">
-                    <?php foreach ($teacherDeadlines as $item): ?>
+                        <?php if (!empty($staffMarkQueue)): ?>
                         <?php
-                            $state = (string) $item['deadline_info']['state'];
-                            $missing = max(0, (int) $item['enrolled'] - (int) $item['submitted']);
+                            $markShown = array_slice($staffMarkQueue, 0, 4);
+                            $markHasMore = $unmarkedTotal > count($markShown);
                         ?>
-                        <li class="dash-list-item">
-                            <span class="dash-accent" style="background:<?= portal_escape($item['accent']) ?>"></span>
-                            <div class="dash-list-body">
-                                <strong><?= portal_escape($item['title']) ?></strong>
-                                <span><?= portal_escape($item['course_title']) ?> · Due <?= portal_escape($item['deadline_info']['text']) ?> · <?= (int) $item['submitted'] ?>/<?= (int) $item['enrolled'] ?> in<?= $missing > 0 ? ' · ' . $missing . ' missing' : '' ?></span>
-                            </div>
-                            <span class="dash-status dash-status--<?= portal_escape($state) ?>"><?= portal_escape($state === 'closed' ? 'Passed' : ($state === 'soon' ? 'Due soon' : 'Open')) ?></span>
-                            <a class="button-secondary button--sm" href="course.php?course=<?= urlencode($item['slug']) ?>&section=gradebook">Open</a>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
+                        <section class="dash-work-panel dash-work-panel--urgent">
+                            <header class="dash-work-panel-head">
+                                <h4>To mark</h4>
+                                <span><?= count($markShown) ?><?= $markHasMore ? ' / ' . $unmarkedTotal : '' ?></span>
+                            </header>
+                            <ul class="dash-work-list">
+                                <?php foreach ($markShown as $item): ?>
+                                    <?php
+                                        $meta = trim((string) ($item['meta'] ?? ''));
+                                        if (strlen($meta) > 100) {
+                                            $meta = substr($meta, 0, 97) . '…';
+                                        }
+                                    ?>
+                                    <li class="dash-work-row<?= !empty($item['stale']) ? ' is-stale' : '' ?>">
+                                        <div class="dash-work-row-main">
+                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
+                                            <span>
+                                                <?= portal_escape($meta) ?>
+                                                <?php if (trim((string) ($item['time'] ?? '')) !== ''): ?>
+                                                    · <em class="dash-work-age<?= !empty($item['stale']) ? ' is-stale' : '' ?>"><?= portal_escape((string) $item['time']) ?></em>
+                                                <?php endif; ?>
+                                            </span>
+                                        </div>
+                                        <a class="button button--sm" href="<?= portal_escape((string) $item['href']) ?>">Mark</a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <?php if ($markHasMore): ?>
+                                <p class="dash-queue-more"><a href="grades.php">See all unmarked</a></p>
+                            <?php endif; ?>
+                        </section>
+                        <?php endif; ?>
+
+                        <?php if (!empty($staffQuestionQueue)): ?>
+                        <?php
+                            $qShown = array_slice($staffQuestionQueue, 0, 4);
+                            $qHasMore = $openQuestionTotal > count($qShown);
+                        ?>
+                        <section class="dash-work-panel">
+                            <header class="dash-work-panel-head">
+                                <h4>Questions waiting</h4>
+                                <span><?= count($qShown) ?><?= $qHasMore ? ' / ' . $openQuestionTotal : '' ?></span>
+                            </header>
+                            <ul class="dash-work-list">
+                                <?php foreach ($qShown as $item): ?>
+                                    <?php
+                                        $meta = trim((string) ($item['meta'] ?? ''));
+                                        if (strlen($meta) > 100) {
+                                            $meta = substr($meta, 0, 97) . '…';
+                                        }
+                                    ?>
+                                    <li class="dash-work-row<?= !empty($item['stale']) ? ' is-stale' : '' ?>">
+                                        <div class="dash-work-row-main">
+                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
+                                            <span>
+                                                <?= portal_escape($meta) ?>
+                                                <?php if (trim((string) ($item['time'] ?? '')) !== ''): ?>
+                                                    · <em class="dash-work-age<?= !empty($item['stale']) ? ' is-stale' : '' ?>"><?= portal_escape((string) $item['time']) ?></em>
+                                                <?php endif; ?>
+                                            </span>
+                                        </div>
+                                        <a class="button button--sm" href="<?= portal_escape((string) $item['href']) ?>">Answer</a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <?php if ($qHasMore): ?>
+                                <p class="dash-queue-more"><a href="courses.php">See all modules</a></p>
+                            <?php endif; ?>
+                        </section>
+                        <?php endif; ?>
+
+                        <?php if (!empty($staffDeadlineQueue)): ?>
+                        <?php
+                            $deadlineShown = array_slice($staffDeadlineQueue, 0, 4);
+                            $deadlineHasMore = count($staffDeadlineQueue) > count($deadlineShown);
+                        ?>
+                        <section class="dash-work-panel dash-work-panel--soft">
+                            <header class="dash-work-panel-head">
+                                <h4>Upcoming deadlines</h4>
+                                <span><?= count($deadlineShown) ?><?= $deadlineHasMore ? '+' : '' ?></span>
+                            </header>
+                            <ul class="dash-work-list">
+                                <?php foreach ($deadlineShown as $item): ?>
+                                    <?php
+                                        $meta = trim((string) ($item['meta'] ?? ''));
+                                        $state = (string) ($item['state'] ?? 'open');
+                                        $statusLabel = $state === 'closed' ? 'Past due' : ($state === 'soon' ? 'Due soon' : 'Upcoming');
+                                    ?>
+                                    <li class="dash-work-row">
+                                        <div class="dash-work-row-main">
+                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
+                                            <span>
+                                                <?= $meta !== '' ? portal_escape($meta) . ' · ' : '' ?>
+                                                <?= portal_escape((string) $item['time']) ?>
+                                                · <em class="dash-work-age<?= $state === 'closed' || $state === 'soon' ? ' is-urgent' : '' ?>"><?= portal_escape($statusLabel) ?></em>
+                                            </span>
+                                        </div>
+                                        <a class="button-secondary button--sm" href="<?= portal_escape((string) $item['href']) ?>">Open</a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                        </section>
+                        <?php endif; ?>
+
+                    </div>
+                <?php endif; ?>
             </article>
-            <?php endif; ?>
 
             <?php else: ?>
 
-            <article class="card-shell">
+            <article class="card-shell dash-work" id="priorities">
                 <div class="section-head">
                     <div>
-                        <p class="eyebrow">Deadlines</p>
-                        <h3 class="card-title">Coming up</h3>
+                        <p class="eyebrow">Queue</p>
+                        <h3 class="card-title">Your priorities</h3>
+                        <p class="dash-section-rule">Work waiting on you — deadlines and returned grades.</p>
                     </div>
-                    <span class="chip"><?= count($upcomingDeadlines) ?></span>
+                    <?php if ($studentPriorityTotal > 0): ?>
+                        <span class="chip chip--muted"><?= $studentPriorityTotal ?></span>
+                    <?php endif; ?>
                 </div>
 
-                <?php if (empty($upcomingDeadlines)): ?>
-                    <p class="dash-empty">No upcoming deadlines in the next few weeks. <a href="courses.php">Check your courses</a> for new work.</p>
+                <?php if (!$studentHasPriorities): ?>
+                    <p class="dash-empty">Nothing urgent right now — check your courses for new work, or pick up a lesson below.</p>
                 <?php else: ?>
-                    <ul class="dash-list">
-                        <?php foreach ($upcomingDeadlines as $item): ?>
-                            <?php
-                                $state = (string) $item['deadline_info']['state'];
-                                $statusLabel = 'Open';
-                                if ($item['marked']) {
-                                    $statusLabel = 'Marked';
-                                } elseif ($item['submitted']) {
-                                    $statusLabel = 'Submitted';
-                                } elseif ($state === 'closed') {
-                                    $statusLabel = 'Overdue';
-                                } elseif ($state === 'soon') {
-                                    $statusLabel = 'Due soon';
-                                }
-                            ?>
-                            <li class="dash-list-item">
-                                <span class="dash-accent" style="background:<?= portal_escape($item['accent']) ?>"></span>
-                                <div class="dash-list-body">
-                                    <strong><?= portal_escape($item['title']) ?></strong>
-                                    <span><?= portal_escape($item['course_title']) ?> · Due <?= portal_escape($item['deadline_info']['text']) ?></span>
-                                </div>
-                                <span class="dash-status dash-status--<?= portal_escape($item['marked'] ? 'marked' : ($item['submitted'] ? 'submitted' : $state)) ?>"><?= portal_escape($statusLabel) ?></span>
-                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode($item['slug']) ?>&section=content">Open</a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </article>
+                    <div class="dash-work-panels">
 
-            <article class="card-shell">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Feedback</p>
-                        <h3 class="card-title">Returned work</h3>
+                        <?php if (!empty($studentDeadlineQueue)): ?>
+                        <?php
+                            $studentDeadlineShown = array_slice($studentDeadlineQueue, 0, 4);
+                            $studentDeadlineMore = count($studentDeadlineQueue) > count($studentDeadlineShown);
+                        ?>
+                        <section class="dash-work-panel dash-work-panel--urgent">
+                            <header class="dash-work-panel-head">
+                                <h4>Deadlines</h4>
+                                <span><?= count($studentDeadlineShown) ?><?= $studentDeadlineMore ? '+' : '' ?></span>
+                            </header>
+                            <ul class="dash-work-list">
+                                <?php foreach ($studentDeadlineShown as $item): ?>
+                                    <?php
+                                        $state = (string) $item['deadline_info']['state'];
+                                        $submitted = !empty($item['submitted']);
+                                        if ($submitted) {
+                                            $statusLabel = 'Submitted';
+                                            $ageClass = '';
+                                        } elseif ($state === 'closed') {
+                                            $statusLabel = 'Overdue';
+                                            $ageClass = ' is-stale';
+                                        } elseif ($state === 'soon') {
+                                            $statusLabel = 'Due soon';
+                                            $ageClass = ' is-urgent';
+                                        } else {
+                                            $statusLabel = 'Upcoming';
+                                            $ageClass = '';
+                                        }
+                                    ?>
+                                    <li class="dash-work-row<?= !$submitted && $state === 'closed' ? ' is-stale' : '' ?>">
+                                        <div class="dash-work-row-main">
+                                            <strong><?= portal_escape($item['title']) ?></strong>
+                                            <span>
+                                                <?= portal_escape($item['course_title']) ?>
+                                                · Due <?= portal_escape($item['deadline_info']['text']) ?>
+                                                · <em class="dash-work-age<?= $ageClass ?>"><?= portal_escape($statusLabel) ?></em>
+                                            </span>
+                                        </div>
+                                        <a class="<?= $submitted ? 'button-secondary' : 'button' ?> button--sm" href="course.php?course=<?= urlencode($item['slug']) ?>&section=content"><?= $submitted ? 'View' : 'Open' ?></a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <?php if ($studentDeadlineMore): ?>
+                                <p class="dash-queue-more"><a href="courses.php">See all modules</a></p>
+                            <?php endif; ?>
+                        </section>
+                        <?php endif; ?>
+
+                        <?php if (!empty($returnedGrades)): ?>
+                        <?php
+                            $returnedShown = array_slice($returnedGrades, 0, 4);
+                            $returnedMore = count($returnedGrades) > count($returnedShown);
+                        ?>
+                        <section class="dash-work-panel<?= empty($studentDeadlineQueue) ? ' dash-work-panel--urgent' : '' ?>">
+                            <header class="dash-work-panel-head">
+                                <h4>Returned grades</h4>
+                                <span><?= count($returnedShown) ?><?= $returnedMore ? '+' : '' ?></span>
+                            </header>
+                            <ul class="dash-work-list">
+                                <?php foreach ($returnedShown as $row): ?>
+                                    <li class="dash-work-row">
+                                        <div class="dash-work-row-main">
+                                            <strong><?= portal_escape((string) $row['item_title']) ?></strong>
+                                            <span>
+                                                <?= portal_escape((string) $row['course_title']) ?>
+                                                · Marked <?= portal_escape($relativeWhen((string) $row['marked_at'])) ?>
+                                                <?php if ($row['score'] !== null && $row['score'] !== ''): ?>
+                                                    · <em class="dash-work-age"><?= portal_escape((string) $row['score']) ?>%</em>
+                                                <?php endif; ?>
+                                            </span>
+                                        </div>
+                                        <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">View</a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                        </section>
+                        <?php endif; ?>
+
+                        <?php if ($unreadAnnouncementCount > 0): ?>
+                        <section class="dash-work-panel dash-work-panel--soft">
+                            <header class="dash-work-panel-head">
+                                <h4>Unread announcements</h4>
+                                <span><?= $unreadAnnouncementCount ?></span>
+                            </header>
+                            <p class="dash-queue-teaser">
+                                <?= $unreadAnnouncementCount === 1
+                                    ? 'You have 1 unread module announcement.'
+                                    : 'You have ' . $unreadAnnouncementCount . ' unread module announcements.' ?>
+                                <a href="communication.php#module-announcements">Read now</a>
+                            </p>
+                        </section>
+                        <?php endif; ?>
+
                     </div>
-                    <span class="chip"><?= count($returnedGrades) ?></span>
-                </div>
-
-                <?php if (empty($returnedGrades)): ?>
-                    <p class="dash-empty">No marked work yet — submitted assignments will appear here when graded.</p>
-                <?php else: ?>
-                    <ul class="dash-list">
-                        <?php foreach ($returnedGrades as $row): ?>
-                            <li class="dash-list-item">
-                                <span class="dash-accent" style="background:<?= portal_escape((string) $row['accent']) ?>"></span>
-                                <div class="dash-list-body">
-                                    <strong><?= portal_escape((string) $row['item_title']) ?></strong>
-                                    <span><?= portal_escape((string) $row['course_title']) ?> · Marked <?= portal_escape($relativeWhen((string) $row['marked_at'])) ?></span>
-                                </div>
-                                <span class="dash-status dash-status--marked">
-                                    <?= $row['score'] !== null && $row['score'] !== '' ? portal_escape((string) $row['score']) . '%' : 'Marked' ?>
-                                </span>
-                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">View</a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
                 <?php endif; ?>
             </article>
 
             <?php if (!empty($continueWatching)): ?>
-            <article class="card-shell">
+            <article class="card-shell dash-work">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Lessons</p>
                         <h3 class="card-title">Continue watching</h3>
                     </div>
-                    <span class="chip"><?= count($continueWatching) ?></span>
+                    <span class="chip chip--muted"><?= count($continueWatching) ?></span>
                 </div>
-                <ul class="dash-list">
-                    <?php foreach ($continueWatching as $row): ?>
+                <ul class="dash-work-list">
+                    <?php foreach (array_slice($continueWatching, 0, 4) as $row): ?>
                         <?php $stamp = $formatVideoStamp((int) $row['position_seconds']); ?>
-                        <li class="dash-list-item dash-list-item--question">
-                            <span class="dash-accent" style="background:<?= portal_escape((string) $row['accent']) ?>"></span>
-                            <div class="dash-list-body">
+                        <li class="dash-work-row">
+                            <div class="dash-work-row-main">
                                 <strong><?= portal_escape((string) $row['lesson_title']) ?></strong>
                                 <span><?= portal_escape((string) $row['course_title']) ?><?= $stamp !== '' ? ' · Resume at ' . portal_escape($stamp) : '' ?> · <?= portal_escape($relativeWhen((string) $row['updated_at'])) ?></span>
                             </div>
@@ -740,20 +932,70 @@ ob_start();
 
         <aside class="dash-side stack">
 
+            <?php if (!empty($recentAnswers) || $unreadNotifCount > 0 || !($isStaff || $isAdmin)): ?>
+            <article class="card-shell" id="recent-alerts">
+                <div class="section-head">
+                    <div>
+                        <p class="eyebrow">Inbox</p>
+                        <h3 class="card-title">Notifications</h3>
+                        <p class="dash-section-rule">Updates others sent you — not your work queue.</p>
+                    </div>
+                    <a class="inline-action" href="notifications.php">Open all</a>
+                </div>
+
+                <?php if (empty($recentAnswers)): ?>
+                    <p class="dash-empty">No notifications yet. Replies and new announcements will show here.</p>
+                <?php else: ?>
+                <ul class="dash-announce-list">
+                    <?php foreach (array_slice($recentAnswers, 0, 5) as $n): ?>
+                        <?php
+                            $link = trim((string) ($n['link'] ?? ''));
+                            $href = $link !== '' ? $link : 'notifications.php';
+                            $unread = trim((string) ($n['read_at'] ?? '')) === '';
+                            $typeTag = match ((string) ($n['type'] ?? '')) {
+                                'discussion_reply', 'discussion' => 'Discussion',
+                                'lesson_answer', 'qa' => 'Q&A',
+                                'announcement', 'announcements' => 'Announcement',
+                                'grade', 'grades' => 'Grade',
+                                default => '',
+                            };
+                        ?>
+                        <li>
+                            <a href="<?= portal_escape($href) ?>" class="<?= $unread ? 'is-unread' : '' ?>">
+                                <?php if ($unread): ?>
+                                    <span class="dash-announce-tag">New</span>
+                                <?php endif; ?>
+                                <?php if ($typeTag !== ''): ?>
+                                    <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape($typeTag) ?></span>
+                                <?php endif; ?>
+                                <strong><?= portal_escape((string) $n['title']) ?></strong>
+                                <?php if (trim((string) ($n['body'] ?? '')) !== ''): ?>
+                                    <span><?= portal_escape(substr((string) $n['body'], 0, 100)) ?></span>
+                                <?php endif; ?>
+                                <span><?= portal_escape($relativeWhen((string) $n['created_at'])) ?></span>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <?php endif; ?>
+            </article>
+            <?php endif; ?>
+
             <?php if ($isStaff || $isAdmin): ?>
             <article class="card-shell">
                 <div class="section-head">
                     <div>
-                        <p class="eyebrow">Workload</p>
-                        <h3 class="card-title">By module</h3>
+                        <p class="eyebrow">Shortcuts</p>
+                        <h3 class="card-title">Your modules</h3>
                     </div>
+                    <a class="inline-action" href="courses.php">All</a>
                 </div>
 
-                <?php if (empty($moduleWorkload)): ?>
+                <?php if (empty($moduleWorkload) && empty($catalog)): ?>
                     <p class="dash-empty">No modules assigned yet.</p>
-                <?php else: ?>
+                <?php elseif (!empty($moduleWorkload)): ?>
                     <ul class="dash-workload-list">
-                        <?php foreach ($moduleWorkload as $mod): ?>
+                        <?php foreach (array_slice($moduleWorkload, 0, 8) as $mod): ?>
                             <?php
                                 $qCount = (int) $mod['open_questions'];
                                 $mCount = (int) $mod['unmarked'];
@@ -766,54 +1008,38 @@ ob_start();
                                         <strong><?= portal_escape((string) $mod['title']) ?></strong>
                                         <small><?= portal_escape((string) $mod['code']) ?></small>
                                     </span>
+                                    <?php if ($busy > 0): ?>
                                     <span class="dash-workload-counts">
                                         <span title="Open questions"><?= $qCount ?> Q</span>
                                         <span title="Unmarked submissions"><?= $mCount ?> mark</span>
+                                    </span>
+                                    <?php endif; ?>
+                                </a>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php else: ?>
+                    <ul class="dash-course-list">
+                        <?php foreach (array_slice($catalog, 0, 6) as $course): ?>
+                            <li>
+                                <a class="dash-course-link" href="course.php?course=<?= urlencode((string) $course['slug']) ?>">
+                                    <span class="dash-accent" style="background:<?= portal_escape((string) $course['accent']) ?>"></span>
+                                    <span>
+                                        <strong><?= portal_escape((string) $course['title']) ?></strong>
+                                        <small><?= portal_escape((string) $course['code']) ?></small>
                                     </span>
                                 </a>
                             </li>
                         <?php endforeach; ?>
                     </ul>
                 <?php endif; ?>
+                <p class="dash-empty" style="margin-top:12px;margin-bottom:0;">
+                    <a href="timetable.php">Timetable</a>
+                    ·
+                    <a href="communication.php">Communication</a>
+                </p>
             </article>
             <?php else: ?>
-            <article class="card-shell">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">For you</p>
-                        <h3 class="card-title">Recent alerts</h3>
-                    </div>
-                    <a class="inline-action" href="communication.php#for-you">Inbox</a>
-                </div>
-
-                <?php if (empty($recentAnswers)): ?>
-                    <p class="dash-empty">No personal alerts yet. Lesson replies and new module announcements will show here.</p>
-                <?php else: ?>
-                    <ul class="dash-announce-list">
-                        <?php foreach ($recentAnswers as $n): ?>
-                            <?php
-                                $link = trim((string) ($n['link'] ?? ''));
-                                $href = $link !== '' ? $link : 'communication.php#for-you';
-                                $unread = trim((string) ($n['read_at'] ?? '')) === '';
-                            ?>
-                            <li>
-                                <a href="<?= portal_escape($href) ?>" class="<?= $unread ? 'is-unread' : '' ?>">
-                                    <?php if ($unread): ?>
-                                        <span class="dash-announce-tag">New</span>
-                                    <?php endif; ?>
-                                    <strong><?= portal_escape((string) $n['title']) ?></strong>
-                                    <?php if (trim((string) ($n['body'] ?? '')) !== ''): ?>
-                                        <span><?= portal_escape(substr((string) $n['body'], 0, 100)) ?></span>
-                                    <?php endif; ?>
-                                    <span><?= portal_escape($relativeWhen((string) $n['created_at'])) ?></span>
-                                </a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </article>
-            <?php endif; ?>
-
             <article class="card-shell">
                 <div class="section-head">
                     <div>
@@ -866,7 +1092,9 @@ ob_start();
                 </ul>
             </article>
             <?php endif; ?>
+            <?php endif; ?>
 
+            <?php if (!$isStaff && !$isAdmin): ?>
             <article class="card-shell">
                 <div class="section-head">
                     <div>
@@ -901,6 +1129,7 @@ ob_start();
                     </ul>
                 <?php endif; ?>
             </article>
+            <?php endif; ?>
 
         </aside>
     </div>

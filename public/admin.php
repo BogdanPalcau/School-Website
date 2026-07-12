@@ -23,8 +23,12 @@ if ($enrollTargetId > 0 && !isset($_GET['section'])) {
 
 $editCourseId      = (int) ($_GET['edit'] ?? 0);
 $duplicateCourseId = (int) ($_GET['duplicate'] ?? 0);
+$editUserId        = (int) ($_GET['edit_user'] ?? 0);
 if ($editCourseId > 0 || $duplicateCourseId > 0) {
     $section = 'courses';
+}
+if ($editUserId > 0) {
+    $section = 'users';
 }
 
 $redirectSection = static function (string $targetSection, array $extra = []) use ($section): void {
@@ -43,24 +47,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'create_user') {
         $username  = trim((string) ($_POST['username'] ?? ''));
-        $email     = trim((string) ($_POST['email'] ?? ''));
+        $email     = strtolower(trim((string) ($_POST['email'] ?? '')));
         $name      = trim((string) ($_POST['name'] ?? ''));
         $year      = trim((string) ($_POST['year'] ?? 'Year 11'));
         $programme = trim((string) ($_POST['programme'] ?? 'General'));
         $password  = (string) ($_POST['password'] ?? '');
-        $newRole   = $isOwner ? (string) ($_POST['role'] ?? 'student') : 'student';
+        $newRole   = (string) ($_POST['role'] ?? 'student');
 
-        if (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+        if ($isOwner) {
+            if (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+                $newRole = 'student';
+            }
+        } elseif (!in_array($newRole, ['teacher', 'student'], true)) {
             $newRole = 'student';
         }
 
         $parts    = preg_split('/\s+/', $name) ?: [];
         $initials = strtoupper(substr($parts[0] ?? 'S', 0, 1) . substr($parts[1] ?? 'T', 0, 1));
+        $passError = portal_password_validate($password);
 
         if ($username === '' || $email === '' || $name === '' || $password === '') {
             $_SESSION['admin_flash'] = ['error', 'All fields are required.'];
-        } elseif (strlen($password) < 6) {
-            $_SESSION['admin_flash'] = ['error', 'Password must be at least 6 characters.'];
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['admin_flash'] = ['error', 'Enter a valid email address.'];
+        } elseif ($passError !== '') {
+            $_SESSION['admin_flash'] = ['error', $passError];
         } else {
             try {
                 $pdo->prepare("
@@ -77,6 +88,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['admin_flash'] = ['error', $msg];
             }
         }
+        $redirectSection('users');
+    }
+
+    if ($action === 'update_user') {
+        $targetId  = (int) ($_POST['user_id'] ?? 0);
+        $target    = portal_find_user_by_id($targetId);
+        $username  = trim((string) ($_POST['username'] ?? ''));
+        $email     = strtolower(trim((string) ($_POST['email'] ?? '')));
+        $name      = trim((string) ($_POST['name'] ?? ''));
+        $year      = trim((string) ($_POST['year'] ?? 'Year 11'));
+        $programme = trim((string) ($_POST['programme'] ?? 'General'));
+        $newRole   = (string) ($_POST['role'] ?? ($target['role'] ?? 'student'));
+        $newPass   = (string) ($_POST['new_password'] ?? '');
+        $confirmPass = (string) ($_POST['confirm_password'] ?? '');
+
+        $canManage = $target !== null
+            && (int) $target['id'] !== (int) $currentUser['id']
+            && $target['role'] !== 'owner'
+            && ($isOwner || !in_array($target['role'], ['admin', 'owner'], true));
+
+        if (!$canManage) {
+            $_SESSION['admin_flash'] = ['error', 'You cannot edit that account.'];
+            $redirectSection('users');
+        }
+
+        if ($isOwner) {
+            if (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+                $newRole = (string) $target['role'];
+            }
+        } else {
+            // Admins may only keep/switch student ↔ teacher
+            if (!in_array($newRole, ['teacher', 'student'], true)) {
+                $newRole = in_array($target['role'], ['teacher', 'student'], true)
+                    ? (string) $target['role']
+                    : 'student';
+            }
+        }
+
+        $parts    = preg_split('/\s+/', $name) ?: [];
+        $initials = strtoupper(substr($parts[0] ?? 'S', 0, 1) . substr($parts[1] ?? 'T', 0, 1));
+
+        if ($username === '' || $email === '' || $name === '') {
+            $_SESSION['admin_flash'] = ['error', 'Name, username, and email are required.'];
+            $redirectSection('users', ['edit_user' => $targetId]);
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['admin_flash'] = ['error', 'Enter a valid email address.'];
+            $redirectSection('users', ['edit_user' => $targetId]);
+        }
+
+        $dup = $pdo->prepare('SELECT id FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND id != ? LIMIT 1');
+        $dup->execute([$email, strtolower($username), $targetId]);
+        if ($dup->fetch()) {
+            $_SESSION['admin_flash'] = ['error', 'That username or email is already used by another account.'];
+            $redirectSection('users', ['edit_user' => $targetId]);
+        }
+
+        $passwordChanged = false;
+        if ($newPass !== '' || $confirmPass !== '') {
+            $passError = portal_password_validate($newPass);
+            if ($passError !== '') {
+                $_SESSION['admin_flash'] = ['error', $passError];
+                $redirectSection('users', ['edit_user' => $targetId]);
+            }
+            if ($newPass !== $confirmPass) {
+                $_SESSION['admin_flash'] = ['error', 'New passwords do not match.'];
+                $redirectSection('users', ['edit_user' => $targetId]);
+            }
+            $pdo->prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+                ->execute([password_hash($newPass, PASSWORD_DEFAULT), $targetId]);
+            $passwordChanged = true;
+        }
+
+        $pdo->prepare('UPDATE users SET username = ?, email = ?, name = ?, year = ?, programme = ?, initials = ?, role = ? WHERE id = ?')
+            ->execute([$username, $email, $name, $year, $programme, $initials, $newRole, $targetId]);
+
+        $notes = [];
+        if ($passwordChanged) {
+            $notes[] = 'password reset';
+        }
+        if ($newRole !== (string) $target['role']) {
+            $notes[] = 'role → ' . $newRole;
+        }
+        portal_log_security_event(
+            'user_updated',
+            'medium',
+            'Updated account: ' . substr($name, 0, 80) . ($notes !== [] ? ' (' . implode(', ', $notes) . ')' : ''),
+            (int) $currentUser['id']
+        );
+
+        $_SESSION['admin_flash'] = ['success', $passwordChanged
+            ? "{$name}'s account and password were updated."
+            : "{$name}'s account was updated."];
         $redirectSection('users');
     }
 
@@ -105,19 +209,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $redirectSection('users');
     }
 
-    if ($action === 'change_role' && $isOwner) {
+    if ($action === 'change_role') {
         $targetId = (int) ($_POST['user_id'] ?? 0);
         $newRole  = (string) ($_POST['role'] ?? '');
         $target   = portal_find_user_by_id($targetId);
 
-        if (!$target) {
-            $_SESSION['admin_flash'] = ['error', 'User not found.'];
-        } elseif ($targetId === (int) $currentUser['id']) {
-            $_SESSION['admin_flash'] = ['error', 'You cannot change your own role.'];
-        } elseif ($target['role'] === 'owner') {
-            $_SESSION['admin_flash'] = ['error', 'Owner role cannot be reassigned.'];
-        } elseif (!in_array($newRole, ['admin', 'teacher', 'student'], true)) {
+        $canChange = $target !== null
+            && $targetId !== (int) $currentUser['id']
+            && $target['role'] !== 'owner'
+            && ($isOwner || !in_array($target['role'], ['admin', 'owner'], true));
+
+        if (!$canChange) {
+            $_SESSION['admin_flash'] = ['error', 'You cannot change that role.'];
+        } elseif ($isOwner && !in_array($newRole, ['admin', 'teacher', 'student'], true)) {
             $_SESSION['admin_flash'] = ['error', 'Invalid role.'];
+        } elseif (!$isOwner && !in_array($newRole, ['teacher', 'student'], true)) {
+            $_SESSION['admin_flash'] = ['error', 'Admins can only set Student or Teacher roles.'];
         } else {
             $pdo->prepare('UPDATE users SET role = ? WHERE id = ?')->execute([$newRole, $targetId]);
             portal_log_security_event(
@@ -473,9 +580,12 @@ $enrollTarget       = $enrollTargetId > 0 ? portal_find_user_by_id($enrollTarget
 $enrolledIds        = $enrollTarget ? portal_enrolled_course_ids($enrollTargetId) : [];
 $editCourse         = $editCourseId > 0 ? portal_find_course_by_id($editCourseId) : null;
 $duplicateCourse    = $duplicateCourseId > 0 ? portal_find_course_by_id($duplicateCourseId) : null;
+$editUser           = $editUserId > 0 ? portal_find_user_by_id($editUserId) : null;
+$yearGroupOptions   = portal_year_group_options();
 
 $userQuery  = trim((string) ($_GET['user_q'] ?? ''));
 $userRole   = (string) ($_GET['user_role'] ?? 'all');
+$userYear   = (string) ($_GET['user_year'] ?? 'all');
 $courseQuery = trim((string) ($_GET['course_q'] ?? ''));
 $courseStatus = (string) ($_GET['course_status'] ?? 'all');
 $courseYear = (string) ($_GET['course_year'] ?? 'all');
@@ -483,8 +593,11 @@ $enrollCourseQ = trim((string) ($_GET['enroll_course_q'] ?? ''));
 
 $filteredUsers = array_values(array_filter(
     $users,
-    static function (array $u) use ($userQuery, $userRole): bool {
+    static function (array $u) use ($userQuery, $userRole, $userYear): bool {
         if ($userRole !== 'all' && $u['role'] !== $userRole) {
+            return false;
+        }
+        if ($userYear !== 'all' && (string) $u['year'] !== $userYear) {
             return false;
         }
         if ($userQuery === '') {
@@ -614,7 +727,7 @@ $page_title       = 'Admin | ' . portal_school_name();
 $active_page      = 'admin';
 $page_eyebrow     = 'Administration';
 $page_heading     = 'Admin';
-$page_description = 'Manage users, courses, enrolments, integrity settings, and security for ' . portal_school_short_name() . '.';
+$page_description = '';
 
 ob_start();
 ?>
@@ -664,15 +777,15 @@ ob_start();
             <!-- Dashboard -->
             <section id="admin-section-dashboard" class="admin-section<?= $section === 'dashboard' ? ' is-active' : '' ?>">
                 <div class="admin-stat-grid">
-                    <article class="admin-stat-card">
+                    <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Total users</p>
                         <strong class="admin-stat-value"><?= $stats['total_users'] ?></strong>
                     </article>
-                    <article class="admin-stat-card">
+                    <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Students</p>
                         <strong class="admin-stat-value"><?= $stats['students'] ?></strong>
                     </article>
-                    <article class="admin-stat-card">
+                    <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Teachers</p>
                         <strong class="admin-stat-value"><?= $stats['teachers'] ?></strong>
                     </article>
@@ -684,7 +797,7 @@ ob_start();
                         <p class="admin-stat-label">Admins</p>
                         <strong class="admin-stat-value"><?= $stats['admins'] + $stats['owners'] ?></strong>
                     </article>
-                    <article class="admin-stat-card">
+                    <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Total courses</p>
                         <strong class="admin-stat-value"><?= $stats['total_courses'] ?></strong>
                     </article>
@@ -696,7 +809,7 @@ ob_start();
                         <p class="admin-stat-label">Archived</p>
                         <strong class="admin-stat-value"><?= $stats['archived_courses'] ?></strong>
                     </article>
-                    <article class="admin-stat-card">
+                    <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Enrolments</p>
                         <strong class="admin-stat-value"><?= $stats['total_enrollments'] ?></strong>
                     </article>
@@ -723,13 +836,14 @@ ob_start();
                     </article>
 
                     <article class="admin-card admin-card--role-guide">
-                        <header class="admin-card-header">
-                            <div>
-                                <p class="eyebrow">Role guide</p>
-                                <h3>Permissions overview</h3>
-                                <p class="admin-card-lead">Understand the difference between system roles and course-specific assignments.</p>
-                            </div>
-                        </header>
+                        <details class="admin-role-guide-details">
+                            <summary class="admin-role-guide-summary">
+                                <div>
+                                    <p class="eyebrow">Role guide</p>
+                                    <h3>Permissions overview</h3>
+                                    <p class="admin-card-lead">System roles and course assignments.</p>
+                                </div>
+                            </summary>
 
                         <div class="admin-role-guide-section">
                             <h4 class="admin-role-guide-heading">System roles</h4>
@@ -768,6 +882,7 @@ ob_start();
                         </div>
 
                         <p class="admin-role-guide-note">Course assignments are set per module. A teacher can be a Course Supervisor on one module and a Course Teacher on another.</p>
+                        </details>
                     </article>
                 </div>
             </section>
@@ -799,10 +914,9 @@ ob_start();
                         <label class="admin-field">
                             <span>Year group</span>
                             <select name="year">
-                                <option>Year 10</option>
-                                <option selected>Year 11</option>
-                                <option>Year 12</option>
-                                <option>Year 13</option>
+                                <?php foreach ($yearGroupOptions as $yr): ?>
+                                <option value="<?= portal_escape($yr) ?>"<?= $yr === 'Year 11' ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                                <?php endforeach; ?>
                             </select>
                         </label>
                         <label class="admin-field">
@@ -811,7 +925,7 @@ ob_start();
                         </label>
                         <label class="admin-field">
                             <span>Password</span>
-                            <input type="password" name="password" required minlength="6" placeholder="Min. 6 characters">
+                            <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters, letter + number">
                         </label>
                         <?php if ($isOwner): ?>
                         <label class="admin-field">
@@ -820,6 +934,14 @@ ob_start();
                                 <option value="student" selected>Student</option>
                                 <option value="teacher">Teacher</option>
                                 <option value="admin">Admin</option>
+                            </select>
+                        </label>
+                        <?php else: ?>
+                        <label class="admin-field">
+                            <span>Role</span>
+                            <select name="role">
+                                <option value="student" selected>Student</option>
+                                <option value="teacher">Teacher</option>
                             </select>
                         </label>
                         <?php endif; ?>
@@ -854,6 +976,15 @@ ob_start();
                                 <option value="student"<?= $userRole === 'student' ? ' selected' : '' ?>>Student</option>
                             </select>
                         </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Year</span>
+                            <select name="user_year" onchange="this.form.submit()">
+                                <option value="all"<?= $userYear === 'all' ? ' selected' : '' ?>>All years</option>
+                                <?php foreach ($yearGroupOptions as $yr): ?>
+                                <option value="<?= portal_escape($yr) ?>"<?= $userYear === $yr ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
                         <button type="submit" class="admin-btn admin-btn--secondary">Search</button>
                     </form>
 
@@ -872,12 +1003,22 @@ ob_start();
                             </thead>
                             <tbody>
                                 <?php foreach ($filteredUsers as $u): ?>
-                                <?php $isSelf = (int) $u['id'] === (int) $currentUser['id']; ?>
+                                <?php
+                                    $isSelf = (int) $u['id'] === (int) $currentUser['id'];
+                                    $canManageUser = !$isSelf
+                                        && $u['role'] !== 'owner'
+                                        && ($isOwner || !in_array($u['role'], ['admin', 'owner'], true));
+                                    $canChangeRole = $canManageUser
+                                        && ($isOwner || in_array($u['role'], ['student', 'teacher'], true));
+                                ?>
                                 <tr>
                                     <td>
                                         <div class="admin-table-user">
                                             <div class="admin-avatar admin-avatar--sm"><?= portal_escape($u['initials']) ?></div>
-                                            <strong><?= portal_escape($u['name']) ?></strong>
+                                            <div>
+                                                <strong><?= portal_escape($u['name']) ?></strong>
+                                                <span class="admin-table-meta"><?= portal_escape((string) $u['programme']) ?></span>
+                                            </div>
                                         </div>
                                     </td>
                                     <td><?= portal_escape($u['username']) ?></td>
@@ -887,8 +1028,11 @@ ob_start();
                                     <td><?= (int) ($enrollmentCounts[(int) $u['id']] ?? 0) ?></td>
                                     <td>
                                         <div class="admin-table-actions">
+                                            <?php if ($canManageUser): ?>
+                                            <a class="admin-btn admin-btn--primary admin-btn--sm" href="<?= portal_escape($adminUrl('users', ['edit_user' => (int) $u['id']])) ?>">Edit</a>
+                                            <?php endif; ?>
                                             <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('enrollments', ['enroll' => (int) $u['id']])) ?>">Enrolments</a>
-                                            <?php if ($isOwner && !$isSelf && $u['role'] !== 'owner'): ?>
+                                            <?php if ($canChangeRole): ?>
                                             <form method="post" action="<?= portal_escape($adminUrl('users')) ?>" class="admin-inline-form">
                                                 <?= portal_csrf_field() ?>
                                                 <input type="hidden" name="action" value="change_role">
@@ -896,11 +1040,13 @@ ob_start();
                                                 <select name="role" class="admin-role-select" onchange="this.form.submit()" title="Change role">
                                                     <option value="student"<?= $u['role'] === 'student' ? ' selected' : '' ?>>Student</option>
                                                     <option value="teacher"<?= $u['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
+                                                    <?php if ($isOwner): ?>
                                                     <option value="admin"<?= $u['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
+                                                    <?php endif; ?>
                                                 </select>
                                             </form>
                                             <?php endif; ?>
-                                            <?php if (!$isSelf && $u['role'] !== 'owner' && ($isOwner || $u['role'] === 'student')): ?>
+                                            <?php if ($canManageUser && ($isOwner || $u['role'] === 'student' || $u['role'] === 'teacher')): ?>
                                             <form method="post" action="<?= portal_escape($adminUrl('users')) ?>" class="admin-inline-form"
                                                   onsubmit="return confirm('Delete account for <?= portal_escape($u['name']) ?>?')">
                                                 <?= portal_csrf_field() ?>
@@ -1522,6 +1668,80 @@ ob_start();
         </div>
     </div>
 </div>
+
+<?php
+$canEditOpenedUser = $editUser !== null
+    && (int) $editUser['id'] !== (int) $currentUser['id']
+    && $editUser['role'] !== 'owner'
+    && ($isOwner || !in_array($editUser['role'], ['admin', 'owner'], true));
+?>
+<?php if ($canEditOpenedUser): ?>
+<dialog class="admin-panel" id="edit-user-panel" open>
+    <form method="post" action="<?= portal_escape($adminUrl('users')) ?>" class="admin-panel-form">
+        <?= portal_csrf_field() ?>
+        <input type="hidden" name="action" value="update_user">
+        <input type="hidden" name="user_id" value="<?= (int) $editUser['id'] ?>">
+        <header class="admin-panel-header">
+            <h3>Edit <?= portal_escape((string) $editUser['name']) ?></h3>
+            <a class="admin-panel-close" href="<?= portal_escape($adminUrl('users')) ?>" aria-label="Close">&times;</a>
+        </header>
+        <div class="admin-form-grid">
+            <label class="admin-field">
+                <span>Full name</span>
+                <input type="text" name="name" required maxlength="150" value="<?= portal_escape((string) $editUser['name']) ?>">
+            </label>
+            <label class="admin-field">
+                <span>Username</span>
+                <input type="text" name="username" required maxlength="80" value="<?= portal_escape((string) $editUser['username']) ?>">
+            </label>
+            <label class="admin-field">
+                <span>Email</span>
+                <input type="email" name="email" required maxlength="190" value="<?= portal_escape((string) $editUser['email']) ?>">
+            </label>
+            <label class="admin-field">
+                <span>Year group</span>
+                <select name="year">
+                    <?php foreach ($yearGroupOptions as $yr): ?>
+                    <option value="<?= portal_escape($yr) ?>"<?= (string) $editUser['year'] === $yr ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                    <?php endforeach; ?>
+                    <?php if (!in_array((string) $editUser['year'], $yearGroupOptions, true)): ?>
+                    <option value="<?= portal_escape((string) $editUser['year']) ?>" selected><?= portal_escape((string) $editUser['year']) ?></option>
+                    <?php endif; ?>
+                </select>
+            </label>
+            <label class="admin-field">
+                <span>Programme</span>
+                <input type="text" name="programme" maxlength="120" value="<?= portal_escape((string) $editUser['programme']) ?>">
+            </label>
+            <label class="admin-field">
+                <span>Role</span>
+                <select name="role">
+                    <option value="student"<?= $editUser['role'] === 'student' ? ' selected' : '' ?>>Student</option>
+                    <option value="teacher"<?= $editUser['role'] === 'teacher' ? ' selected' : '' ?>>Teacher</option>
+                    <?php if ($isOwner): ?>
+                    <option value="admin"<?= $editUser['role'] === 'admin' ? ' selected' : '' ?>>Admin</option>
+                    <?php endif; ?>
+                </select>
+            </label>
+            <label class="admin-field admin-field--full">
+                <span>New password <em class="admin-field-hint-inline">(optional — leave blank to keep current)</em></span>
+                <input type="password" name="new_password" minlength="8" autocomplete="new-password" placeholder="Min. 8 characters, letter + number">
+            </label>
+            <label class="admin-field admin-field--full">
+                <span>Confirm new password</span>
+                <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" placeholder="Repeat new password">
+            </label>
+        </div>
+        <p class="admin-field-hint admin-field-hint--panel">
+            <a href="<?= portal_escape($adminUrl('enrollments', ['enroll' => (int) $editUser['id']])) ?>">Manage enrolments for this user</a>
+        </p>
+        <footer class="admin-panel-footer">
+            <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('users')) ?>">Cancel</a>
+            <button type="submit" class="admin-btn admin-btn--primary">Save changes</button>
+        </footer>
+    </form>
+</dialog>
+<?php endif; ?>
 
 <!-- Create course panel -->
 <dialog class="admin-panel" id="create-course-panel">

@@ -34,6 +34,7 @@ $navItems = [
     ['key' => 'courses',       'label' => 'Courses',       'href' => 'courses.php',       'icon' => 'book-open'],
     ['key' => 'grades',        'label' => portal_is_course_staff() || portal_is_admin() ? 'Marking' : 'Grades', 'href' => 'grades.php', 'icon' => 'award'],
     ['key' => 'timetable',     'label' => 'Timetable',     'href' => 'timetable.php',     'icon' => 'calendar'],
+    ['key' => 'notifications', 'label' => 'Notifications', 'href' => 'notifications.php', 'icon' => 'bell'],
     ['key' => 'communication', 'label' => 'Communication', 'href' => 'communication.php', 'icon' => 'megaphone'],
     ['key' => 'events',        'label' => 'Events',        'href' => 'events.php',        'icon' => 'sparkles'],
     ['key' => 'settings',      'label' => 'Settings',      'href' => 'settings.php',      'icon' => 'settings'],
@@ -49,7 +50,19 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260713m';
+$navUnreadNotifCount = 0;
+if (portal_is_logged_in()) {
+    $navUid = (int) (portal_current_user()['id'] ?? 0);
+    if ($navUid > 0) {
+        $navNotifStmt = portal_db()->prepare(
+            "SELECT COUNT(*) FROM portal_notifications WHERE user_id = ? AND read_at = ''"
+        );
+        $navNotifStmt->execute([$navUid]);
+        $navUnreadNotifCount = (int) $navNotifStmt->fetchColumn();
+    }
+}
+
+$asset_version = '20260713u';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
@@ -97,10 +110,14 @@ $style_src = '../style.css?v=' . $asset_version;
                         <?php
                             $isActive = $item['key'] === $active_page;
                             $navExtra = ($item['key'] === 'logout') ? ' nav-link--logout' : '';
+                            $showNotifBadge = $item['key'] === 'notifications' && $navUnreadNotifCount > 0;
                         ?>
-                        <a class="nav-link<?= $isActive ? ' active' : '' ?><?= $navExtra ?>" href="<?= portal_escape($item['href']) ?>">
+                        <a class="nav-link<?= $isActive ? ' active' : '' ?><?= $navExtra ?><?= $showNotifBadge ? ' has-unread' : '' ?>" href="<?= portal_escape($item['href']) ?>">
                             <?= portal_icon($item['icon'], 'nav-icon') ?>
                             <span><?= portal_escape($item['label']) ?></span>
+                            <?php if ($showNotifBadge): ?>
+                                <span class="nav-count"><?= $navUnreadNotifCount > 99 ? '99+' : (int) $navUnreadNotifCount ?></span>
+                            <?php endif; ?>
                         </a>
                     <?php endforeach; ?>
                 </nav>

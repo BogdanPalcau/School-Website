@@ -247,8 +247,8 @@ ob_start();
                     </label>
                     <label class="settings-toggle">
                         <span>
-                            <strong>Lesson Q&amp;A replies</strong>
-                            <small>When a teacher answers your question</small>
+                            <strong>Q&amp;A and discussion replies</strong>
+                            <small>When a teacher answers your lesson question, or someone replies in a discussion you started or joined</small>
                         </span>
                         <input type="checkbox" name="notify_qa" value="1"<?= !empty($prefs['notify_qa']) ? ' checked' : '' ?>>
                     </label>
