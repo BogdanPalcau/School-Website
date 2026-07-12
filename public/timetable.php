@@ -158,7 +158,7 @@ ob_start();
         <div class="calendar-grid calendar-grid--schedule">
             <?php foreach ($dayLabels as $day): ?>
                 <?php $slots = $scheduleByDay[$day] ?? []; ?>
-                <article class="calendar-card<?= $day === $todayName ? ' featured' : '' ?>">
+                <article class="calendar-card<?= $day === $todayName ? ' featured' : '' ?><?= empty($slots) ? ' calendar-card--empty' : '' ?>">
                     <div class="calendar-day-head">
                         <span class="calendar-date"><?= portal_escape(substr($day, 0, 3)) ?></span>
                         <div>
@@ -209,6 +209,18 @@ ob_start();
                 </article>
             <?php endforeach; ?>
         </div>
+
+        <?php
+            $quietDayLabels = [];
+            foreach ($dayLabels as $day) {
+                if (empty($scheduleByDay[$day]) && $day !== $todayName) {
+                    $quietDayLabels[] = substr($day, 0, 3);
+                }
+            }
+        ?>
+        <?php if (!empty($quietDayLabels)): ?>
+            <p class="calendar-quiet-days">No classes: <?= portal_escape(implode(' · ', $quietDayLabels)) ?></p>
+        <?php endif; ?>
     </article>
 
     <div class="stack">

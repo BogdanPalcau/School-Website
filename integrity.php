@@ -3587,7 +3587,17 @@ if (!function_exists('portal_render_submission_review')) {
              data-preview-mode="<?= portal_escape($previewMode) ?>"
              data-preview-ext="<?= portal_escape($ext) ?>"
              data-kind="<?= $annKind ?>"
-             data-can-annotate="<?= $isTeacher ? '1' : '0' ?>">
+             data-can-annotate="<?= $isTeacher ? '1' : '0' ?>"
+             data-mobile-panel="results">
+            <div class="rvw-mobile-tabs" role="tablist" aria-label="Review sections">
+                <button type="button" class="rvw-mobile-tab" role="tab" aria-selected="false" data-rvw-mobile-panel="doc">Document</button>
+                <button type="button" class="rvw-mobile-tab is-active" role="tab" aria-selected="true" data-rvw-mobile-panel="results">
+                    Grade &amp; feedback
+                    <?php if ($score !== null): ?>
+                        <span class="rvw-mobile-tab-badge"><?= (int) $score ?></span>
+                    <?php endif; ?>
+                </button>
+            </div>
             <div class="rvw-main">
                 <div class="rvw-main-toolbar">
                     <span class="rvw-file"><?= portal_icon('file', 'icon-xs') ?><?= portal_escape($filename) ?></span>

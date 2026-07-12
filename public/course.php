@@ -1756,6 +1756,15 @@ ob_start();
         </div>
         <?php endif; ?>
 
+        <?php
+            $heroMetaLine = array_values(array_filter([
+                trim((string) ($course['term'] ?? '')),
+                trim((string) ($course['meeting'] ?? '')),
+                'Online',
+                ((int) ($course['student_count'] ?? 0)) . ' students',
+            ]));
+        ?>
+        <p class="course-hero-meta-line"><?= portal_escape(implode(' · ', $heroMetaLine)) ?></p>
         <div class="course-hero-meta">
             <span><?= portal_escape($currentSection['label']) ?></span>
             <span><?= portal_escape($course['term']) ?></span>
@@ -1812,7 +1821,7 @@ ob_start();
     <?php endif; ?>
 
     <div class="course-detail-layout">
-        <div class="stack">
+        <div class="stack course-main-stack<?= $sectionKey === 'content' ? ' course-main-stack--content' : '' ?>">
             <?php if ($sectionKey === 'content'): ?>
                 <?php if (portal_can_manage_course($courseId)): ?>
                     <details class="folder-admin-panel">
@@ -3083,9 +3092,7 @@ ob_start();
                             <h3><?= portal_escape($group['title']) ?></h3>
                             <span class="chip"><?= $memberCnt ?><?= $maxM > 0 ? ' / ' . $maxM : '' ?></span>
                         </div>
-                        <?php if ($group['description'] !== ''): ?>
-                            <p class="group-desc"><?= portal_escape($group['description']) ?></p>
-                        <?php endif; ?>
+                        <p class="group-desc<?= trim((string) $group['description']) === '' ? ' is-empty' : '' ?>"><?= portal_escape((string) $group['description']) ?></p>
 
                         <?php if (portal_can_manage_course($courseId)): ?>
                             <?php if (!empty($members)): ?>
@@ -3129,7 +3136,38 @@ ob_start();
             <?php endif; ?>
         </div>
 
-        <aside class="stack">
+        <div class="course-aside-wrap">
+            <?php if (!empty($courseTeachers) || !empty($course['updates'])): ?>
+            <div class="course-mobile-peek">
+                <?php if (!empty($courseTeachers)): ?>
+                <div class="course-staff-peek">
+                    <div class="course-staff-peek-avatars" aria-hidden="true">
+                        <?php foreach (array_slice($courseTeachers, 0, 4) as $teacher): ?>
+                            <?php
+                                $_peekRole = (string) ($teacher['assignment_role'] ?? 'teacher');
+                                $_peekSuper = $_peekRole === 'supervisor';
+                            ?>
+                            <span class="course-staff-peek-avatar <?= $_peekSuper ? 'supervisor-avatar' : 'teacher-avatar' ?>"><?= portal_escape($teacher['initials']) ?></span>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="course-staff-peek-copy">
+                        <strong>Taught by</strong>
+                        <span><?= portal_escape(implode(', ', array_column(array_slice($courseTeachers, 0, 3), 'name'))) ?><?= count($courseTeachers) > 3 ? '…' : '' ?></span>
+                    </div>
+                </div>
+                <?php endif; ?>
+                <p class="course-update-peek">See More course info for the full staff list and latest updates.</p>
+            </div>
+            <?php endif; ?>
+            <input type="checkbox" id="course-about-toggle" class="course-about-toggle">
+            <label for="course-about-toggle" class="course-about-toggle-label">
+                <span class="course-about-toggle-copy">
+                    <strong>More course info</strong>
+                    <small>Full staff list, updates &amp; structure</small>
+                </span>
+                <?= portal_icon('chevron-down', 'course-about-chevron') ?>
+            </label>
+        <aside class="stack course-aside">
             <article class="card-shell">
                 <div class="section-head">
                     <div>
@@ -3214,7 +3252,7 @@ ob_start();
                 <?php endif; ?>
             </article>
 
-            <article class="card-shell">
+            <article class="card-shell course-aside-focus">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Section focus</p>
@@ -3245,7 +3283,7 @@ ob_start();
                 </div>
             </article>
 
-            <article class="card-shell">
+            <article class="card-shell course-aside-structure">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Course structure</p>
@@ -3257,6 +3295,7 @@ ob_start();
                 </article>
             </article>
         </aside>
+        </div>
     </div>
 </section>
 
@@ -4082,7 +4121,29 @@ ob_start();
             document.body.classList.add('sub-slot-body-lock');
             openReview = overlay;
             requestAnimationFrame(() => overlay.classList.add('rvw-overlay--in'));
+            const shell = overlay.querySelector('.rvw-shell');
+            if (shell) setReviewMobilePanel(shell, shell.getAttribute('data-mobile-panel') || 'results');
         }
+
+        function setReviewMobilePanel(shell, panel) {
+            if (!shell) return;
+            const next = panel === 'results' ? 'results' : 'doc';
+            shell.setAttribute('data-mobile-panel', next);
+            shell.querySelectorAll('.rvw-mobile-tab').forEach(tab => {
+                const active = tab.getAttribute('data-rvw-mobile-panel') === next;
+                tab.classList.toggle('is-active', active);
+                tab.setAttribute('aria-selected', active ? 'true' : 'false');
+            });
+        }
+
+        document.addEventListener('click', e => {
+            const tab = e.target.closest('[data-rvw-mobile-panel]');
+            if (!tab) return;
+            const shell = tab.closest('.rvw-shell');
+            if (!shell) return;
+            e.preventDefault();
+            setReviewMobilePanel(shell, tab.getAttribute('data-rvw-mobile-panel'));
+        });
         function reloadAndOpenReview(reviewId) {
             if (!reviewId) return;
             const url = new URL(window.location.href);
