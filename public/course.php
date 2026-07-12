@@ -62,6 +62,7 @@ foreach ([
     "ALTER TABLE course_folder_items ADD COLUMN submission_deadline TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE course_folder_items ADD COLUMN submission_ai_detection INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_folder_items ADD COLUMN submission_max_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE course_folder_items ADD COLUMN submission_weight REAL NOT NULL DEFAULT 100",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
@@ -528,6 +529,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $submissionDeadline = '';
             $submissionAiDetection = 0;
             $submissionMaxAttempts = 0;
+            $submissionWeight = 100.0;
             $filePath = '';
             $fileName = '';
             $createItemError = null;
@@ -586,6 +588,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!in_array($submissionMaxAttempts, [0, 1, 2], true)) {
                         $submissionMaxAttempts = 0;
                     }
+                    $submissionWeight = portal_normalize_submission_weight($_POST['submission_weight'] ?? 100);
                     $url = '';
                 }
             }
@@ -607,9 +610,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $allowDl = (isset($_POST['allow_download']) && $_POST['allow_download'] === '1') ? 1 : 0;
                 $db->prepare(
                     "INSERT INTO course_folder_items
-                     (folder_id, course_id, type, title, description, url, file_path, file_name, allow_download, submission_deadline, submission_ai_detection, submission_max_attempts)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-                )->execute([$folderId, $courseId, $type, $title, $desc, $url, $filePath, $fileName, $allowDl, $submissionDeadline, $submissionAiDetection, $submissionMaxAttempts]);
+                     (folder_id, course_id, type, title, description, url, file_path, file_name, allow_download, submission_deadline, submission_ai_detection, submission_max_attempts, submission_weight)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                )->execute([$folderId, $courseId, $type, $title, $desc, $url, $filePath, $fileName, $allowDl, $submissionDeadline, $submissionAiDetection, $submissionMaxAttempts, $submissionWeight]);
                 $_SESSION['course_flash'] = ['success', 'Item added successfully.'];
             } else {
                 $_SESSION['course_flash'] = ['error', 'Could not add item. Check the folder and title, then try again.'];
@@ -628,6 +631,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deadline = (string) ($itemRow['submission_deadline'] ?? '');
                 $aiDetection = (int) ($itemRow['submission_ai_detection'] ?? 0);
                 $maxAttempts = (int) ($itemRow['submission_max_attempts'] ?? 0);
+                $submissionWeight = portal_normalize_submission_weight($itemRow['submission_weight'] ?? 100);
                 $error = null;
 
                 if ($title === '') {
@@ -658,6 +662,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!in_array($maxAttempts, [0, 1, 2], true)) {
                             $maxAttempts = 0;
                         }
+                        $submissionWeight = portal_normalize_submission_weight($_POST['submission_weight'] ?? 100);
                     }
                 }
 
@@ -667,9 +672,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->prepare(
                         "UPDATE course_folder_items
                          SET title = ?, description = ?, url = ?, allow_download = ?,
-                             submission_deadline = ?, submission_ai_detection = ?, submission_max_attempts = ?
+                             submission_deadline = ?, submission_ai_detection = ?, submission_max_attempts = ?, submission_weight = ?
                          WHERE id = ? AND course_id = ?"
-                    )->execute([$title, $desc, $url, $allowDl, $deadline, $aiDetection, $maxAttempts, $itemId, $courseId]);
+                    )->execute([$title, $desc, $url, $allowDl, $deadline, $aiDetection, $maxAttempts, $submissionWeight, $itemId, $courseId]);
                     $_SESSION['course_flash'] = ['success', 'Item settings saved.'];
                 }
             }
@@ -1498,7 +1503,7 @@ try {
 
 if (portal_can_manage_course($courseId)) {
     $_gradeStmt = $_db->prepare(
-        "SELECT cs.*, cfi.title AS slot_title, cfi.submission_deadline,
+        "SELECT cs.*, cfi.title AS slot_title, cfi.submission_deadline, cfi.submission_weight,
                 u.name AS student_name, u.initials AS student_initials
          FROM course_submissions cs
          JOIN course_folder_items cfi ON cfi.id = cs.item_id
@@ -1509,7 +1514,7 @@ if (portal_can_manage_course($courseId)) {
     $_gradeStmt->execute([$courseId]);
 } else {
     $_gradeStmt = $_db->prepare(
-        "SELECT cs.*, cfi.title AS slot_title, cfi.submission_deadline
+        "SELECT cs.*, cfi.title AS slot_title, cfi.submission_deadline, cfi.submission_weight
          FROM course_submissions cs
          JOIN course_folder_items cfi ON cfi.id = cs.item_id
          WHERE cs.course_id = ? AND cs.user_id = ?
@@ -2009,20 +2014,25 @@ ob_start();
                                                     <?php if ($item['description'] !== ''): ?>
                                                         <p><?= portal_escape($item['description']) ?></p>
                                                     <?php endif; ?>
-                                                    <?php if ($item['type'] !== 'submission'): ?>
-                                                    <span class="item-type-badge item-type-badge--<?= portal_escape($itemKindClass) ?>">
-                                                        <?= portal_escape($itemKindLabel) ?>
-                                                    </span>
-                                                    <?php endif; ?>
                                                     <?php
                                                         $openQs = ($item['type'] === 'video')
                                                             ? (int) ($videoOpenQuestionCounts[(int) $item['id']] ?? 0)
                                                             : 0;
                                                     ?>
-                                                    <?php if ($openQs > 0 && portal_can_manage_course($courseId)): ?>
-                                                    <a class="video-open-q-badge" href="lesson-viewer.php?item=<?= (int) $item['id'] ?>#qa-open" title="Open student questions">
-                                                        <?= $openQs ?> open question<?= $openQs === 1 ? '' : 's' ?>
-                                                    </a>
+                                                    <?php if ($item['type'] !== 'submission' || $openQs > 0): ?>
+                                                    <div class="folder-item-meta">
+                                                        <?php if ($item['type'] !== 'submission'): ?>
+                                                        <span class="item-type-badge item-type-badge--<?= portal_escape($itemKindClass) ?>">
+                                                            <?= portal_escape($itemKindLabel) ?>
+                                                        </span>
+                                                        <?php endif; ?>
+                                                        <?php if ($openQs > 0 && portal_can_manage_course($courseId)): ?>
+                                                        <a class="video-open-q-badge" href="lesson-viewer.php?item=<?= (int) $item['id'] ?>#qa-open" title="Review open student questions">
+                                                            <?= portal_icon('megaphone', 'icon-xs') ?>
+                                                            <?= $openQs ?> open
+                                                        </a>
+                                                        <?php endif; ?>
+                                                    </div>
                                                     <?php endif; ?>
 
                                                     <?php if (portal_can_manage_course($courseId) && $item['type'] !== 'submission'): ?>
@@ -2073,6 +2083,7 @@ ob_start();
                                                             $modalId = 'sub-slot-modal-' . (int) $item['id'];
                                                             $slotEditPanelId = 'sub-slot-edit-' . (int) $item['id'];
                                                             $slotMaxAttempts = (int) ($item['submission_max_attempts'] ?? 0);
+                                                            $slotWeightLabel = portal_format_submission_weight($item['submission_weight'] ?? 100);
                                                             if (portal_can_manage_course($courseId)) {
                                                                 $subs = $slotSubmissions[(int)$item['id']] ?? [];
                                                             } else {
@@ -2097,6 +2108,7 @@ ob_start();
                                                                     <?php if ($slotMaxAttempts > 0): ?>
                                                                     <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
                                                                     <?php endif; ?>
+                                                                    <span class="sub-slot-weight">Weight <?= portal_escape($slotWeightLabel) ?></span>
                                                                     <button type="button"
                                                                             class="button button--sm sub-slot-card-edit"
                                                                             data-sub-open-edit="<?= portal_escape($modalId) ?>"
@@ -2159,6 +2171,9 @@ ob_start();
                                                                             <?= portal_can_manage_course($courseId) ? 'Max ' . $slotMaxAttempts . ' attempt' . ($slotMaxAttempts === 1 ? '' : 's') . ' per student' : 'Attempt ' . min($mySubAttemptsUsed, $slotMaxAttempts) . ' of ' . $slotMaxAttempts . ' used' ?>
                                                                         </p>
                                                                         <?php endif; ?>
+                                                                        <?php if (portal_can_manage_course($courseId)): ?>
+                                                                        <p class="sub-slot-attempts-note sub-slot-attempts-note--header">Weight <?= portal_escape($slotWeightLabel) ?></p>
+                                                                        <?php endif; ?>
                                                                     </div>
                                                                     <div class="sub-slot-dialog-header-actions">
                                                                         <?php if (portal_can_manage_course($courseId)): ?>
@@ -2195,6 +2210,10 @@ ob_start();
                                                                                 <label class="folder-form-label">
                                                                                     <span>Deadline</span>
                                                                                     <input type="datetime-local" name="submission_deadline" required value="<?= portal_escape($itemDeadlineValue) ?>">
+                                                                                </label>
+                                                                                <label class="folder-form-label">
+                                                                                    <span>Grade weight <small>(%)</small></span>
+                                                                                    <input type="number" name="submission_weight" min="0" max="100" step="0.01" inputmode="decimal" value="<?= portal_escape(portal_format_submission_weight($item['submission_weight'] ?? 100, false)) ?>">
                                                                                 </label>
                                                                                 <label class="folder-form-label">
                                                                                     <span>Re-submissions allowed</span>
@@ -2447,6 +2466,10 @@ ob_start();
                                                 <label class="folder-form-label">
                                                     <span>Deadline</span>
                                                     <input type="datetime-local" name="submission_deadline">
+                                                </label>
+                                                <label class="folder-form-label">
+                                                    <span>Grade weight <small>(%)</small></span>
+                                                    <input type="number" name="submission_weight" min="0" max="100" step="0.01" inputmode="decimal" value="100">
                                                 </label>
                                                 <label class="folder-form-label">
                                                     <span>Re-submissions allowed</span>
@@ -2805,76 +2828,211 @@ ob_start();
                     </article>
                 <?php endif; ?>
             <?php elseif ($sectionKey === 'gradebook'): ?>
-                <article class="card-shell">
-                    <div class="section-head">
+                <?php
+                    $gbIsStaff = portal_can_manage_course($courseId);
+                    $gbMarked = array_values(array_filter(
+                        $submissionGradebook,
+                        static fn(array $g): bool => $g['score'] !== null && trim((string) ($g['marked_at'] ?? '')) !== ''
+                    ));
+                    $gbPending = array_values(array_filter(
+                        $submissionGradebook,
+                        static fn(array $g): bool => $g['score'] === null || trim((string) ($g['marked_at'] ?? '')) === ''
+                    ));
+                    $gbAvg = null;
+                    if (!empty($gbMarked)) {
+                        $gbAvg = portal_weighted_grade_average($gbMarked);
+                    }
+
+                    $gbGrouped = [];
+                    foreach ($submissionGradebook as $grade) {
+                        $slot = (string) $grade['slot_title'];
+                        $gbGrouped[$slot][] = $grade;
+                    }
+                ?>
+                <section class="gb-shell">
+                    <header class="gb-header">
                         <div>
                             <p class="eyebrow">Course gradebook</p>
                             <h3 class="card-title">Marks and feedback</h3>
+                            <p class="gb-header-copy"><?= $gbIsStaff
+                                ? 'Track submissions and marks for this module.'
+                                : 'Your marks for this module, once work has been returned.' ?></p>
                         </div>
-                        <span class="chip"><?= count($submissionGradebook) ?> submission<?= count($submissionGradebook) === 1 ? '' : 's' ?></span>
-                    </div>
-
-                    <?php if (portal_can_manage_course($courseId)): ?>
-                        <article class="integrity-eula-panel">
-                            <div>
-                                <p class="eyebrow">Integrity tool EULA</p>
-                                <h3><?= $integrityEulaAcceptedAt !== '' ? 'Accepted' : 'Action needed before external providers' ?></h3>
-                                <p>Built-in checks include school submission matching, sentence fingerprint index, writing-process review, and a heuristic AI-style review. Drop reference files into <code>database/integrity_references/</code> to compare against past work. Optional GPTZero external AI detection can be configured by an admin in <strong>Admin → External AI detection</strong>.</p>
-                                <?php if ($integrityEulaAcceptedAt !== ''): ?>
-                                    <span>Accepted <?= portal_escape(date('j M Y H:i', strtotime($integrityEulaAcceptedAt))) ?></span>
-                                <?php endif; ?>
+                        <div class="gb-stat-row">
+                            <div class="gb-stat">
+                                <span>Marked</span>
+                                <strong><?= count($gbMarked) ?></strong>
                             </div>
-                            <?php if ($integrityEulaAcceptedAt === ''): ?>
-                                <form method="POST">
-                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                    <input type="hidden" name="action" value="accept_integrity_eula">
-                                    <button type="submit" class="button button--sm">Accept EULA</button>
-                                </form>
-                            <?php endif; ?>
-                        </article>
+                            <div class="gb-stat">
+                                <span>Awaiting</span>
+                                <strong><?= count($gbPending) ?></strong>
+                            </div>
+                            <div class="gb-stat gb-stat--accent">
+                                <span>Weighted avg</span>
+                                <strong><?= $gbAvg !== null ? $gbAvg . '%' : '—' ?></strong>
+                            </div>
+                        </div>
+                    </header>
+
+                    <?php if ($gbIsStaff): ?>
+                        <?php if ($integrityEulaAcceptedAt !== ''): ?>
+                            <div class="gb-eula-chip" title="Integrity checks are available for this account">
+                                <span class="gb-eula-dot" aria-hidden="true"></span>
+                                Integrity tools ready
+                                <time datetime="<?= portal_escape((string) $integrityEulaAcceptedAt) ?>">
+                                    · <?= portal_escape(date('j M Y', portal_db_timestamp($integrityEulaAcceptedAt) ?? strtotime($integrityEulaAcceptedAt) ?: time())) ?>
+                                </time>
+                            </div>
+                        <?php else: ?>
+                            <form method="POST" class="gb-eula-accept">
+                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                <input type="hidden" name="action" value="accept_integrity_eula">
+                                <span>Accept integrity tools to mark work with originality checks.</span>
+                                <button type="submit" class="button button--sm">Accept</button>
+                            </form>
+                        <?php endif; ?>
                     <?php endif; ?>
 
-                    <div class="deadline-list">
-                        <?php if (empty($submissionGradebook)): ?>
-                            <article class="deadline-item">
-                                <div>
-                                    <p class="eyebrow">No marks yet</p>
-                                    <h3>Submission marks will appear here</h3>
-                                    <p>Once students submit work and teachers mark it, scores and feedback are shown in this gradebook.</p>
+                    <?php if (empty($submissionGradebook)): ?>
+                        <div class="gb-empty">
+                            <p class="eyebrow">No marks yet</p>
+                            <h3>Nothing in the gradebook</h3>
+                            <p><?= $gbIsStaff
+                                ? 'When students submit work and you mark it, results appear here.'
+                                : 'After you submit work and it is marked, your scores will show here.' ?></p>
+                        </div>
+                    <?php else: ?>
+                        <div class="gb-slot-stack">
+                            <?php if ($gbIsStaff): ?>
+                                <?php foreach ($gbGrouped as $slotTitle => $rows): ?>
+                                    <?php $slotWeightLabel = portal_format_submission_weight($rows[0]['submission_weight'] ?? 100); ?>
+                                    <div class="gb-slot-group">
+                                        <div class="gb-slot-group-head">
+                                            <div class="gb-slot-title">
+                                                <h4><?= portal_escape($slotTitle) ?></h4>
+                                                <span>Weight <?= portal_escape($slotWeightLabel) ?></span>
+                                            </div>
+                                            <div class="gb-slot-meta">
+                                                <span class="chip"><?= count($rows) ?> submission<?= count($rows) === 1 ? '' : 's' ?></span>
+                                            </div>
+                                        </div>
+                                        <div class="gb-slot-grid">
+                                            <?php foreach ($rows as $grade): ?>
+                                                <?php
+                                                    $isMarked = $grade['score'] !== null && trim((string) ($grade['marked_at'] ?? '')) !== '';
+                                                    $submittedTs = portal_db_timestamp((string) $grade['submitted_at']);
+                                                    $reviewId = 'rvw-' . (int) $grade['id'];
+                                                ?>
+                                                <div class="sub-slot-card"
+                                                     data-review-open="<?= portal_escape($reviewId) ?>"
+                                                     role="button"
+                                                     tabindex="0"
+                                                     aria-label="Open review for <?= portal_escape((string) ($grade['student_name'] ?? 'student')) ?>">
+                                                    <?= portal_render_submission_deadline((string) ($grade['submission_deadline'] ?? '')) ?>
+                                                    <div class="sub-slot-card-row">
+                                                        <span class="sub-slot-file">
+                                                            <span class="course-staff-avatar sub-avatar"><?= portal_escape((string) ($grade['student_initials'] ?? '?')) ?></span>
+                                                            <span>
+                                                                <strong><?= portal_escape((string) ($grade['student_name'] ?? 'Student')) ?></strong>
+                                                                <small><?= portal_escape($submittedTs ? date('j M Y H:i', $submittedTs) : '') ?><?= trim((string) ($grade['filename'] ?? '')) !== '' ? ' · ' . portal_escape((string) $grade['filename']) : '' ?></small>
+                                                            </span>
+                                                        </span>
+                                                        <?php if ($isMarked): ?>
+                                                            <span class="sub-slot-status sub-slot-status--graded"><?= (int) $grade['score'] ?>%</span>
+                                                        <?php else: ?>
+                                                            <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                    <div class="sub-slot-card-row">
+                                                        <button type="button" class="button button--sm" data-review-open="<?= portal_escape($reviewId) ?>">Open review</button>
+                                                    </div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="gb-slot-grid">
+                                    <?php foreach ($submissionGradebook as $grade): ?>
+                                        <?php
+                                            $isMarked = $grade['score'] !== null && trim((string) ($grade['marked_at'] ?? '')) !== '';
+                                            $submittedTs = portal_db_timestamp((string) $grade['submitted_at']);
+                                            $reviewId = 'rvw-' . (int) $grade['id'];
+                                            $weightLabel = portal_format_submission_weight($grade['submission_weight'] ?? 100);
+                                        ?>
+                                        <div class="sub-slot-card"
+                                             data-review-open="<?= portal_escape($reviewId) ?>"
+                                             role="button"
+                                             tabindex="0"
+                                             aria-label="Open review for <?= portal_escape((string) $grade['slot_title']) ?>">
+                                            <?= portal_render_submission_deadline((string) ($grade['submission_deadline'] ?? '')) ?>
+                                            <div class="sub-slot-card-row">
+                                                <span class="sub-slot-file">
+                                                    <?= portal_icon('file', 'icon-xs') ?>
+                                                    <span>
+                                                        <strong><?= portal_escape((string) $grade['slot_title']) ?></strong>
+                                                        <small><?= portal_escape($submittedTs ? 'Submitted ' . date('j M Y H:i', $submittedTs) . ' | ' : '') ?>Weight <?= portal_escape($weightLabel) ?></small>
+                                                    </span>
+                                                </span>
+                                                <?php if ($isMarked): ?>
+                                                    <span class="sub-slot-status sub-slot-status--graded"><?= (int) $grade['score'] ?>%</span>
+                                                <?php else: ?>
+                                                    <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <div class="sub-slot-card-row">
+                                                <button type="button" class="button button--sm" data-review-open="<?= portal_escape($reviewId) ?>">Open review</button>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
                                 </div>
-                            </article>
-                        <?php else: ?>
-                            <?php foreach ($submissionGradebook as $grade): ?>
-                                <article class="deadline-item">
-                                    <div>
-                                        <p class="eyebrow">
-                                            <?= $grade['score'] !== null ? 'Marked' : 'Awaiting mark' ?>
-                                            <?php if (portal_can_manage_course($courseId) && isset($grade['student_name'])): ?>
-                                                &middot; <?= portal_escape($grade['student_name']) ?>
-                                            <?php endif; ?>
-                                        </p>
-                                        <h3><?= portal_escape($grade['slot_title']) ?></h3>
-                                        <p>
-                                            Submitted <?= portal_escape(date('j M Y H:i', strtotime($grade['submitted_at']))) ?>
-                                            <?php if (($grade['feedback'] ?? '') !== ''): ?>
-                                                &middot; <?= portal_escape($grade['feedback']) ?>
-                                            <?php endif; ?>
-                                        </p>
-                                        <?= portal_render_integrity_report($grade, portal_can_manage_course($courseId)) ?>
-                                    </div>
-                                    <div class="resource-score">
-                                        <strong><?= $grade['score'] !== null ? (int)$grade['score'] . '/100' : '--/100' ?></strong>
-                                    </div>
-                                </article>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </article>
+                                <p class="gb-footnote">See marks from every module on <a href="grades.php">My grades</a>.</p>
+                            <?php endif; ?>
+                        </div>
 
-                <article class="schedule-note">
-                    <h3>Results stay in one place</h3>
-                    <p>Submission scores are tied directly to this course gradebook as soon as a teacher marks the uploaded work.</p>
-                </article>
+                        <?php
+                            // Same review overlays as Content section — open in place from gradebook cards.
+                            ob_start();
+                            $isTeacherReview = $gbIsStaff;
+                            foreach ($submissionGradebook as $reviewSub):
+                                $reviewAnns = $submissionAnnotations[(int) $reviewSub['id']] ?? [];
+                                $reviewWho  = $isTeacherReview ? (string) ($reviewSub['student_name'] ?? '') : 'Your submission';
+                                $itemForReview = [
+                                    'id' => (int) ($reviewSub['item_id'] ?? 0),
+                                    'title' => (string) ($reviewSub['slot_title'] ?? 'Submission'),
+                                    'submission_deadline' => (string) ($reviewSub['submission_deadline'] ?? ''),
+                                ];
+                                $submittedLabel = portal_db_timestamp((string) ($reviewSub['submitted_at'] ?? ''));
+                        ?>
+                            <div id="rvw-<?= (int) $reviewSub['id'] ?>" class="rvw-overlay" hidden role="dialog" aria-modal="true">
+                                <div class="rvw-dialog">
+                                    <header class="rvw-dialog-header">
+                                        <div class="rvw-dialog-heading">
+                                            <p class="eyebrow">Assignment review</p>
+                                            <h3><?= portal_escape((string) $itemForReview['title']) ?></h3>
+                                            <p class="rvw-dialog-sub"><?= portal_escape($reviewWho) ?> &middot; <?= portal_escape((string) ($reviewSub['filename'] ?? '')) ?> &middot; <?= portal_escape($submittedLabel ? date('j M Y H:i', $submittedLabel) : '') ?></p>
+                                        </div>
+                                        <div class="rvw-dialog-actions">
+                                            <?php if ($isTeacherReview): ?>
+                                                <form method="POST" class="sub-rerun-form">
+                                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="rerun_integrity">
+                                                    <input type="hidden" name="submission_id" value="<?= (int) $reviewSub['id'] ?>">
+                                                    <button type="submit" class="button button--sm button--ghost">Re-run checks</button>
+                                                </form>
+                                            <?php endif; ?>
+                                            <button type="button" class="rvw-close" aria-label="Close">&times;</button>
+                                        </div>
+                                    </header>
+                                    <?= portal_render_submission_review($reviewSub, $isTeacherReview, $itemForReview, $reviewAnns, $csrfToken) ?>
+                                </div>
+                            </div>
+                        <?php
+                            endforeach;
+                            $submissionModals .= ob_get_clean();
+                        ?>
+                    <?php endif; ?>
+                </section>
             <?php else: ?>
                 <!-- ── Groups section ──────────────────────────────────────── -->
                 <?php if (portal_can_manage_course($courseId)): ?>
@@ -3962,6 +4120,13 @@ ob_start();
             openReviewOverlay(overlay);
             const shell = overlay?.querySelector('.rvw-shell');
             if (shell) loadSubmissionPreview(shell);
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            const card = e.target.closest('.sub-slot-card[data-review-open]');
+            if (!card || e.target.closest('button, a, input, textarea, select')) return;
+            e.preventDefault();
+            card.click();
         });
         document.querySelectorAll('.rvw-overlay .rvw-close').forEach(btn => {
             btn.addEventListener('click', () => closeReviewOverlay(btn.closest('.rvw-overlay')));

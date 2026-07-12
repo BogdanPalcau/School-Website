@@ -287,6 +287,8 @@ if (!function_exists('portal_icon')) {
     function portal_icon(string $name, string $class = 'icon'): string
     {
         $icons = [
+            'home'       => '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/>',
+            'award'      => '<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>',
             'book-open'  => '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
             'calendar'   => '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
             'clock'      => '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
@@ -399,6 +401,87 @@ if (!function_exists('portal_format_video_timestamp')) {
     }
 }
 
+if (!function_exists('portal_db_timestamp')) {
+    /**
+     * Parse a SQLite datetime('now') value (UTC, no timezone suffix) into a unix timestamp.
+     */
+    function portal_db_timestamp(?string $raw): ?int
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        if (preg_match('/(Z|[+-]\d{2}:?\d{2})$/i', $raw) === 1) {
+            $ts = strtotime($raw);
+            return $ts === false ? null : $ts;
+        }
+
+        // SQLite stores UTC as "YYYY-MM-DD HH:MM:SS" with no zone — treat as UTC.
+        $normalized = str_replace(' ', 'T', $raw) . 'Z';
+        $ts = strtotime($normalized);
+
+        return $ts === false ? null : $ts;
+    }
+}
+
+if (!function_exists('portal_relative_time')) {
+    function portal_relative_time(?string $raw): string
+    {
+        $ts = portal_db_timestamp($raw);
+        if ($ts === null) {
+            return trim((string) $raw);
+        }
+
+        $diff = time() - $ts;
+        if ($diff < 0) {
+            $diff = 0;
+        }
+        if ($diff < 60) {
+            return 'just now';
+        }
+        if ($diff < 3600) {
+            $m = (int) floor($diff / 60);
+            return $m . ' min ago';
+        }
+        if ($diff < 86400) {
+            $h = (int) floor($diff / 3600);
+            return $h . ' hour' . ($h === 1 ? '' : 's') . ' ago';
+        }
+        if ($diff < 7 * 86400) {
+            $d = (int) floor($diff / 86400);
+            return $d . ' day' . ($d === 1 ? '' : 's') . ' ago';
+        }
+
+        return date('j M Y', $ts);
+    }
+}
+
+if (!function_exists('portal_wait_label')) {
+    function portal_wait_label(?string $raw): string
+    {
+        $ts = portal_db_timestamp($raw);
+        if ($ts === null) {
+            return '';
+        }
+
+        $diff = max(0, time() - $ts);
+        if ($diff < 60) {
+            return 'Waiting just now';
+        }
+        if ($diff < 3600) {
+            $m = max(1, (int) floor($diff / 60));
+            return 'Waiting ' . $m . ' min';
+        }
+        if ($diff < 86400) {
+            $h = max(1, (int) floor($diff / 3600));
+            return 'Waiting ' . $h . ' hour' . ($h === 1 ? '' : 's');
+        }
+        $d = max(1, (int) floor($diff / 86400));
+        return 'Waiting ' . $d . ' day' . ($d === 1 ? '' : 's');
+    }
+}
+
 if (!function_exists('portal_submission_deadline_info')) {
     /**
      * @return array{has_deadline: bool, text: string, state: string, passed: bool, timestamp?: int}
@@ -473,6 +556,59 @@ if (!function_exists('portal_render_submission_deadline')) {
         </div>
         <?php
         return trim((string) ob_get_clean());
+    }
+}
+
+if (!function_exists('portal_normalize_submission_weight')) {
+    function portal_normalize_submission_weight(mixed $raw, float $default = 100.0): float
+    {
+        if ($raw === null || $raw === '') {
+            return $default;
+        }
+
+        if (!is_numeric($raw)) {
+            return $default;
+        }
+
+        return max(0.0, min(100.0, round((float) $raw, 2)));
+    }
+}
+
+if (!function_exists('portal_format_submission_weight')) {
+    function portal_format_submission_weight(mixed $raw, bool $withSuffix = true): string
+    {
+        $weight = portal_normalize_submission_weight($raw);
+        $text = rtrim(rtrim(number_format($weight, 2, '.', ''), '0'), '.');
+
+        return $withSuffix ? $text . '%' : $text;
+    }
+}
+
+if (!function_exists('portal_weighted_grade_average')) {
+    function portal_weighted_grade_average(array $grades): ?int
+    {
+        $weightedTotal = 0.0;
+        $weightTotal = 0.0;
+
+        foreach ($grades as $grade) {
+            if (($grade['score'] ?? null) === null || trim((string) ($grade['marked_at'] ?? '')) === '') {
+                continue;
+            }
+
+            $weight = portal_normalize_submission_weight($grade['submission_weight'] ?? 100);
+            if ($weight <= 0.0) {
+                continue;
+            }
+
+            $weightedTotal += (float) $grade['score'] * $weight;
+            $weightTotal += $weight;
+        }
+
+        if ($weightTotal <= 0.0) {
+            return null;
+        }
+
+        return (int) round($weightedTotal / $weightTotal);
     }
 }
 
@@ -708,7 +844,7 @@ if (!function_exists('portal_require_admin')) {
                 'high',
                 'Blocked access to admin panel'
             );
-            portal_redirect('courses.php');
+            portal_redirect('dashboard.php');
         }
     }
 }
@@ -760,7 +896,7 @@ if (!function_exists('portal_store_intended_path')) {
 if (!function_exists('portal_consume_intended_path')) {
     function portal_consume_intended_path(): string
     {
-        $default = 'courses.php';
+        $default = 'dashboard.php';
         $target  = $_SESSION['portal_intended_path'] ?? $default;
         unset($_SESSION['portal_intended_path']);
 
@@ -1392,7 +1528,9 @@ if (!function_exists('portal_run_migrations')) {
         $tableSQL = (string) ($db->query(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
         )->fetchColumn() ?: '');
-        if ($tableSQL !== '' && strpos($tableSQL, "'supervisor'") === false) {
+        // Global supervisors were retired; do not re-add the CHECK value on every request.
+        $shouldReaddSupervisorRole = false;
+        if ($shouldReaddSupervisorRole && $tableSQL !== '' && strpos($tableSQL, "'supervisor'") === false) {
             $db->exec('PRAGMA foreign_keys = OFF');
             $db->exec("
                 CREATE TABLE IF NOT EXISTS _users_new (
@@ -1556,6 +1694,9 @@ if (!function_exists('portal_run_migrations')) {
             // 0 = unlimited resubmissions; otherwise the max number of submit attempts allowed.
             $db->exec("ALTER TABLE course_folder_items ADD COLUMN submission_max_attempts INTEGER NOT NULL DEFAULT 0");
         }
+        if (!in_array('submission_weight', $cols, true)) {
+            $db->exec("ALTER TABLE course_folder_items ADD COLUMN submission_weight REAL NOT NULL DEFAULT 100");
+        }
         if (!in_array('allow_download', $cols, true)) {
             $db->exec("ALTER TABLE course_folder_items ADD COLUMN allow_download TINYINT(1) NOT NULL DEFAULT 0");
         }
@@ -1592,6 +1733,7 @@ if (!function_exists('portal_run_migrations')) {
                     submission_deadline TEXT NOT NULL DEFAULT '',
                     submission_ai_detection INTEGER NOT NULL DEFAULT 0,
                     submission_max_attempts INTEGER NOT NULL DEFAULT 0,
+                    submission_weight REAL NOT NULL DEFAULT 100,
                     sort_order  INTEGER NOT NULL DEFAULT 0,
                     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
                 )
@@ -1599,10 +1741,16 @@ if (!function_exists('portal_run_migrations')) {
             $newCols = [
                 'id', 'folder_id', 'course_id', 'type', 'title', 'description', 'url',
                 'file_path', 'file_name', 'allow_download', 'locked', 'submission_deadline',
-                'submission_ai_detection', 'submission_max_attempts', 'sort_order', 'created_at',
+                'submission_ai_detection', 'submission_max_attempts', 'submission_weight', 'sort_order', 'created_at',
             ];
             $selectExprs = array_map(
-                static fn (string $c): string => in_array($c, $existingCols, true) ? $c : "0 AS $c",
+                static function (string $c) use ($existingCols): string {
+                    if (in_array($c, $existingCols, true)) {
+                        return $c;
+                    }
+
+                    return $c === 'submission_weight' ? '100 AS submission_weight' : "0 AS $c";
+                },
                 $newCols
             );
             $db->exec("

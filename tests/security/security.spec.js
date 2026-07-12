@@ -254,7 +254,7 @@ test('clears failed login attempts after a successful sign-in', async ({ page })
   await page.getByLabel(/username or email/i).fill(fixtures.users.outsider);
   await page.getByLabel(/password/i).fill(fixtures.password);
   await page.getByRole('button', { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/courses\.php/);
+  await expect(page).toHaveURL(/dashboard\.php/);
 
   await signOut(page);
 
@@ -262,5 +262,5 @@ test('clears failed login attempts after a successful sign-in', async ({ page })
   await page.getByLabel(/username or email/i).fill(fixtures.users.outsider);
   await page.getByLabel(/password/i).fill(fixtures.password);
   await page.getByRole('button', { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/courses\.php/);
+  await expect(page).toHaveURL(/dashboard\.php/);
 });

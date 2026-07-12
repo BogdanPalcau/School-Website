@@ -3275,24 +3275,6 @@ if (!function_exists('portal_render_integrity_report')) {
                     <?php endforeach; ?>
                 </div>
             <?php endif; ?>
-
-            <?php if ($showAi): ?>
-                <div class="integrity-ai-panel">
-                    <strong>External AI detection (GPTZero)</strong>
-                    <span>
-                        <?= portal_escape((string) ($submission['ai_status'] ?? 'not checked')) ?>
-                        <?php if (($submission['ai_score'] ?? null) !== null): ?>
-                            &middot; <?= portal_escape((string) round((float) $submission['ai_score'], 1)) ?>% AI-generated
-                        <?php endif; ?>
-                    </span>
-                    <?php if (($submission['ai_report'] ?? '') !== ''): ?>
-                        <details>
-                            <summary>Raw AI report</summary>
-                            <pre><?= portal_escape((string) $submission['ai_report']) ?></pre>
-                        </details>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
         </div>
         <?php
         return trim((string) ob_get_clean());
@@ -3546,20 +3528,6 @@ if (!function_exists('portal_integrity_summary_cards')) {
                     <?php endif; ?>
                 </div>
             </details>
-
-            <!-- External AI detection -->
-            <div class="rvw-card rvw-card--flat" data-static="1">
-                <div class="rvw-card-head">
-                    <span class="rvw-card-label">External AI detection</span>
-                    <?php if ($extDisabled): ?>
-                        <span class="rvw-card-value rvw-card-value--text rvw-card-value--muted">Disabled</span>
-                    <?php elseif ($extScore !== null): ?>
-                        <span class="rvw-card-value"><?= portal_escape((string) round($extScore, 0)) ?>%</span>
-                    <?php else: ?>
-                        <span class="rvw-card-value rvw-card-value--text"><?= portal_escape($extStatus !== '' ? $extStatus : 'Not checked') ?></span>
-                    <?php endif; ?>
-                </div>
-            </div>
 
         </div>
         <?php

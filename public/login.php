@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../bootstrap.php';
 
 if (portal_is_logged_in()) {
-    portal_redirect('courses.php');
+    portal_redirect('dashboard.php');
 }
 
 $layout_variant = 'auth';

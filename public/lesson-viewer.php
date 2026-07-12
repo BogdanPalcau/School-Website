@@ -824,6 +824,47 @@ ob_start();
     });
 
     window.addEventListener('beforeunload', function () { saveProgress(true); });
+
+    function focusQuestionFromHash() {
+        var hash = window.location.hash || '';
+        var match = hash.match(/^#q-(\d+)$/);
+        if (!match) return;
+        var el = document.getElementById('q-' + match[1]);
+        if (!el) return;
+
+        var side = document.getElementById('qa') || el.closest('.lesson-side') || el;
+        side.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        el.classList.add('qa-item--target');
+        window.setTimeout(function () { el.classList.remove('qa-item--target'); }, 2600);
+
+        var details = el.querySelector('details.qa-reply-details');
+        if (details) {
+            details.open = true;
+        }
+
+        var seekBtn = el.querySelector('[data-seek]');
+        if (seekBtn && video) {
+            var secs = parseInt(seekBtn.getAttribute('data-seek') || '0', 10);
+            if (secs > 0) {
+                window.setTimeout(function () { seekTo(secs); }, 150);
+            }
+        }
+
+        var answerBox = el.querySelector('textarea[name="answer"]');
+        if (answerBox) {
+            window.setTimeout(function () {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                answerBox.focus();
+            }, 350);
+        } else {
+            window.setTimeout(function () {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 200);
+        }
+    }
+
+    window.addEventListener('hashchange', focusQuestionFromHash);
+    window.setTimeout(focusQuestionFromHash, 80);
 })();
 </script>
 <?php

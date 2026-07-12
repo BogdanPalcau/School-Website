@@ -35,7 +35,7 @@ async function signIn(page, username, password) {
   await page.getByLabel(/username or email/i).fill(username);
   await page.getByLabel(/password/i).fill(password);
   await page.getByRole('button', { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/courses\.php/);
+  await expect(page).toHaveURL(/dashboard\.php/);
 }
 
 async function signOut(page) {

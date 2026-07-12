@@ -135,6 +135,7 @@ $_pdo->exec("
         submission_deadline TEXT NOT NULL DEFAULT '',
         submission_ai_detection INTEGER NOT NULL DEFAULT 0,
         submission_max_attempts INTEGER NOT NULL DEFAULT 0,
+        submission_weight REAL NOT NULL DEFAULT 100,
         sort_order  INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     )

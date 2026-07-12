@@ -20,9 +20,9 @@ require_once __DIR__ . '/bootstrap.php';
  */
 $page_title = $page_title ?? $pageTitle ?? portal_school_name() . ' Student Portal';
 $layout_variant = $layout_variant ?? $layoutVariant ?? 'app';
-$active_page = $active_page ?? $activePage ?? 'courses';
+$active_page = $active_page ?? $activePage ?? 'dashboard';
 $page_eyebrow = $page_eyebrow ?? $pageEyebrow ?? 'Student workspace';
-$page_heading = $page_heading ?? $pageHeading ?? 'Courses';
+$page_heading = $page_heading ?? $pageHeading ?? 'Dashboard';
 $page_description = $page_description ?? $pageDescription ?? 'Keep up with your classes, deadlines, and the things happening around school.';
 $page_content = $page_content ?? $pageContent ?? '';
 $auth_eyebrow = $auth_eyebrow ?? $authEyebrow ?? 'Student access';
@@ -30,7 +30,9 @@ $auth_heading = $auth_heading ?? $authHeading ?? portal_school_name();
 $auth_description = $auth_description ?? $authDescription ?? 'Sign in to see your lessons, deadlines, school updates, and everything coming up this week.';
 
 $navItems = [
+    ['key' => 'dashboard',     'label' => 'Dashboard',     'href' => 'dashboard.php',     'icon' => 'home'],
     ['key' => 'courses',       'label' => 'Courses',       'href' => 'courses.php',       'icon' => 'book-open'],
+    ['key' => 'grades',        'label' => portal_is_course_staff() || portal_is_admin() ? 'Marking' : 'Grades', 'href' => 'grades.php', 'icon' => 'award'],
     ['key' => 'timetable',     'label' => 'Timetable',     'href' => 'timetable.php',     'icon' => 'calendar'],
     ['key' => 'communication', 'label' => 'Communication', 'href' => 'communication.php', 'icon' => 'megaphone'],
     ['key' => 'events',        'label' => 'Events',        'href' => 'events.php',        'icon' => 'sparkles'],
@@ -47,7 +49,7 @@ if (portal_is_admin()) {
     ]]);
 }
 
-$asset_version = '20260712h';
+$asset_version = '20260712q';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
