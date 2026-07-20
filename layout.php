@@ -62,7 +62,7 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260720e';
+$asset_version = '20260721d';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $style_src = '../style.css?v=' . $asset_version;
 ?>
@@ -72,9 +72,15 @@ $style_src = '../style.css?v=' . $asset_version;
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= portal_escape($page_title) ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="<?= portal_escape($style_src) ?>">
 </head>
 <body<?= $layout_variant === 'auth' ? ' class="login-body"' : '' ?>>
+    <?php if ($layout_variant !== 'auth'): ?>
+        <a class="skip-link" href="#main-content">Skip to main content</a>
+    <?php endif; ?>
     <div class="page-backdrop"></div>
 
     <?php if ($layout_variant === 'auth'): ?>
@@ -167,7 +173,7 @@ $style_src = '../style.css?v=' . $asset_version;
                     </div>
                 </header>
 
-                <div class="page-content">
+                <div class="page-content" id="main-content" tabindex="-1">
                     <?= $page_content ?>
                 </div>
             </main>

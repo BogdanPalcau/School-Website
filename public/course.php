@@ -2147,7 +2147,9 @@ ob_start();
                                                                 : 'view.php?item=' . (int) $item['id'];
                                                         ?>
                                                         <div class="file-item-row">
-                                                            <a href="<?= portal_escape($itemViewerUrl) ?>" class="file-view-link" target="_blank">
+                                                            <a href="<?= portal_escape($itemViewerUrl) ?>"
+                                                               class="file-view-link"
+                                                               <?php if ($isVideoItem): ?>target="_blank"<?php else: ?>data-doc-viewer="1"<?php endif; ?>>
                                                                 <?= portal_icon($isVideoItem ? 'video' : ($isPresentation ? 'presentation' : 'file'), 'icon-xs') ?>
                                                                 <?= portal_escape($item['title']) ?>
                                                                 <span class="file-ext-badge"><?= portal_escape(strtoupper($fExt)) ?></span>
@@ -2268,15 +2270,17 @@ ob_start();
                                                              aria-label="Open submission details for <?= portal_escape($item['title']) ?>">
                                                             <?= portal_render_submission_deadline((string) $item['submission_deadline']) ?>
                                                             <?php if (portal_can_manage_course($courseId)): ?>
-                                                                <div class="sub-slot-card-row">
-                                                                    <span class="sub-slot-file">
-                                                                        <?= portal_icon('upload', 'icon-xs') ?>
-                                                                        <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
-                                                                    </span>
-                                                                    <?php if ($slotMaxAttempts > 0): ?>
-                                                                    <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
-                                                                    <?php endif; ?>
-                                                                    <span class="sub-slot-weight">Weight <?= portal_escape($slotWeightLabel) ?></span>
+                                                                <div class="sub-slot-card-row sub-slot-card-row--manage">
+                                                                    <div class="sub-slot-card-meta-line">
+                                                                        <span class="sub-slot-file">
+                                                                            <?= portal_icon('upload', 'icon-xs') ?>
+                                                                            <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
+                                                                        </span>
+                                                                        <?php if ($slotMaxAttempts > 0): ?>
+                                                                        <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
+                                                                        <?php endif; ?>
+                                                                        <span class="sub-slot-weight">Weight <?= portal_escape($slotWeightLabel) ?></span>
+                                                                    </div>
                                                                     <button type="button"
                                                                             class="button button--sm sub-slot-card-edit"
                                                                             data-sub-open-edit="<?= portal_escape($modalId) ?>"
@@ -3518,15 +3522,21 @@ ob_start();
 </div>
 <?php endif; ?>
 
-<!-- ── File viewer modal ───────────────────────────────────────────────────── -->
-<div id="file-viewer" class="viewer-overlay" hidden role="dialog" aria-modal="true" aria-label="File viewer">
-    <div class="viewer-box">
-        <div class="viewer-header">
-            <span class="viewer-filename" id="viewer-filename"></span>
-            <button class="viewer-close" id="viewer-close" aria-label="Close viewer">×</button>
-        </div>
-        <div class="viewer-body" id="viewer-body">
-            <p class="viewer-loading">Loading…</p>
+<!-- ── Document viewer overlay (same-tab, smooth — mirrors the assignment review dialog) ── -->
+<div id="doc-viewer-overlay" class="docviewer-overlay" hidden role="dialog" aria-modal="true" aria-label="Document viewer">
+    <div class="docviewer-dialog">
+        <header class="docviewer-dialog-header">
+            <div class="docviewer-dialog-heading">
+                <p class="eyebrow">Course document</p>
+                <h3 id="doc-viewer-title">Document viewer</h3>
+                <p class="docviewer-dialog-sub" id="doc-viewer-meta"></p>
+            </div>
+            <button type="button" class="docviewer-close" id="doc-viewer-close" aria-label="Close document viewer">
+                <?= portal_icon('x', 'docviewer-close-icon') ?>
+            </button>
+        </header>
+        <div class="docviewer-frame-wrap">
+            <iframe id="doc-viewer-frame" class="docviewer-frame" title="Document viewer" allow="fullscreen" allowfullscreen></iframe>
         </div>
     </div>
 </div>
@@ -3658,23 +3668,75 @@ ob_start();
     externalLinkModal?.addEventListener('click', e => {
         if (e.target === externalLinkModal) closeExternalLinkModal();
     });
-    // ── .docx / .xlsx / .pptx / PDF inline viewer ───────────────────────────
-    const viewerOverlay = document.getElementById('file-viewer');
-    const viewerBody    = document.getElementById('viewer-body');
-    const viewerName    = document.getElementById('viewer-filename');
-    const viewerClose   = document.getElementById('viewer-close');
+    // ── Document viewer overlay (same-tab, smooth) ──────────────────────────
+    // Clicking a course document fades in a full-viewport lightbox (mirrors the
+    // assignment-review dialog's open/close transition) with the redesigned
+    // view.php loaded inside an iframe. Plain <a href> semantics are preserved
+    // so ctrl/cmd/middle-click and "open in new tab" keep working natively.
+    const docViewerOverlay = document.getElementById('doc-viewer-overlay');
+    const docViewerFrame   = document.getElementById('doc-viewer-frame');
+    const docViewerTitle   = document.getElementById('doc-viewer-title');
+    const docViewerMeta    = document.getElementById('doc-viewer-meta');
+    let docViewerLastFocus = null;
 
-    if (viewerOverlay) {
-        viewerClose.addEventListener('click', closeViewer);
-        viewerOverlay.addEventListener('click', e => { if (e.target === viewerOverlay) closeViewer(); });
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeViewer(); });
+    function anyPortalOverlayOpen() {
+        return !!document.querySelector('.rvw-overlay:not([hidden]), .sub-slot-overlay:not([hidden]), .docviewer-overlay:not([hidden])');
     }
 
-    function closeViewer() {
-        viewerOverlay.hidden = true;
-        viewerBody.innerHTML = '';
+    function openDocViewer(url, link) {
+        if (!docViewerOverlay || !docViewerFrame) { window.location.href = url; return; }
+        docViewerLastFocus = document.activeElement;
+        const extension = link?.querySelector('.file-ext-badge')?.textContent?.trim() || '';
+        const title = Array.from(link?.childNodes || [])
+            .filter(node => node.nodeType === Node.TEXT_NODE)
+            .map(node => node.textContent.trim())
+            .filter(Boolean)
+            .join(' ') || link?.textContent?.replace(extension, '').trim() || 'Document viewer';
+        if (docViewerTitle) docViewerTitle.textContent = title;
+        if (docViewerMeta) docViewerMeta.textContent = extension ? extension + ' document' : '';
+        try {
+            const next = new URL(url, window.location.href);
+            next.searchParams.set('embed', '1');
+            docViewerFrame.src = next.pathname + next.search + next.hash;
+        } catch (_) {
+            docViewerFrame.src = url + (url.includes('?') ? '&' : '?') + 'embed=1';
+        }
+        docViewerOverlay.hidden = false;
+        document.body.classList.add('sub-slot-body-lock');
+        requestAnimationFrame(() => docViewerOverlay.classList.add('docviewer-overlay--in'));
     }
 
+    function closeDocViewer() {
+        if (!docViewerOverlay || docViewerOverlay.hidden) return;
+        docViewerOverlay.classList.remove('docviewer-overlay--in');
+        setTimeout(() => {
+            docViewerOverlay.hidden = true;
+            docViewerFrame.src = 'about:blank';
+            if (!anyPortalOverlayOpen()) {
+                document.body.classList.remove('sub-slot-body-lock');
+            }
+            if (docViewerLastFocus && typeof docViewerLastFocus.focus === 'function') docViewerLastFocus.focus();
+        }, 220);
+    }
+
+    document.addEventListener('click', e => {
+        const link = e.target.closest('.file-view-link[data-doc-viewer]');
+        if (!link) return;
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        openDocViewer(link.href, link);
+    });
+    document.getElementById('doc-viewer-close')?.addEventListener('click', closeDocViewer);
+    docViewerOverlay?.addEventListener('click', e => { if (e.target === docViewerOverlay) closeDocViewer(); });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && docViewerOverlay && !docViewerOverlay.hidden) closeDocViewer();
+    });
+    window.addEventListener('message', e => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data && e.data.type === 'portal-doc-viewer-close') closeDocViewer();
+    });
+
+    // ── Shared client-side file renderers (used by the assignment review dialog) ─
     function escapeHtml(value) {
         return String(value)
             .replace(/&/g, '&amp;')
@@ -3687,7 +3749,7 @@ ob_start();
     function renderSheetToTable(sheet) {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         if (!rows.length) {
-            return '<p class="viewer-error">This workbook sheet is empty.</p>';
+            return '<p class="rvw-doc-error">This workbook sheet is empty.</p>';
         }
 
         const maxCols = rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
@@ -3751,78 +3813,6 @@ ob_start();
 
         return slides;
     }
-
-    window.openFileViewer = async function(itemId, filename, ext) {
-        const url = 'download.php?item=' + encodeURIComponent(itemId) + '&view=1';
-        if (!viewerOverlay) {
-            window.location.href = url;
-            return;
-        }
-        viewerOverlay.hidden = false;
-        viewerName.textContent = filename;
-        viewerBody.innerHTML = '<p class="viewer-loading">Loading…</p>';
-
-        try {
-            if (ext === 'pdf') {
-                viewerBody.innerHTML = '<iframe src="' + url + '" class="viewer-iframe"></iframe>';
-            } else if (ext === 'docx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
-                viewerBody.innerHTML = '<div class="docx-content">' + result.value + '</div>';
-            } else if (ext === 'xlsx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const wb     = XLSX.read(buffer, { type: 'array' });
-                const firstSheetName = wb.SheetNames[0];
-                const sheet = wb.Sheets[firstSheetName];
-                if (!sheet) {
-                    viewerBody.innerHTML = '<p class="viewer-error">Could not read this workbook.</p>';
-                    return;
-                }
-
-                viewerBody.innerHTML = '<div class="viewer-sheet-head">Sheet: ' + escapeHtml(firstSheetName) + '</div>'
-                    + renderSheetToTable(sheet);
-            } else if (ext === 'pptx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const slides = await extractPptxSlides(buffer);
-                if (!slides.length) {
-                    viewerBody.innerHTML = '<p class="viewer-error">Could not read slide text from this presentation.</p>';
-                    return;
-                }
-
-                viewerBody.innerHTML = slides.map((lines, idx) => {
-                    const safeLines = lines.length
-                        ? lines.map(line => '<li>' + escapeHtml(line) + '</li>').join('')
-                        : '<li><em>(No text content found on this slide)</em></li>';
-                    return '<section class="pptx-slide">'
-                        + '<h4>Slide ' + (idx + 1) + '</h4>'
-                        + '<ul>' + safeLines + '</ul>'
-                        + '</section>';
-                }).join('');
-            } else {
-                viewerBody.innerHTML = '<p class="viewer-error">Preview not available for this file type. Please download to view.</p>';
-            }
-        } catch (err) {
-            viewerBody.innerHTML = '<p class="viewer-error">Could not load file.</p>';
-        }
-    };
 
     // ── Tab settings toggle ───────────────────────────────────────────────────
     const settingsBtn   = document.getElementById('tab-settings-btn');
@@ -3966,7 +3956,7 @@ ob_start();
             overlay.hidden = true;
             if (openSubSlotModal === overlay) {
                 openSubSlotModal = null;
-                if (!document.querySelector('.sub-slot-overlay:not([hidden])')) {
+                if (!anyPortalOverlayOpen()) {
                     document.body.classList.remove('sub-slot-body-lock');
                 }
             }
@@ -4289,7 +4279,7 @@ ob_start();
             setTimeout(() => {
                 overlay.hidden = true;
                 if (openReview === overlay) openReview = null;
-                if (!document.querySelector('.rvw-overlay:not([hidden]), .sub-slot-overlay:not([hidden])')) {
+                if (!anyPortalOverlayOpen()) {
                     document.body.classList.remove('sub-slot-body-lock');
                 }
             }, 200);

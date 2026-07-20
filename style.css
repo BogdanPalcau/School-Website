@@ -4875,7 +4875,7 @@ select.is-validation-shaking {
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 18px 22px;
+    padding: 11px 18px;
     border-radius: var(--radius-lg);
     background: #fff;
     border: 1px solid rgba(22, 36, 90, 0.1);
@@ -5036,6 +5036,73 @@ select.is-validation-shaking {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 14px;
+}
+
+.admin-attention-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.admin-attention-card {
+    display: grid;
+    gap: 7px;
+    min-height: 132px;
+    padding: 18px;
+    border: 1px solid rgba(22, 36, 90, 0.12);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text);
+    text-decoration: none;
+    box-shadow: 0 8px 22px rgba(24, 18, 20, 0.04);
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.admin-attention-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(193, 32, 47, 0.3);
+    box-shadow: 0 12px 28px rgba(24, 18, 20, 0.09);
+}
+
+.admin-attention-card > span {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.admin-attention-card > strong {
+    font-family: 'Fraunces', serif;
+    font-size: 1.55rem;
+    line-height: 1.1;
+    color: var(--primary-strong);
+}
+
+.admin-attention-card > small {
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.35;
+}
+
+.admin-attention-card--warning {
+    border-color: #f0d2a0;
+    background: #fffaf1;
+}
+
+.admin-attention-card--alert {
+    border-color: #f0c0c5;
+    background: #fff7f7;
+    box-shadow: inset 3px 0 0 var(--primary), 0 8px 22px rgba(24, 18, 20, 0.04);
+}
+
+.admin-attention-card:focus-visible {
+    outline: 3px solid rgba(193, 32, 47, 0.38);
+    outline-offset: 2px;
+}
+
+.admin-stat-grid--inventory {
+    padding-top: 4px;
 }
 
 .admin-stat-card {
@@ -5648,6 +5715,10 @@ select.is-validation-shaking {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .admin-attention-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .admin-dashboard-grid,
     .admin-status-row {
         grid-template-columns: 1fr;
@@ -5677,10 +5748,7 @@ select.is-validation-shaking {
     }
 
     .admin-topbar {
-        flex-direction: row;
-        align-items: center;
-        padding: 12px 14px;
-        gap: 10px;
+        display: none;
     }
 
     .admin-breadcrumb {
@@ -5737,6 +5805,16 @@ select.is-validation-shaking {
     .admin-stat-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
+    }
+
+    .admin-attention-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .admin-attention-card {
+        min-height: 0;
+        padding: 14px;
     }
 
     .admin-stat-grid > .admin-stat-card:not(.admin-stat-card--priority) {
@@ -7600,6 +7678,20 @@ select.is-validation-shaking {
     min-width: 0;
 }
 
+.sub-slot-card-row--manage {
+    align-items: center;
+    gap: 12px;
+}
+
+.sub-slot-card-meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
 .sub-slot-file {
     display: inline-flex;
     align-items: center;
@@ -7885,6 +7977,10 @@ body.sub-slot-body-lock {
     width: auto;
     white-space: nowrap;
     gap: 6px;
+}
+
+.sub-slot-card-row--manage .sub-slot-card-edit {
+    margin-left: 0;
 }
 
 .sub-slot-dialog-header-actions .button--sm {
@@ -9684,76 +9780,105 @@ body.sub-slot-body-lock {
     border-top: 1px solid var(--border);
 }
 
-/* ?? File viewer ??????????????????????????????????????????????????????????????? */
+/* ── Document viewer overlay (same-tab, smooth — mirrors .rvw-overlay) ──────────── */
 
-.viewer-overlay {
+.docviewer-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1000;
-    background: rgba(0,0,0,0.65);
+    z-index: 1300;
     display: flex;
-    align-items: center;
-    justify-content: center;
     padding: 20px;
+    background: rgba(40, 19, 21, 0.62);
+    opacity: 0;
+    transition: opacity 200ms ease;
 }
+.docviewer-overlay[hidden] { display: none !important; }
+.docviewer-overlay--in { opacity: 1; }
 
-.viewer-overlay[hidden] { display: none !important; }
-
-.viewer-box {
-    background: var(--surface);
+.docviewer-dialog {
+    width: 100%;
+    height: 100%;
+    margin: 0 auto;
+    max-width: 1600px;
     border-radius: var(--radius-lg);
-    width: min(900px,100%);
-    max-height: 90vh;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 30px 90px rgba(40, 19, 21, 0.4);
+    transform: translateY(12px) scale(0.98);
+    transition: transform 200ms ease;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 32px 80px rgba(0,0,0,0.4);
-    overflow: hidden;
 }
+.docviewer-overlay--in .docviewer-dialog { transform: none; }
 
-.viewer-header {
+.docviewer-dialog-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 14px;
-    padding: 14px 20px;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--surface);
     border-bottom: 1px solid var(--border);
-    background: var(--surface-muted);
     flex-shrink: 0;
 }
-
-.viewer-filename {
-    font-size: 0.9rem;
-    font-weight: 700;
-    white-space: nowrap;
+.docviewer-dialog-heading { min-width: 0; }
+.docviewer-dialog-heading .eyebrow { margin: 0 0 2px; }
+.docviewer-dialog-heading h3 {
+    margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'Fraunces', serif;
+    font-size: 1.05rem;
 }
-
-.viewer-close {
-    font-size: 1.4rem;
-    width: 32px;
-    height: 32px;
-    border: 0;
-    background: transparent;
+.docviewer-dialog-sub {
+    margin: 3px 0 0;
     color: var(--muted);
-    cursor: pointer;
-    border-radius: 6px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.docviewer-dialog-sub:empty { display: none; }
+.docviewer-close {
     display: grid;
     place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--surface-muted);
+    color: var(--text);
+    cursor: pointer;
     flex-shrink: 0;
 }
-.viewer-close:hover { background: var(--primary-soft); color: var(--primary); }
+.docviewer-close:hover { background: var(--primary-soft); color: var(--primary-strong); }
+.docviewer-close-icon { width: 19px; height: 19px; }
+.docviewer-frame-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.docviewer-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 
-.viewer-body { flex: 1; overflow-y: auto; padding: 28px 32px; }
-
-.viewer-loading, .viewer-error {
-    margin: 0;
-    color: var(--muted);
-    text-align: center;
-    padding: 60px 0;
+@media (max-width: 860px) {
+    .docviewer-overlay { padding: 0; align-items: stretch; }
+    .docviewer-dialog {
+        width: 100%;
+        height: 100dvh;
+        max-height: 100dvh;
+        border-radius: 0;
+        box-shadow: none;
+        transform: none;
+    }
+    .docviewer-dialog-header {
+        padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+        gap: 10px;
+    }
+    .docviewer-dialog-heading .eyebrow,
+    .docviewer-dialog-sub { display: none; }
+    .docviewer-dialog-heading h3 { font-size: 1rem; }
+    .docviewer-close {
+        width: 40px;
+        height: 40px;
+    }
 }
-
-.viewer-iframe { width: 100%; height: 70vh; border: 0; }
 
 .docx-content { font-size: 0.95rem; line-height: 1.7; }
 .docx-content h1,.docx-content h2,.docx-content h3 {
@@ -12279,12 +12404,35 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     .is-validation-shaking,
     .admin-flash.error .admin-flash-icon,
     .auth-message.error .auth-message-icon,
-    .sub-submit-error.is-visible {
+    .sub-submit-error.is-visible,
+    .dash-stat {
         animation: none !important;
     }
 }
 
 /* Student / teacher dashboard */
+
+.skip-link {
+    position: fixed;
+    z-index: 10000;
+    top: 14px;
+    left: 14px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--primary-strong);
+    font-size: 0.88rem;
+    font-weight: 800;
+    box-shadow: var(--shadow);
+    transform: translateY(-160%);
+    transition: transform 0.16s ease;
+}
+
+.skip-link:focus {
+    transform: translateY(0);
+    outline: 3px solid rgba(193, 32, 47, 0.3);
+    outline-offset: 2px;
+}
 
 .dash-layout {
     display: grid;
@@ -12357,6 +12505,26 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.9fr);
     gap: 18px;
     align-items: start;
+}
+
+.dash-main.stack {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Priorities are the primary task; schedule remains available as context. */
+.dash-main > .dash-work:first-child {
+    order: 2;
+}
+
+.dash-main > #to-do,
+.dash-main > #priorities {
+    order: 1;
+}
+
+.dash-main > #to-do + .dash-work,
+.dash-main > #priorities + .dash-work {
+    order: 3;
 }
 
 .dash-side {
@@ -12727,6 +12895,32 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     background: #edf8ef;
     color: #245a2c;
     border-color: #b8dfbe;
+}
+
+.dash-status--current {
+    background: #fff6e8;
+    color: #8a4b00;
+    border-color: #f0d2a0;
+}
+
+.dash-status--past {
+    background: #f1f1ef;
+    color: #6c6c67;
+    border-color: #dbdbd6;
+}
+
+.dash-work-row-main .dash-status {
+    margin-left: 3px;
+    vertical-align: middle;
+}
+
+.dash-stat-link:focus-visible,
+.dash-work-row a:focus-visible,
+.dash-announce-list a:focus-visible,
+.dash-course-link:focus-visible,
+.dash-workload-item a:focus-visible {
+    outline: 3px solid rgba(193, 32, 47, 0.38);
+    outline-offset: 2px;
 }
 
 .dash-course-link {
@@ -14495,6 +14689,9 @@ a.grades-simple-row:hover {
     .folder-card {
         border-radius: 10px !important;
         background: #faf7f6 !important;
+        overflow: hidden;
+        max-width: 100%;
+        box-sizing: border-box;
     }
 
     .folder-summary {
@@ -14602,6 +14799,140 @@ a.grades-simple-row:hover {
     .folder-item-info p,
     .folder-item-meta {
         font-size: 0.72rem !important;
+    }
+
+    .folder-info > p {
+        -webkit-line-clamp: 2;
+        max-width: 100%;
+    }
+
+    /* Assignment / submission cards — contain width, stack for phones */
+    .folder-item,
+    .folder-item--managed,
+    .folder-item-info,
+    .folder-items,
+    .folder-body {
+        min-width: 0 !important;
+        max-width: 100%;
+    }
+
+    .folder-item--submission .folder-item-info {
+        gap: 6px;
+        overflow: hidden;
+    }
+
+    .sub-slot-card {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 100%;
+        margin-top: 8px;
+        padding: 12px;
+        border-radius: 12px;
+        display: grid;
+        gap: 10px;
+        overflow: hidden;
+    }
+
+    .sub-slot-deadline {
+        margin-bottom: 0;
+        padding: 10px 12px;
+        gap: 8px;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .sub-slot-deadline-body {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    .sub-slot-deadline-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    .sub-slot-deadline-value,
+    .sub-slot-deadline-label {
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .sub-slot-card-row,
+    .sub-slot-card-row--manage {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) !important;
+        gap: 8px !important;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .sub-slot-card-meta-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .sub-slot-card-row .sub-slot-file,
+    .sub-slot-card-meta-line .sub-slot-file {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        font-size: 0.86rem;
+    }
+
+    .sub-slot-file span:last-child {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sub-slot-card-row .sub-slot-card-edit,
+    .sub-slot-card-row--manage .sub-slot-card-edit {
+        width: 100% !important;
+        max-width: 100%;
+        margin-left: 0 !important;
+        justify-content: center;
+        min-height: 40px;
+        padding: 10px 12px;
+        font-size: 0.86rem;
+        box-sizing: border-box;
+    }
+
+    .sub-slot-weight,
+    .sub-slot-attempts-limit,
+    .sub-slot-status {
+        flex: 0 1 auto;
+        max-width: 100%;
+        font-size: 0.7rem;
+        padding: 4px 9px;
+        white-space: nowrap;
+    }
+
+    .sub-slot-card-meta,
+    .sub-slot-attempts-note {
+        margin-top: 0;
+        font-size: 0.76rem;
+        overflow-wrap: anywhere;
+    }
+
+    .folder-item--submission .folder-item-actions {
+        width: 100%;
+        max-width: 100%;
+        justify-content: flex-start;
+        margin-top: 4px;
+        padding-top: 2px;
+        gap: 6px;
+        box-sizing: border-box;
+    }
+
+    .folder-item--submission .folder-item-actions .btn-icon {
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
     }
 
     .course-mobile-peek {

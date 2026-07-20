@@ -423,6 +423,27 @@ if (!empty($annCourseIds)) {
     }
 }
 
+// Student announcements have dedicated priority/bulletin surfaces. Keep Inbox
+// focused on replies, grades and other personal updates instead of repeating them.
+$unreadAnnouncementIds = array_map(
+    static fn(array $announcement): int => (int) ($announcement['id'] ?? 0),
+    $unreadCourseAnnouncements
+);
+$bulletinModuleAnnouncements = array_values(array_filter(
+    $moduleAnnouncements,
+    static fn(array $announcement): bool => !in_array((int) ($announcement['id'] ?? 0), $unreadAnnouncementIds, true)
+));
+$recentInboxNotifications = ($isStaff || $isAdmin)
+    ? $recentAnswers
+    : array_values(array_filter(
+        $recentAnswers,
+        static fn(array $notification): bool => !in_array(
+            (string) ($notification['type'] ?? ''),
+            ['announcement', 'announcements'],
+            true
+        )
+    ));
+
 $notifStmt = $db->prepare(
     "SELECT COUNT(*) FROM portal_notifications
      WHERE user_id = ? AND read_at = ''"
@@ -585,11 +606,6 @@ ob_start();
 <section class="dash-layout">
 
     <div class="dash-stat-grid dash-stat-grid--3">
-        <article class="dash-stat">
-            <span class="dash-stat-label">Today</span>
-            <strong class="dash-stat-value"><?= count($todayClasses) ?></strong>
-            <a class="dash-stat-link" href="timetable.php">View timetable</a>
-        </article>
         <?php if ($isStaff || $isAdmin): ?>
         <article class="dash-stat<?= $needsAttentionTotal > 0 ? ' dash-stat--alert' : '' ?>">
             <span class="dash-stat-label">To do</span>
@@ -603,6 +619,11 @@ ob_start();
             <a class="dash-stat-link" href="#priorities">View deadlines</a>
         </article>
         <?php endif; ?>
+        <article class="dash-stat">
+            <span class="dash-stat-label">Today</span>
+            <strong class="dash-stat-value"><?= count($todayClasses) ?></strong>
+            <a class="dash-stat-link" href="#dash-schedule">View schedule</a>
+        </article>
         <article class="dash-stat<?= $unreadNotifCount > 0 ? ' dash-stat--alert' : '' ?>">
             <span class="dash-stat-label">Inbox</span>
             <strong class="dash-stat-value"><?= $unreadNotifCount ?></strong>
@@ -613,7 +634,7 @@ ob_start();
     <div class="dash-columns">
         <div class="dash-main stack">
 
-            <article class="card-shell dash-work">
+            <article class="card-shell dash-work" id="dash-schedule">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Schedule</p>
@@ -647,7 +668,7 @@ ob_start();
                                     <span>
                                         <?= portal_escape($formatTime($slot)) ?> · <?= portal_escape((string) $slot['code']) ?>
                                         <?php if ($phaseLabel !== ''): ?>
-                                            · <em class="dash-work-age<?= $phase === 'current' ? ' is-urgent' : '' ?>"><?= portal_escape($phaseLabel) ?></em>
+                                            · <span class="dash-status dash-status--<?= $phase === 'current' ? 'current' : 'past' ?>"><?= portal_escape($phaseLabel) ?></span>
                                         <?php endif; ?>
                                     </span>
                                 </div>
@@ -803,7 +824,7 @@ ob_start();
                                             <span>
                                                 <?= $meta !== '' ? portal_escape($meta) . ' · ' : '' ?>
                                                 <?= portal_escape((string) $item['time']) ?>
-                                                · <em class="dash-work-age<?= $state === 'closed' || $state === 'soon' ? ' is-urgent' : '' ?>"><?= portal_escape($statusLabel) ?></em>
+                                                · <span class="dash-status dash-status--<?= portal_escape($state) ?>"><?= portal_escape($statusLabel) ?></span>
                                             </span>
                                         </div>
                                         <a class="button-secondary button--sm" href="<?= portal_escape((string) $item['href']) ?>">Open</a>
@@ -853,16 +874,16 @@ ob_start();
                                         $submitted = !empty($item['submitted']);
                                         if ($submitted) {
                                             $statusLabel = 'Submitted';
-                                            $ageClass = '';
+                                            $statusClass = 'submitted';
                                         } elseif ($state === 'closed') {
                                             $statusLabel = 'Overdue';
-                                            $ageClass = ' is-stale';
+                                            $statusClass = 'closed';
                                         } elseif ($state === 'soon') {
                                             $statusLabel = 'Due soon';
-                                            $ageClass = ' is-urgent';
+                                            $statusClass = 'soon';
                                         } else {
                                             $statusLabel = 'Upcoming';
-                                            $ageClass = '';
+                                            $statusClass = 'open';
                                         }
                                     ?>
                                     <li class="dash-work-row<?= !$submitted && $state === 'closed' ? ' is-stale' : '' ?>">
@@ -871,7 +892,7 @@ ob_start();
                                             <span>
                                                 <?= portal_escape($item['course_title']) ?>
                                                 · Due <?= portal_escape($item['deadline_info']['text']) ?>
-                                                · <em class="dash-work-age<?= $ageClass ?>"><?= portal_escape($statusLabel) ?></em>
+                                                · <span class="dash-status dash-status--<?= $statusClass ?>"><?= portal_escape($statusLabel) ?></span>
                                             </span>
                                         </div>
                                         <a class="<?= $submitted ? 'button-secondary' : 'button' ?> button--sm" href="course.php?course=<?= urlencode($item['slug']) ?>&section=content"><?= $submitted ? 'View' : 'Open' ?></a>
@@ -903,7 +924,7 @@ ob_start();
                                                 <?= portal_escape((string) $row['course_title']) ?>
                                                 · Marked <?= portal_escape($relativeWhen((string) $row['marked_at'])) ?>
                                                 <?php if ($row['score'] !== null && $row['score'] !== ''): ?>
-                                                    · <em class="dash-work-age"><?= portal_escape((string) $row['score']) ?>%</em>
+                                                    · <span class="dash-status dash-status--marked"><?= portal_escape((string) $row['score']) ?>%</span>
                                                 <?php endif; ?>
                                             </span>
                                         </div>
@@ -963,7 +984,6 @@ ob_start();
 
         <aside class="dash-side stack">
 
-            <?php if (!empty($recentAnswers) || $unreadNotifCount > 0 || !($isStaff || $isAdmin)): ?>
             <article class="card-shell" id="recent-alerts">
                 <div class="section-head">
                     <div>
@@ -974,11 +994,15 @@ ob_start();
                     <a class="inline-action" href="notifications.php">Open all</a>
                 </div>
 
-                <?php if (empty($recentAnswers)): ?>
-                    <p class="dash-empty">No notifications yet. Replies and new announcements will show here.</p>
+                <?php if (empty($recentInboxNotifications)): ?>
+                    <p class="dash-empty">
+                        <?= $isStaff || $isAdmin
+                            ? 'No notifications yet. Student replies and system updates will show here.'
+                            : 'No notifications yet. Replies and new announcements will show here.' ?>
+                    </p>
                 <?php else: ?>
                 <ul class="dash-announce-list">
-                    <?php foreach (array_slice($recentAnswers, 0, 5) as $n): ?>
+                    <?php foreach (array_slice($recentInboxNotifications, 0, 5) as $n): ?>
                         <?php
                             $link = trim((string) ($n['link'] ?? ''));
                             $href = $link !== '' ? $link : 'notifications.php';
@@ -1010,7 +1034,6 @@ ob_start();
                 </ul>
                 <?php endif; ?>
             </article>
-            <?php endif; ?>
 
             <?php if ($isStaff || $isAdmin): ?>
             <article class="card-shell">
@@ -1135,7 +1158,7 @@ ob_start();
                     <a class="inline-action" href="communication.php">All</a>
                 </div>
 
-                <?php if (empty($majorAnnouncements) && empty($moduleAnnouncements)): ?>
+                <?php if (empty($majorAnnouncements) && empty($bulletinModuleAnnouncements)): ?>
                     <p class="dash-empty">No announcements yet.</p>
                 <?php else: ?>
                     <ul class="dash-announce-list">
@@ -1148,7 +1171,7 @@ ob_start();
                                 </a>
                             </li>
                         <?php endforeach; ?>
-                        <?php foreach ($moduleAnnouncements as $ann): ?>
+                        <?php foreach ($bulletinModuleAnnouncements as $ann): ?>
                             <li>
                                 <a href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">
                                     <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape((string) $ann['course_title']) ?></span>
