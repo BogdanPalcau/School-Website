@@ -112,13 +112,33 @@ if ($isAdmin) {
 $todayClasses = [];
 $nextClass = null;
 $nowHm = date('H:i');
+
+$slotPhase = static function (array $slot) use ($nowHm): string {
+    $start = trim((string) ($slot['start_time'] ?? ''));
+    $end = trim((string) ($slot['end_time'] ?? ''));
+    if ($start === '') {
+        return 'upcoming';
+    }
+    if ($end !== '' && $end < $nowHm) {
+        return 'past';
+    }
+    if ($start <= $nowHm && ($end === '' || $end >= $nowHm)) {
+        return 'current';
+    }
+    if ($start < $nowHm) {
+        return 'past';
+    }
+    return 'upcoming';
+};
+
 foreach ($scheduleRows as $row) {
     $day = (string) ($row['day_of_week'] ?? '');
     $rowOrder = $dayOrder[$day] ?? 8;
     if ($day === $todayName) {
         $todayClasses[] = $row;
         $start = trim((string) ($row['start_time'] ?? ''));
-        if ($nextClass === null && ($start === '' || $start >= $nowHm)) {
+        $phase = $slotPhase($row);
+        if ($nextClass === null && ($phase === 'current' || $start === '' || $start >= $nowHm)) {
             $nextClass = $row;
         }
     } elseif ($nextClass === null && $rowOrder > $todayOrder) {
@@ -614,14 +634,25 @@ ob_start();
                             <?php
                                 $joinUrl = trim((string) ($slot['room'] ?? ''));
                                 $hasJoin = $isJoinUrl($slot);
+                                $phase = $slotPhase($slot);
+                                $phaseLabel = match ($phase) {
+                                    'past' => 'Done',
+                                    'current' => 'Now',
+                                    default => '',
+                                };
                             ?>
-                            <li class="dash-work-row<?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
+                            <li class="dash-work-row dash-work-row--<?= portal_escape($phase) ?><?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
                                 <div class="dash-work-row-main">
                                     <strong><?= portal_escape((string) $slot['title']) ?></strong>
-                                    <span><?= portal_escape($formatTime($slot)) ?> · <?= portal_escape((string) $slot['code']) ?></span>
+                                    <span>
+                                        <?= portal_escape($formatTime($slot)) ?> · <?= portal_escape((string) $slot['code']) ?>
+                                        <?php if ($phaseLabel !== ''): ?>
+                                            · <em class="dash-work-age<?= $phase === 'current' ? ' is-urgent' : '' ?>"><?= portal_escape($phaseLabel) ?></em>
+                                        <?php endif; ?>
+                                    </span>
                                 </div>
                                 <div class="dash-work-row-actions">
-                                    <?php if ($hasJoin): ?>
+                                    <?php if ($hasJoin && $phase !== 'past'): ?>
                                         <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
                                     <?php endif; ?>
                                     <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $slot['slug']) ?>&section=calendar">Open</a>

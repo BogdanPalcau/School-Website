@@ -28,9 +28,16 @@ Options -Indexes
     </IfModule>
 </FilesMatch>
 
-# Block direct HTTP access to sensitive folders (defence in depth).
+# Block direct HTTP access to sensitive folders (defence in depth),
+# then serve the app from public/ so /School-Website-main/ and
+# /School-Website-main/login.php work without needing /public/ in the URL.
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteRule ^database(?:/|$) - [F,L,NC]
 RewriteRule ^uploads(?:/|$) - [F,L,NC]
+RewriteRule ^public(?:/|$) - [L]
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>

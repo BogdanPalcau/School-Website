@@ -1,0 +1,213 @@
+{
+    "generated_at": "2026-07-20T22:11:31+01:00",
+    "ai": {
+        "pass": 5,
+        "total": 5,
+        "accuracy_pct": 100,
+        "rating_10": 10,
+        "discrimination_gap": 34,
+        "discrimination_ok": true
+    },
+    "metadata_reader": {
+        "pass": 5,
+        "total": 5,
+        "accuracy_pct": 100,
+        "rating_10": 10
+    },
+    "process_spoof_detection": {
+        "pass": 5,
+        "total": 6,
+        "accuracy_pct": 83.3,
+        "rating_10": 8.3
+    },
+    "spoof_resistance": {
+        "rating_10": 7,
+        "detail": "Metadata spoof succeeded, but AI style layer still flagged the text"
+    },
+    "overall_rating_10": 9,
+    "results": {
+        "ai": [
+            {
+                "id": "ai_template",
+                "label": "Obvious ChatGPT-style template essay",
+                "expect": "high",
+                "score": 34,
+                "level": "Some concern",
+                "evidence": "medium",
+                "ok": true,
+                "signals": [
+                    "Sentence lengths are extremely uniform.",
+                    "Very frequent academic transition/template phrases were detected (20 distinct)."
+                ],
+                "verdict": "correct"
+            },
+            {
+                "id": "ai_paraphrase",
+                "label": "Lightly paraphrased AI essay",
+                "expect": "medium",
+                "score": 14,
+                "level": "Some concern",
+                "evidence": "low",
+                "ok": true,
+                "signals": [
+                    "Sentence lengths are extremely uniform."
+                ],
+                "verdict": "correct"
+            },
+            {
+                "id": "ai_export_wrapper",
+                "label": "ChatGPT export wrapper left in",
+                "expect": "high",
+                "score": 34,
+                "level": "Some concern",
+                "evidence": "medium",
+                "ok": true,
+                "signals": [
+                    "Sentence lengths are extremely uniform.",
+                    "Very frequent academic transition/template phrases were detected (20 distinct)."
+                ],
+                "verdict": "correct"
+            },
+            {
+                "id": "human_messy",
+                "label": "Human messy reflective essay",
+                "expect": "low",
+                "score": 0,
+                "level": "Low",
+                "evidence": "low",
+                "ok": true,
+                "signals": [
+                    "Writing style looks within a typical human range for this heuristic check."
+                ],
+                "verdict": "correct"
+            },
+            {
+                "id": "human_academic",
+                "label": "Human formal academic with citations",
+                "expect": "low",
+                "score": 0,
+                "level": "Low",
+                "evidence": "low",
+                "ok": true,
+                "signals": [
+                    "Writing style looks within a typical human range for this heuristic check."
+                ],
+                "verdict": "correct"
+            }
+        ],
+        "metadata": [
+            {
+                "id": "genuine_writing",
+                "label": "Genuine-looking metadata (hours of edits, many revisions, matching author)",
+                "expect_process": "low",
+                "process_score": 0,
+                "process_level": "low",
+                "process_ok": true,
+                "ai_score": 0,
+                "ai_level": "Low",
+                "risk_signals": [],
+                "extraction_confidence": "high",
+                "meta_author": "Alex Morgan",
+                "meta_revision": 18,
+                "meta_edit_minutes": 240,
+                "spoof_caught_by_ai": null,
+                "note": ""
+            },
+            {
+                "id": "paste_and_submit",
+                "label": "Paste-and-submit signals (0 edit time, revision 1, 2-min create/save)",
+                "expect_process": "high",
+                "process_score": 35,
+                "process_level": "high",
+                "process_ok": true,
+                "ai_score": 41,
+                "ai_level": "Needs review",
+                "risk_signals": [
+                    "High pasted content (100% of characters)."
+                ],
+                "extraction_confidence": "high",
+                "meta_author": "Alex Morgan",
+                "meta_revision": 1,
+                "meta_edit_minutes": 0,
+                "spoof_caught_by_ai": null,
+                "note": ""
+            },
+            {
+                "id": "spoof_author_mismatch",
+                "label": "Spoof: wrong author name vs submitter",
+                "expect_process": "medium",
+                "process_score": 18,
+                "process_level": "medium",
+                "process_ok": true,
+                "ai_score": 41,
+                "ai_level": "Needs review",
+                "risk_signals": [
+                    "Document author (ChatGPT User) does not match the submitting student (Alex Morgan)."
+                ],
+                "extraction_confidence": "high",
+                "meta_author": "ChatGPT User",
+                "meta_revision": 3,
+                "meta_edit_minutes": 45,
+                "spoof_caught_by_ai": null,
+                "note": ""
+            },
+            {
+                "id": "spoof_fake_edit_time",
+                "label": "Spoof: AI text but inflated TotalTime/revisions to look human",
+                "expect_process": "low",
+                "process_score": 0,
+                "process_level": "low",
+                "process_ok": true,
+                "ai_score": 34,
+                "ai_level": "Some concern",
+                "risk_signals": [],
+                "extraction_confidence": "high",
+                "meta_author": "Alex Morgan",
+                "meta_revision": 22,
+                "meta_edit_minutes": 380,
+                "spoof_caught_by_ai": true,
+                "note": "Metadata spoof succeeded, but AI style layer still flagged the text"
+            },
+            {
+                "id": "spoof_wordcount_mismatch",
+                "label": "Spoof: embedded word count far from extracted text",
+                "expect_process": "medium",
+                "process_score": 10,
+                "process_level": "low",
+                "process_ok": false,
+                "ai_score": 41,
+                "ai_level": "Needs review",
+                "risk_signals": [
+                    "Embedded file word count (12) differs significantly from extracted text (176 words)."
+                ],
+                "extraction_confidence": "high",
+                "meta_author": "Alex Morgan",
+                "meta_revision": 5,
+                "meta_edit_minutes": 60,
+                "spoof_caught_by_ai": null,
+                "note": ""
+            },
+            {
+                "id": "heavy_portal_paste",
+                "label": "Portal textarea: >45% pasted characters",
+                "expect_process": "high",
+                "process_score": 45,
+                "process_level": "high",
+                "process_ok": true,
+                "ai_score": 41,
+                "ai_level": "Needs review",
+                "risk_signals": [
+                    "High pasted content (100% of characters).",
+                    "Several paste events recorded (3)."
+                ],
+                "extraction_confidence": null,
+                "meta_author": "",
+                "meta_revision": null,
+                "meta_edit_minutes": null,
+                "spoof_caught_by_ai": null,
+                "note": ""
+            }
+        ],
+        "combined": []
+    }
+}

@@ -182,28 +182,318 @@ if (!function_exists('portal_extract_text_via_soffice')) {
     }
 }
 
-if (!function_exists('portal_extract_submission_text')) {
-    function portal_extract_submission_text(string $absPath, string $filename): string
+if (!function_exists('portal_extract_submission_text_detailed')) {
+    /**
+     * Extract text and report how reliable the extraction was.
+     *
+     * @return array{
+     *   text: string,
+     *   extractor: string,
+     *   char_count: int,
+     *   word_count: int,
+     *   confidence: 'high'|'medium'|'low'|'none',
+     *   note: string
+     * }
+     */
+    function portal_extract_submission_text_detailed(string $absPath, string $filename): array
     {
         $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         $text = '';
+        $extractor = 'none';
+        $note = '';
 
         if ($ext === 'txt') {
             $text = trim((string) @file_get_contents($absPath));
+            $extractor = $text !== '' ? 'txt' : 'none';
         } elseif ($ext === 'docx') {
             $text = portal_extract_docx_text($absPath);
+            $extractor = $text !== '' ? 'docx' : 'none';
+            if ($text === '' && !class_exists('ZipArchive')) {
+                $note = 'PHP zip extension is required to read DOCX files.';
+            }
         } elseif ($ext === 'pdf') {
             $text = portal_extract_pdf_text($absPath);
+            $extractor = $text !== '' ? 'pdf-raw' : 'none';
+            if ($text !== '') {
+                $note = 'PDF text was read with a basic extractor; install LibreOffice for better results.';
+            }
         }
 
         if (mb_strlen($text) < 80 && in_array($ext, ['doc', 'docx', 'pdf', 'odt', 'rtf'], true)) {
             $converted = portal_extract_text_via_soffice($absPath);
             if (mb_strlen($converted) > mb_strlen($text)) {
                 $text = $converted;
+                $extractor = 'soffice';
+                $note = '';
+            } elseif ($text === '' && $converted === '') {
+                $note = $note !== ''
+                    ? $note
+                    : 'Could not extract readable text. Try DOCX/TXT, or install LibreOffice for PDF/DOC.';
+            }
+        }
+
+        $text = trim($text);
+        $charCount = function_exists('mb_strlen') ? mb_strlen($text) : strlen($text);
+        $wordCount = count(portal_integrity_words($text));
+
+        $confidence = 'none';
+        if ($charCount === 0) {
+            $confidence = 'none';
+            if ($note === '') {
+                $note = 'No readable text could be extracted from this file.';
+            }
+        } elseif ($extractor === 'pdf-raw' && $wordCount < 80) {
+            $confidence = 'low';
+            $note = $note !== '' ? $note : 'PDF extraction looks incomplete.';
+        } elseif ($extractor === 'pdf-raw') {
+            $confidence = 'medium';
+        } elseif ($wordCount < 25) {
+            $confidence = 'low';
+            $note = $note !== '' ? $note : 'Very little text was extracted.';
+        } else {
+            $confidence = 'high';
+        }
+
+        return [
+            'text' => $text,
+            'extractor' => $extractor,
+            'char_count' => $charCount,
+            'word_count' => $wordCount,
+            'confidence' => $confidence,
+            'note' => $note,
+        ];
+    }
+}
+
+if (!function_exists('portal_extract_submission_text')) {
+    function portal_extract_submission_text(string $absPath, string $filename): string
+    {
+        return portal_extract_submission_text_detailed($absPath, $filename)['text'];
+    }
+}
+
+if (!function_exists('portal_integrity_strip_scoring_zones')) {
+    /**
+     * Remove bibliography / references / appendix sections before similarity scoring.
+     * Display text stays intact; only the scoring copy is reduced.
+     */
+    function portal_integrity_strip_scoring_zones(string $text): string
+    {
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+        // Cut from a standalone heading like "References" / "Bibliography" / "Appendix"
+        // through the end of the document (or next major section is rare after these).
+        $pattern = '/(?:^|\n)\s*(?:references|bibliography|works\s+cited|appendices|appendix(?:\s+[A-Z0-9]+)?)\s*(?:\n|:)/iu';
+        if (preg_match($pattern, $text, $m, PREG_OFFSET_CAPTURE)) {
+            $cutAt = (int) $m[0][1];
+            if ($cutAt > 80) {
+                $text = substr($text, 0, $cutAt);
             }
         }
 
         return trim($text);
+    }
+}
+
+if (!function_exists('portal_integrity_subtract_instruction_text')) {
+    /**
+     * Remove long shared phrases that come from the assignment brief itself.
+     */
+    function portal_integrity_subtract_instruction_text(string $scoringText, string $instructions): string
+    {
+        $instructions = portal_integrity_normalize_text($instructions);
+        if ($instructions === '' || count(portal_integrity_words($instructions)) < 12) {
+            return $scoringText;
+        }
+
+        $scoringNorm = portal_integrity_normalize_text($scoringText);
+        $instrWords = portal_integrity_words($instructions);
+        // Remove overlapping 7-word windows from the scoring text.
+        for ($size = 7; $size >= 5; $size--) {
+            if (count($instrWords) < $size) {
+                continue;
+            }
+            for ($i = 0; $i <= count($instrWords) - $size; $i++) {
+                $phrase = implode(' ', array_slice($instrWords, $i, $size));
+                if ($phrase === '') {
+                    continue;
+                }
+                $scoringNorm = str_ireplace($phrase, ' ', $scoringNorm);
+            }
+        }
+
+        return portal_integrity_normalize_text($scoringNorm);
+    }
+}
+
+if (!function_exists('portal_integrity_source_is_indexed')) {
+    function portal_integrity_source_is_indexed(PDO $db, string $sourceType, int $sourceId): bool
+    {
+        portal_integrity_ensure_index_table($db);
+        $stmt = $db->prepare(
+            'SELECT 1 FROM integrity_sentence_index WHERE source_type = ? AND source_id = ? LIMIT 1'
+        );
+        $stmt->execute([$sourceType, $sourceId]);
+        return (bool) $stmt->fetchColumn();
+    }
+}
+
+if (!function_exists('portal_integrity_index_document_if_needed')) {
+    function portal_integrity_index_document_if_needed(
+        PDO $db,
+        string $text,
+        string $sourceType,
+        int $sourceId,
+        string $sourceLabel,
+        ?int $courseId = null,
+        bool $force = false
+    ): int {
+        if (!$force && portal_integrity_source_is_indexed($db, $sourceType, $sourceId)) {
+            return 0;
+        }
+        return portal_integrity_index_document($db, $text, $sourceType, $sourceId, $sourceLabel, $courseId);
+    }
+}
+
+if (!function_exists('portal_integrity_build_match_map')) {
+    /**
+     * Locate overlapping phrases inside the student submission for teacher highlighting.
+     *
+     * @param array<int, array<string, mixed>> $matches
+     * @return array{spans: array<int, array<string, mixed>>, excerpt: string}
+     */
+    function portal_integrity_build_match_map(string $displayText, array $matches): array
+    {
+        $displayText = portal_integrity_normalize_text($displayText);
+        $lower = function_exists('mb_strtolower') ? mb_strtolower($displayText) : strtolower($displayText);
+        $spans = [];
+
+        foreach ($matches as $match) {
+            if (!empty($match['self_authored'])) {
+                continue;
+            }
+            $source = (string) ($match['source'] ?? 'Matched source');
+            $score = (float) ($match['score'] ?? 0);
+            $phrases = is_array($match['matched_phrases'] ?? null) ? $match['matched_phrases'] : [];
+            foreach ($phrases as $phrase) {
+                $phrase = portal_integrity_normalize_text((string) $phrase);
+                if ($phrase === '' || (function_exists('mb_strlen') ? mb_strlen($phrase) : strlen($phrase)) < 12) {
+                    continue;
+                }
+                $needle = function_exists('mb_strtolower') ? mb_strtolower($phrase) : strtolower($phrase);
+                $offset = function_exists('mb_strpos') ? mb_strpos($lower, $needle) : strpos($lower, $needle);
+                if ($offset === false) {
+                    continue;
+                }
+                $length = function_exists('mb_strlen') ? mb_strlen($phrase) : strlen($phrase);
+                $spans[] = [
+                    'offset' => (int) $offset,
+                    'length' => (int) $length,
+                    'phrase' => function_exists('mb_substr')
+                        ? mb_substr($displayText, (int) $offset, (int) $length)
+                        : substr($displayText, (int) $offset, (int) $length),
+                    'source' => $source,
+                    'score' => $score,
+                ];
+            }
+        }
+
+        usort($spans, static function (array $a, array $b): int {
+            if ($a['offset'] === $b['offset']) {
+                return $b['length'] <=> $a['length'];
+            }
+            return $a['offset'] <=> $b['offset'];
+        });
+
+        // Drop overlapping spans (keep earliest / longest).
+        $filtered = [];
+        $cursor = -1;
+        foreach ($spans as $span) {
+            $end = $span['offset'] + $span['length'];
+            if ($span['offset'] < $cursor) {
+                continue;
+            }
+            $filtered[] = $span;
+            $cursor = $end;
+            if (count($filtered) >= 12) {
+                break;
+            }
+        }
+
+        $excerpt = '';
+        if ($filtered !== []) {
+            $start = max(0, $filtered[0]['offset'] - 80);
+            $last = $filtered[min(count($filtered), 4) - 1];
+            $end = min(
+                function_exists('mb_strlen') ? mb_strlen($displayText) : strlen($displayText),
+                $last['offset'] + $last['length'] + 120
+            );
+            $excerpt = function_exists('mb_substr')
+                ? mb_substr($displayText, $start, max(0, $end - $start))
+                : substr($displayText, $start, max(0, $end - $start));
+            // Re-base offsets into the excerpt window for rendering.
+            foreach ($filtered as &$span) {
+                $span['excerpt_offset'] = max(0, $span['offset'] - $start);
+            }
+            unset($span);
+        }
+
+        return [
+            'spans' => $filtered,
+            'excerpt' => $excerpt,
+            'excerpt_start' => $filtered !== [] ? max(0, $filtered[0]['offset'] - 80) : 0,
+        ];
+    }
+}
+
+if (!function_exists('portal_integrity_render_match_map')) {
+    function portal_integrity_render_match_map(array $matchMap): string
+    {
+        $excerpt = (string) ($matchMap['excerpt'] ?? '');
+        $spans = is_array($matchMap['spans'] ?? null) ? $matchMap['spans'] : [];
+        if ($excerpt === '' || $spans === []) {
+            return '';
+        }
+
+        $excerptStart = (int) ($matchMap['excerpt_start'] ?? 0);
+        $html = '';
+        $cursor = 0;
+        $len = function_exists('mb_strlen') ? mb_strlen($excerpt) : strlen($excerpt);
+
+        foreach ($spans as $span) {
+            $absOffset = (int) ($span['offset'] ?? 0);
+            $rel = isset($span['excerpt_offset'])
+                ? (int) $span['excerpt_offset']
+                : max(0, $absOffset - $excerptStart);
+            $spanLen = (int) ($span['length'] ?? 0);
+            if ($rel < $cursor || $rel >= $len || $spanLen <= 0) {
+                continue;
+            }
+            $before = function_exists('mb_substr')
+                ? mb_substr($excerpt, $cursor, $rel - $cursor)
+                : substr($excerpt, $cursor, $rel - $cursor);
+            $marked = function_exists('mb_substr')
+                ? mb_substr($excerpt, $rel, $spanLen)
+                : substr($excerpt, $rel, $spanLen);
+            if ($marked === '') {
+                continue;
+            }
+            $html .= portal_escape($before);
+            $title = (string) ($span['source'] ?? 'Matched source');
+            if (isset($span['score'])) {
+                $title .= ' (' . round((float) $span['score'], 1) . '%)';
+            }
+            $html .= '<mark class="integrity-map-mark" title="' . portal_escape($title) . '">'
+                . portal_escape($marked)
+                . '</mark>';
+            $cursor = $rel + $spanLen;
+        }
+
+        $tail = function_exists('mb_substr')
+            ? mb_substr($excerpt, $cursor)
+            : substr($excerpt, $cursor);
+        $html .= portal_escape($tail);
+
+        return $html;
     }
 }
 
@@ -640,6 +930,9 @@ if (!function_exists('portal_integrity_fingerprint_matches')) {
                 $bySource[$key] = [
                     'source' => (string) $row['source_label'],
                     'type' => (string) $row['source_type'],
+                    'source_type' => (string) $row['source_type'],
+                    'source_id' => (int) $row['source_id'],
+                    'source_key' => $key,
                     'score' => 0.0,
                     'matched_phrases' => [],
                     'snippet' => '',
@@ -2682,9 +2975,24 @@ if (!function_exists('portal_integrity_check_similarity')) {
         ?array $submissionContext = null
     ): array {
         $cleanText = portal_integrity_normalize_text($text);
-        // Score against a quote-stripped copy so properly cited passages don't
-        // count as the student's own overlap. Display/report still use full text.
+        $extraction = is_array($submissionContext['extraction'] ?? null)
+            ? $submissionContext['extraction']
+            : null;
+        $extractionConfidence = (string) ($extraction['confidence'] ?? '');
+        if ($extractionConfidence === '' && $cleanText !== '') {
+            $extractionConfidence = 'high';
+        } elseif ($extractionConfidence === '') {
+            $extractionConfidence = 'none';
+        }
+
+        // Score against a quote-stripped + zone-stripped copy so cited passages
+        // and bibliography/appendix blocks don't inflate the score.
         $scoringText = portal_integrity_normalize_text(portal_integrity_strip_quotes($cleanText));
+        $scoringText = portal_integrity_strip_scoring_zones($scoringText);
+        $slotInstructions = trim((string) ($submissionContext['slot_instructions'] ?? ''));
+        if ($slotInstructions !== '') {
+            $scoringText = portal_integrity_subtract_instruction_text($scoringText, $slotInstructions);
+        }
         if ($scoringText === '') {
             $scoringText = $cleanText;
         }
@@ -2692,35 +3000,47 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $wordCount = count($words);
         $scoringWordCount = count(portal_integrity_words($scoringText));
         $studentName = trim((string) ($submissionContext['student_name'] ?? ''));
-        // Portal account display names don't always match a document's embedded
-        // "author" metadata (nicknames, real name vs. username, etc.), so also
-        // keep the submitter's own file-author name to cross-check against other
-        // documents' author metadata when identifying self-authored sources.
         $submissionFileAuthor = trim((string) ($submissionContext['file_metadata']['author'] ?? ''));
+        $zonesStripped = $scoringWordCount < $wordCount;
 
-        if ($wordCount < 25) {
+        $incompleteExtraction = in_array($extractionConfidence, ['none', 'low'], true) && $wordCount < 25;
+
+        if ($wordCount < 25 || $incompleteExtraction) {
+            $status = $incompleteExtraction ? 'incomplete' : 'no_text';
+            $summary = $incompleteExtraction
+                ? ((string) ($extraction['note'] ?? '') !== ''
+                    ? (string) $extraction['note']
+                    : 'Text extraction was incomplete, so originality could not be assessed reliably.')
+                : 'Not enough readable text was available to produce a similarity report. Try DOCX or TXT, or install LibreOffice for better PDF/DOC extraction.';
             return [
-                'status' => 'no_text',
+                'status' => $status,
                 'score' => null,
                 'word_count' => $wordCount,
                 'report' => json_encode([
-                    'engine' => 'native_institutional_v3',
-                    'status' => 'no_text',
+                    'engine' => 'native_institutional_v4',
+                    'status' => $status,
                     'score' => null,
                     'level' => 'pending',
-                    'summary' => 'Not enough readable text was available to produce a similarity report. Try DOCX or TXT, or install LibreOffice for better PDF/DOC extraction.',
+                    'summary' => $summary,
+                    'extraction' => $extraction ?? [
+                        'confidence' => $extractionConfidence,
+                        'extractor' => 'unknown',
+                        'note' => $summary,
+                    ],
                     'scope' => [
-                        'institutional_database' => 'checked',
+                        'institutional_database' => 'skipped',
                         'global_web' => 'not_configured',
                         'academic_journals' => 'not_configured',
                     ],
                     'matches' => [],
                     'highlights' => [],
+                    'match_map' => ['spans' => [], 'excerpt' => ''],
                 ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             ];
         }
 
         $sources = [];
+        $seenKeys = [];
 
         if ($fileHash !== '') {
             $hashStmt = $db->prepare(
@@ -2741,11 +3061,12 @@ if (!function_exists('portal_integrity_check_similarity')) {
                     'score' => 100.0,
                     'word_count' => $wordCount,
                     'report' => json_encode([
-                        'engine' => 'native_institutional_v3',
+                        'engine' => 'native_institutional_v4',
                         'status' => 'checked',
                         'score' => 100.0,
                         'level' => 'high',
                         'summary' => 'This file is an exact duplicate of another submission in the institutional database.',
+                        'extraction' => $extraction,
                         'scope' => [
                             'institutional_database' => 'checked',
                             'global_web' => 'skipped',
@@ -2759,11 +3080,29 @@ if (!function_exists('portal_integrity_check_similarity')) {
                             'snippet' => 'Matched file: ' . $hashRow['filename'],
                         ]],
                         'highlights' => ['identical file hash'],
+                        'match_map' => ['spans' => [], 'excerpt' => ''],
                     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 ];
             }
         }
 
+        // Index-first: query sentence fingerprints before loading full texts.
+        $earlyFingerprint = portal_integrity_fingerprint_matches(
+            $db,
+            $scoringText,
+            $submissionId !== null ? 'submission' : null,
+            $submissionId
+        );
+
+        $candidateKeys = [];
+        foreach ($earlyFingerprint['sources'] as $fpSource) {
+            $key = (string) ($fpSource['source_key'] ?? '');
+            if ($key !== '') {
+                $candidateKeys[$key] = true;
+            }
+        }
+
+        // Prefer same-course recent submissions, then older institutional ones.
         $stmt = $db->prepare(
             "SELECT cs.id, cs.submission_text, cs.filename, cs.submitted_at,
                     u.name AS student_name, c.full_title AS course_title, cfi.title AS slot_title
@@ -2773,13 +3112,17 @@ if (!function_exists('portal_integrity_check_similarity')) {
              JOIN course_folder_items cfi ON cfi.id = cs.item_id
              WHERE cs.submission_text != ''
                AND NOT (cs.item_id = ? AND cs.user_id = ?)
-             ORDER BY cs.submitted_at DESC
-             LIMIT 120"
+             ORDER BY CASE WHEN cs.course_id = ? THEN 0 ELSE 1 END, cs.submitted_at DESC
+             LIMIT 50"
         );
-        $stmt->execute([$itemId, $userId]);
+        $stmt->execute([$itemId, $userId, $courseId]);
         foreach ($stmt->fetchAll() as $source) {
+            $key = 'submission:' . (int) $source['id'];
+            if (isset($seenKeys[$key])) {
+                continue;
+            }
             $label = trim($source['student_name'] . ' - ' . $source['slot_title'] . ' (' . $source['course_title'] . ')');
-            portal_integrity_index_document(
+            portal_integrity_index_document_if_needed(
                 $db,
                 (string) $source['submission_text'],
                 'submission',
@@ -2787,9 +3130,6 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 $label,
                 $courseId
             );
-            // A different assignment slot submitted by the same student (e.g. an
-            // earlier draft/interim submission that evolved into this one) is
-            // self-overlap, not plagiarism — flag it so it doesn't drive the score.
             $selfAuthored = $studentName !== ''
                 && portal_integrity_names_match($studentName, (string) $source['student_name'], true);
             $sources[] = [
@@ -2798,8 +3138,44 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 'type' => 'institutional submission',
                 'date' => (string) $source['submitted_at'],
                 'self_authored' => $selfAuthored,
-                'source_key' => 'submission:' . (int) $source['id'],
+                'source_key' => $key,
             ];
+            $seenKeys[$key] = true;
+        }
+
+        // Explicitly load fingerprint hit texts missing from the recent window.
+        foreach (array_keys($candidateKeys) as $key) {
+            if (isset($seenKeys[$key]) || !str_starts_with($key, 'submission:')) {
+                continue;
+            }
+            $sid = (int) substr($key, strlen('submission:'));
+            $hitStmt = $db->prepare(
+                "SELECT cs.id, cs.submission_text, cs.submitted_at,
+                        u.name AS student_name, c.full_title AS course_title, cfi.title AS slot_title
+                 FROM course_submissions cs
+                 JOIN users u ON u.id = cs.user_id
+                 JOIN courses c ON c.id = cs.course_id
+                 JOIN course_folder_items cfi ON cfi.id = cs.item_id
+                 WHERE cs.id = ? AND cs.submission_text != ''
+                 LIMIT 1"
+            );
+            $hitStmt->execute([$sid]);
+            $source = $hitStmt->fetch();
+            if (!$source) {
+                continue;
+            }
+            $label = trim($source['student_name'] . ' - ' . $source['slot_title'] . ' (' . $source['course_title'] . ')');
+            $selfAuthored = $studentName !== ''
+                && portal_integrity_names_match($studentName, (string) $source['student_name'], true);
+            $sources[] = [
+                'label' => $label,
+                'text' => (string) $source['submission_text'],
+                'type' => 'institutional submission',
+                'date' => (string) $source['submitted_at'],
+                'self_authored' => $selfAuthored,
+                'source_key' => $key,
+            ];
+            $seenKeys[$key] = true;
         }
 
         $materialStmt = $db->prepare(
@@ -2808,11 +3184,16 @@ if (!function_exists('portal_integrity_check_similarity')) {
              JOIN courses c ON c.id = cfi.course_id
              WHERE cfi.type IN ('document', 'submission')
                AND (cfi.description != '' OR cfi.file_path != '')
+               AND cfi.course_id = ?
              ORDER BY cfi.created_at DESC
-             LIMIT 60"
+             LIMIT 40"
         );
-        $materialStmt->execute();
+        $materialStmt->execute([$courseId]);
         foreach ($materialStmt->fetchAll() as $material) {
+            $key = 'material:' . (int) $material['id'];
+            if (isset($seenKeys[$key])) {
+                continue;
+            }
             $materialText = (string) $material['description'];
             $materialAuthor = '';
             if ($material['file_path'] !== '') {
@@ -2824,13 +3205,9 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 }
             }
             $materialText = portal_integrity_normalize_text($materialText);
-            // Skip trivially short descriptions (e.g. generic placeholder
-            // instructions like "This is where you submit your assignment.") —
-            // they carry no meaningful comparison signal and can only produce
-            // false-positive matches against unrelated submissions.
             if ($materialText !== '' && count(portal_integrity_words($materialText)) >= 25) {
                 $label = trim($material['title'] . ' (' . $material['course_title'] . ')');
-                portal_integrity_index_document(
+                portal_integrity_index_document_if_needed(
                     $db,
                     $materialText,
                     'material',
@@ -2838,9 +3215,6 @@ if (!function_exists('portal_integrity_check_similarity')) {
                     $label,
                     $courseId
                 );
-                // A course document authored by the same student (e.g. a teacher
-                // sharing that student's own interim report as a reference file)
-                // is self-overlap, not plagiarism.
                 $selfAuthored = ($studentName !== '' && $materialAuthor !== ''
                         && portal_integrity_names_match($studentName, $materialAuthor, true))
                     || ($submissionFileAuthor !== '' && $materialAuthor !== ''
@@ -2851,8 +3225,9 @@ if (!function_exists('portal_integrity_check_similarity')) {
                     'type' => 'institutional material',
                     'date' => '',
                     'self_authored' => $selfAuthored,
-                    'source_key' => 'material:' . (int) $material['id'],
+                    'source_key' => $key,
                 ];
+                $seenKeys[$key] = true;
             }
         }
 
@@ -2863,7 +3238,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 'type' => $reference['type'],
                 'date' => '',
             ];
-            portal_integrity_index_document(
+            portal_integrity_index_document_if_needed(
                 $db,
                 $reference['text'],
                 'reference',
@@ -2880,7 +3255,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
             if (!empty($source['self_authored']) && isset($source['source_key'])) {
                 $selfAuthoredSourceKeys[] = (string) $source['source_key'];
             }
-            $pair = portal_integrity_pair_score($scoringText, $source['text']);
+            $pair = portal_integrity_pair_score($scoringText, portal_integrity_strip_scoring_zones($source['text']));
             if ($pair['score'] <= 0) {
                 continue;
             }
@@ -2898,10 +3273,6 @@ if (!function_exists('portal_integrity_check_similarity')) {
         }
 
         usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
-        // Self-authored matches (the student's own earlier work, e.g. an
-        // interim draft) are shown for context but must not drive the headline
-        // similarity score — that score should reflect overlap with other
-        // people's work.
         $scorableMatches = array_values(array_filter($matches, static fn(array $m): bool => empty($m['self_authored'])));
         $institutionalMatches = array_slice($matches, 0, 5);
         $score = !empty($scorableMatches) ? (float) $scorableMatches[0]['score'] : 0.0;
@@ -2922,16 +3293,15 @@ if (!function_exists('portal_integrity_check_similarity')) {
             $institutionalMatches = array_slice($institutionalMatches, 0, 6);
         }
 
-        // Length-aware calibration: short submissions naturally overlap more on
-        // shingles/word sets, so dampen their native similarity score to avoid
-        // false "high" flags on brief answers. Full weight kicks in around 300+
-        // scoring words.
         $lengthConfidence = min(1.0, $scoringWordCount / 300);
         if ($scoringWordCount < 300 && $score > 0) {
-            // Blend toward a floor so genuine 100% duplicates still read high,
-            // but a 40-word answer that shares phrasing isn't over-penalised.
             $dampened = $score * (0.55 + 0.45 * $lengthConfidence);
             $score = round($dampened, 1);
+        }
+
+        $status = 'checked';
+        if (in_array($extractionConfidence, ['low', 'medium'], true) && $score < 15) {
+            $status = 'incomplete';
         }
 
         $webScope = 'not_configured';
@@ -2958,7 +3328,16 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $hasScorableMatches = !empty($scorableMatches) || $fingerprint['score'] > 0;
         $hasSelfAuthoredOnly = !$hasScorableMatches
             && (!empty(array_filter($institutionalMatches, static fn(array $m): bool => !empty($m['self_authored']))));
-        if ($hasSelfAuthoredOnly) {
+        if ($status === 'incomplete') {
+            $summary = 'Text extraction confidence is '
+                . $extractionConfidence
+                . ', so this originality result should be treated as provisional.'
+                . ((string) ($extraction['note'] ?? '') !== '' ? ' ' . $extraction['note'] : '');
+            $level = 'pending';
+            if ($score < 15) {
+                $score = null;
+            }
+        } elseif ($hasSelfAuthoredOnly) {
             $summary = 'Overlap found only with this student\'s own earlier work — not flagged as plagiarism.';
         } elseif (empty($institutionalMatches) && empty($webMatches)) {
             $summary = 'No meaningful overlap was found in the institutional database.';
@@ -2974,31 +3353,44 @@ if (!function_exists('portal_integrity_check_similarity')) {
         $fileMetadata = $submissionContext !== null && is_array($submissionContext['file_metadata'] ?? null)
             ? $submissionContext['file_metadata']
             : (is_array($processReview['file_metadata'] ?? null) ? $processReview['file_metadata'] : null);
-        $heuristicAi = portal_integrity_heuristic_ai_review($cleanText, [
-            'file_metadata' => $fileMetadata,
-            'process_review' => $processReview,
-            'similarity_score' => $score,
-            'student_name' => $submissionContext['student_name'] ?? '',
-        ]);
+
+        $heuristicAi = null;
+        if (!($status === 'incomplete' && $wordCount < 80)) {
+            $heuristicAi = portal_integrity_heuristic_ai_review($cleanText, [
+                'file_metadata' => $fileMetadata,
+                'process_review' => $processReview,
+                'similarity_score' => $score,
+                'student_name' => $submissionContext['student_name'] ?? '',
+            ]);
+        }
+
+        $reportMatches = $webMatches !== [] ? array_slice($matches, 0, 6) : $institutionalMatches;
+        $matchMap = portal_integrity_build_match_map($cleanText, $reportMatches);
 
         return [
-            'status' => 'checked',
+            'status' => $status,
             'score' => $score,
             'word_count' => $wordCount,
             'report' => json_encode([
-                'engine' => 'native_institutional_v3',
-                'status' => 'checked',
+                'engine' => 'native_institutional_v4',
+                'status' => $status,
                 'score' => $score,
                 'level' => $level,
                 'summary' => $summary,
+                'extraction' => $extraction ?? [
+                    'confidence' => $extractionConfidence,
+                    'extractor' => 'inline',
+                    'note' => '',
+                ],
                 'scope' => [
                     'institutional_database' => 'checked',
                     'global_web' => $webScope,
                     'academic_journals' => 'not_configured',
                     'reference_corpus' => is_dir(portal_integrity_references_dir()) ? 'checked' : 'empty',
                 ],
-                'matches' => $matches,
+                'matches' => $reportMatches,
                 'highlights' => $highlights,
+                'match_map' => $matchMap,
                 'fingerprint' => [
                     'matched_sentences' => $fingerprint['matched'],
                     'total_sentences' => $fingerprint['total'],
@@ -3009,8 +3401,10 @@ if (!function_exists('portal_integrity_check_similarity')) {
                 'heuristic_ai' => $heuristicAi,
                 'calibration' => [
                     'scoring_word_count' => $scoringWordCount,
-                    'quotes_excluded' => $scoringWordCount < $wordCount,
+                    'quotes_excluded' => true,
+                    'zones_stripped' => $zonesStripped,
                     'length_confidence' => round($lengthConfidence, 2),
+                    'extraction_confidence' => $extractionConfidence,
                 ],
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         ];
@@ -3080,6 +3474,15 @@ if (!function_exists('portal_render_integrity_report')) {
         $processReview = is_array($report['process_review'] ?? null) ? $report['process_review'] : null;
         $heuristicAi = is_array($report['heuristic_ai'] ?? null) ? $report['heuristic_ai'] : null;
         $fileMetadata = is_array($report['file_metadata'] ?? null) ? $report['file_metadata'] : null;
+        $extraction = is_array($report['extraction'] ?? null) ? $report['extraction'] : null;
+        $matchMap = is_array($report['match_map'] ?? null) ? $report['match_map'] : null;
+        $calibration = is_array($report['calibration'] ?? null) ? $report['calibration'] : null;
+        $reportStatus = (string) ($report['status'] ?? '');
+        $extractionIncomplete = $reportStatus === 'incomplete'
+            || (
+                in_array((string) ($extraction['confidence'] ?? ''), ['none', 'low'], true)
+                && ($score === null || $score < 15)
+            );
 
         ob_start();
 
@@ -3125,7 +3528,31 @@ if (!function_exists('portal_render_integrity_report')) {
                 <span>School submissions: <strong><?= portal_escape((string) ($scope['institutional_database'] ?? 'pending')) ?></strong></span>
                 <span>Reference corpus: <strong><?= portal_escape((string) ($scope['reference_corpus'] ?? 'empty')) ?></strong></span>
                 <span>Web sources: <strong><?= portal_escape((string) ($scope['global_web'] ?? 'not_configured')) ?></strong></span>
+                <?php if ($extraction !== null): ?>
+                    <span>Extraction: <strong><?= portal_escape((string) ($extraction['confidence'] ?? 'unknown')) ?></strong>
+                        <?php if (($extraction['extractor'] ?? '') !== ''): ?>
+                            (<?= portal_escape((string) $extraction['extractor']) ?>)
+                        <?php endif; ?>
+                    </span>
+                <?php endif; ?>
             </div>
+
+            <?php if ($extractionIncomplete): ?>
+                <div class="integrity-extraction-banner">
+                    <strong>Provisional result</strong>
+                    <span><?= portal_escape((string) ($extraction['note'] ?? $report['summary'] ?? 'Text extraction was incomplete.')) ?></span>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!empty($matchMap['spans'])): ?>
+                <?php $mapHtml = portal_integrity_render_match_map($matchMap); ?>
+                <?php if ($mapHtml !== ''): ?>
+                    <div class="integrity-match-map">
+                        <strong>Match map in submission</strong>
+                        <p class="integrity-match-map-text"><?= $mapHtml ?></p>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
 
             <?php if (!empty($fingerprint['total_sentences'])): ?>
                 <div class="integrity-fingerprint-panel">
@@ -3312,6 +3739,13 @@ if (!function_exists('portal_integrity_summary_cards')) {
         $heuristicAi  = is_array($report['heuristic_ai'] ?? null) ? $report['heuristic_ai'] : null;
         $fileMeta     = is_array($report['file_metadata'] ?? null) ? $report['file_metadata'] : null;
         $calibration  = is_array($report['calibration'] ?? null) ? $report['calibration'] : null;
+        $extraction   = is_array($report['extraction'] ?? null) ? $report['extraction'] : null;
+        $matchMap     = is_array($report['match_map'] ?? null) ? $report['match_map'] : null;
+        $reportStatus = (string) ($report['status'] ?? ($submission['similarity_status'] ?? ''));
+        $extractionConfidence = (string) ($extraction['confidence'] ?? ($calibration['extraction_confidence'] ?? ''));
+        $extractionIncomplete = $reportStatus === 'incomplete'
+            || $extractionConfidence === 'none'
+            || ($extractionConfidence === 'low' && $simScore === null);
 
         $aiChance    = $heuristicAi !== null && isset($heuristicAi['score']) ? (float) $heuristicAi['score'] : null;
         $processLevel = $processRev['level'] ?? 'low';
@@ -3345,12 +3779,27 @@ if (!function_exists('portal_integrity_summary_cards')) {
         <div class="rvw-cards">
 
             <!-- Similarity -->
-            <details class="rvw-card rvw-card--<?= portal_escape(portal_integrity_tone($simScore)) ?>"<?= ($isTeacher && !empty($matches)) ? '' : ' data-static="1"' ?>>
+            <details class="rvw-card rvw-card--<?= portal_escape($extractionIncomplete && $simScore === null ? 'muted' : portal_integrity_tone($simScore)) ?>"<?= ($isTeacher && (!empty($matches) || $extractionIncomplete || !empty($matchMap['spans']))) ? '' : ' data-static="1"' ?>>
                 <summary class="rvw-card-head">
                     <span class="rvw-card-label">Similarity</span>
-                    <span class="rvw-card-value"><?= $simScore !== null ? portal_escape((string) round($simScore, 1)) . '%' : '—' ?></span>
+                    <span class="rvw-card-value"><?php
+                        if ($extractionIncomplete && $simScore === null) {
+                            echo 'Incomplete';
+                        } elseif ($simScore !== null) {
+                            echo portal_escape((string) round($simScore, 1)) . '%';
+                        } else {
+                            echo '—';
+                        }
+                    ?></span>
                 </summary>
                 <div class="rvw-card-body">
+                    <?php if ($extractionIncomplete): ?>
+                        <p class="rvw-card-note rvw-card-note--warn">
+                            Text extraction confidence:
+                            <strong><?= portal_escape($extractionConfidence !== '' ? $extractionConfidence : 'low') ?></strong>.
+                            <?= portal_escape((string) ($extraction['note'] ?? $report['summary'] ?? 'Treat this originality result as provisional.')) ?>
+                        </p>
+                    <?php endif; ?>
                     <?php if ($isTeacher && !empty($matches)): ?>
                         <p class="rvw-card-note">Overlap found against the sources below.</p>
                         <?php foreach (array_slice($matches, 0, 6) as $match): ?>
@@ -3366,9 +3815,16 @@ if (!function_exists('portal_integrity_summary_cards')) {
                                 <?php if (($match['snippet'] ?? '') !== ''): ?>
                                     <p><?= portal_escape((string) $match['snippet']) ?></p>
                                 <?php endif; ?>
+                                <?php if ($isTeacher && !empty($match['matched_phrases'])): ?>
+                                    <div class="rvw-match-phrases">
+                                        <?php foreach (array_slice((array) $match['matched_phrases'], 0, 4) as $phrase): ?>
+                                            <mark><?= portal_escape((string) $phrase) ?></mark>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
-                    <?php else: ?>
+                    <?php elseif (!$extractionIncomplete): ?>
                         <p class="rvw-card-note">
                             <?php if ($simScore === null): ?>
                                 Similarity is still being processed.
@@ -3379,9 +3835,19 @@ if (!function_exists('portal_integrity_summary_cards')) {
                             <?php endif; ?>
                         </p>
                     <?php endif; ?>
+                    <?php if ($isTeacher && !empty($matchMap['spans'])): ?>
+                        <?php $mapHtml = portal_integrity_render_match_map($matchMap); ?>
+                        <?php if ($mapHtml !== ''): ?>
+                            <div class="integrity-match-map">
+                                <p class="rvw-evidence-title">Match map in submission</p>
+                                <p class="integrity-match-map-text"><?= $mapHtml ?></p>
+                            </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
                     <?php if ($isTeacher && $calibration !== null): ?>
                         <p class="rvw-card-calibration">
                             <?php if (!empty($calibration['quotes_excluded'])): ?>Quoted passages were excluded from the score. <?php endif; ?>
+                            <?php if (!empty($calibration['zones_stripped'])): ?>Bibliography/appendix zones were excluded. <?php endif; ?>
                             <?php if (($calibration['length_confidence'] ?? 1) < 1): ?>Short submission (<?= (int) ($calibration['scoring_word_count'] ?? 0) ?> words) — score dampened to reduce false positives.<?php endif; ?>
                         </p>
                     <?php endif; ?>
@@ -3389,14 +3855,24 @@ if (!function_exists('portal_integrity_summary_cards')) {
             </details>
 
             <!-- Chance of AI usage -->
-            <details class="rvw-card rvw-card--<?= portal_escape(portal_integrity_tone($aiChance, 20, 45)) ?>"<?= $isTeacher ? '' : ' data-static="1"' ?>>
+            <details class="rvw-card rvw-card--<?= portal_escape($extractionIncomplete && $aiChance === null ? 'muted' : portal_integrity_tone($aiChance, 20, 45)) ?>"<?= $isTeacher ? '' : ' data-static="1"' ?>>
                 <summary class="rvw-card-head">
                     <span class="rvw-card-label">Chance of AI usage</span>
-                    <span class="rvw-card-value"><?= $aiChance !== null ? portal_escape((string) round($aiChance, 0)) . '%' : '—' ?></span>
+                    <span class="rvw-card-value"><?php
+                        if ($extractionIncomplete && $aiChance === null) {
+                            echo 'Incomplete';
+                        } elseif ($aiChance !== null) {
+                            echo portal_escape((string) round($aiChance, 0)) . '%';
+                        } else {
+                            echo '—';
+                        }
+                    ?></span>
                 </summary>
                 <div class="rvw-card-body">
                     <p class="rvw-card-note rvw-card-note--soft">Statistical estimate only — not proof of AI use.</p>
-                    <?php if ($isTeacher): ?>
+                    <?php if ($extractionIncomplete && $aiChance === null): ?>
+                        <p class="rvw-card-note rvw-card-note--warn">Style review was skipped because text extraction was incomplete.</p>
+                    <?php elseif ($isTeacher): ?>
                         <?php if ($heuristicAi !== null && isset($heuristicAi['risk_signals'])): ?>
                             <?php if (($heuristicAi['level_label'] ?? '') !== '' || ($heuristicAi['evidence_strength'] ?? '') !== ''): ?>
                                 <p class="rvw-card-note">
@@ -3751,7 +4227,7 @@ if (!function_exists('portal_rerun_submission_integrity')) {
     function portal_rerun_submission_integrity(PDO $db, int $submissionId, bool $runAi = true): bool
     {
         $stmt = $db->prepare(
-            "SELECT cs.*, cfi.submission_ai_detection, u.name AS student_name
+            "SELECT cs.*, cfi.submission_ai_detection, cfi.description AS slot_description, u.name AS student_name
              FROM course_submissions cs
              JOIN course_folder_items cfi ON cfi.id = cs.item_id
              LEFT JOIN users u ON u.id = cs.user_id
@@ -3765,10 +4241,22 @@ if (!function_exists('portal_rerun_submission_integrity')) {
 
         $abs = portal_uploads_base() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, (string) $submission['filepath']);
         $text = (string) ($submission['submission_text'] ?? '');
+        $extraction = [
+            'text' => '',
+            'extractor' => 'stored',
+            'char_count' => function_exists('mb_strlen') ? mb_strlen($text) : strlen($text),
+            'word_count' => count(portal_integrity_words($text)),
+            'confidence' => $text !== '' ? 'high' : 'none',
+            'note' => '',
+        ];
         if (is_file($abs)) {
-            $extracted = portal_extract_submission_text($abs, (string) $submission['filename']);
+            $extraction = portal_extract_submission_text_detailed($abs, (string) $submission['filename']);
+            $extracted = (string) ($extraction['text'] ?? '');
             if (mb_strlen($extracted) > mb_strlen($text)) {
                 $text = $extracted;
+            } elseif ($text !== '' && count(portal_integrity_words($text)) >= 25) {
+                $extraction['confidence'] = 'high';
+                $extraction['note'] = '';
             }
         }
         $text = portal_integrity_normalize_text($text);
@@ -3776,6 +4264,9 @@ if (!function_exists('portal_rerun_submission_integrity')) {
         if (is_file($abs)) {
             $submission['file_metadata'] = portal_extract_submission_file_metadata($abs, (string) $submission['filename']);
         }
+
+        $submission['extraction'] = $extraction;
+        $submission['slot_instructions'] = (string) ($submission['slot_description'] ?? '');
 
         $similarity = portal_integrity_check_similarity(
             $db,

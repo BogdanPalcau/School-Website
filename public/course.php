@@ -1161,7 +1161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $itemId = (int) ($_POST['item_id'] ?? 0);
         $slotChk = $db->prepare(
-            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts
+            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts, description
              FROM course_folder_items
              WHERE id = ? AND course_id = ? AND type = 'submission'"
         );
@@ -1292,18 +1292,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if ($saved) {
-                    $fileText = $hasFile ? portal_extract_submission_text($savedAbs, $originalName) : '';
+                    $extraction = $hasFile
+                        ? portal_extract_submission_text_detailed($savedAbs, $originalName)
+                        : [
+                            'text' => '',
+                            'extractor' => 'paste',
+                            'char_count' => 0,
+                            'word_count' => 0,
+                            'confidence' => 'high',
+                            'note' => '',
+                        ];
+                    $fileText = (string) ($extraction['text'] ?? '');
                     $combinedText = portal_integrity_normalize_text(trim($pastedText . "\n\n" . $fileText));
                     if ($combinedText !== '' && function_exists('mb_substr')) {
                         $combinedText = mb_substr($combinedText, 0, 200000);
                     } elseif ($combinedText !== '') {
                         $combinedText = substr($combinedText, 0, 200000);
                     }
+                    // Pasted text alone is high-confidence even if the file extract failed.
+                    if ($pastedText !== '' && count(portal_integrity_words($pastedText)) >= 25) {
+                        $extraction['confidence'] = 'high';
+                        $extraction['note'] = '';
+                    } elseif (!$hasFile) {
+                        $extraction['confidence'] = 'high';
+                        $extraction['extractor'] = 'paste';
+                    }
                     $receiptNumber = portal_integrity_receipt_number($courseId, $itemId, $uid);
                     $fileHash = is_file($savedAbs) ? hash_file('sha256', $savedAbs) : '';
                     $fileMetadata = is_file($savedAbs)
                         ? portal_extract_submission_file_metadata($savedAbs, $originalName)
                         : ['available' => false, 'format' => $hasFile ? $ext : 'txt'];
+                    $slotInstructions = trim((string) ($slot['description'] ?? ''));
                     $submissionContext = [
                         'course_id' => $courseId,
                         'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
@@ -1312,6 +1331,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'process_pasted_chars' => $processPastedChars,
                         'file_metadata' => $fileMetadata,
                         'student_name' => (string) ($me['name'] ?? ''),
+                        'extraction' => $extraction,
+                        'slot_instructions' => $slotInstructions,
                     ];
                     $similarity = portal_integrity_check_similarity(
                         $db,
