@@ -775,6 +775,16 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     body.is-embedded .vc-zoom-wrap .pagedjs_pages {
         gap: 14px;
     }
+
+    /* Presentations: vertical deck scroll by default; allow sideways pan only while zoomed in. */
+    body[data-presentation="1"] .pdf-viewport {
+        padding: 8px 0 12px;
+        overflow-x: hidden;
+    }
+    body[data-presentation="1"].is-zoom-wide .pdf-viewport {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
 }
 </style>
 </head>
@@ -1768,7 +1778,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     if (KIND === 'pdf') {
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 
-        const RENDER_SCALE = Math.min(3, Math.max(1.5, (window.devicePixelRatio || 1) * 1.5));
+        const IS_PRESENTATION = document.body.dataset.presentation === '1';
         const LAZY_BUFFER = 2; // pages ahead/behind the visible one to keep rendered
         const KEEP_DISTANCE = 6; // unload canvases farther than this from current page
         const zoomHost  = document.getElementById('pdf-zoom-host');
@@ -1780,6 +1790,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         let pageCount = 0;
         let pages = []; // { wrap, canvas, textLayer, page, textContent, state, renderTask, renderPromise }
         let viewScale = 1;
+        let renderScale = baseRenderScale();
         let fitMode = 'fit-width';
         let currentPage = 1;
         let searchMatches = [];
@@ -1787,6 +1798,40 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         let searchGen = 0;
         let renderObserver = null;
         let pageScrollObserver = null;
+        let rerenderTimer = null;
+
+        function baseRenderScale() {
+            return Math.min(3, Math.max(1.5, (window.devicePixelRatio || 1) * 1.5));
+        }
+        function desiredRenderScale() {
+            // Match canvas pixels to the on-screen zoom so zoomed slides stay sharp.
+            const dpr = window.devicePixelRatio || 1;
+            const cap = IS_MOBILE() ? 3.75 : 4.5;
+            return Math.min(cap, Math.max(baseRenderScale(), viewScale * dpr));
+        }
+        function fitGutter() {
+            if (IS_MOBILE()) return IS_PRESENTATION ? 8 : 16;
+            return 56;
+        }
+        function fitWidthScale() {
+            if (!pages[0]?.page || !viewportEl) return 1;
+            const nat = naturalSize(pages[0].page);
+            const availW = Math.max(1, viewportEl.clientWidth - fitGutter());
+            return Math.max(0.15, availW / Math.max(nat.w, 1));
+        }
+        function syncZoomWideClass() {
+            // Only unlock horizontal pan when the slide is actually wider than the phone.
+            const wide = IS_PRESENTATION && viewScale > fitWidthScale() + 0.02;
+            document.body.classList.toggle('is-zoom-wide', wide);
+            if (wide && viewportEl && zoomHost) {
+                requestAnimationFrame(() => {
+                    const maxX = Math.max(0, zoomHost.offsetWidth - viewportEl.clientWidth);
+                    viewportEl.scrollLeft = maxX / 2;
+                });
+            } else if (viewportEl) {
+                viewportEl.scrollLeft = 0;
+            }
+        }
 
         window.__docViewerSetPageHandlers(
             () => scrollToPage(currentPage + 1),
@@ -1794,7 +1839,10 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             () => scrollToPage(1),
             () => scrollToPage(pageCount)
         );
-        window.__docViewerSetZoomHandlers(() => zoomBy(0.1), () => zoomBy(-0.1));
+        window.__docViewerSetZoomHandlers(
+            () => zoomBy(IS_MOBILE() && IS_PRESENTATION ? 0.2 : 0.1),
+            () => zoomBy(IS_MOBILE() && IS_PRESENTATION ? -0.2 : -0.1)
+        );
         docSearch = { run: runSearch, next: () => goToMatch(searchIndex + 1), prev: () => goToMatch(searchIndex - 1), clear: clearSearchHighlights };
         document.querySelectorAll('#vt-zoom-menu button[data-zoom]').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -1807,6 +1855,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
         const refitViewport = debounce(() => {
             if (fitMode === 'fit-width' || fitMode === 'fit-page') applyFit();
+            else syncZoomWideClass();
         }, 200);
         window.addEventListener('resize', refitViewport);
         window.visualViewport?.addEventListener('resize', refitViewport);
@@ -1826,7 +1875,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             document.getElementById('vt-sidebar-toggle').hidden = false;
 
             const firstPage = await pdfDoc.getPage(1);
-            const firstVp = firstPage.getViewport({ scale: RENDER_SCALE });
+            const firstVp = firstPage.getViewport({ scale: renderScale });
             pages = [];
             pagesEl.innerHTML = '';
 
@@ -1909,7 +1958,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             rec.state = 'rendering';
             try {
                 const page = rec.page || (rec.page = await pdfDoc.getPage(i + 1));
-                const viewport = page.getViewport({ scale: RENDER_SCALE });
+                const viewport = page.getViewport({ scale: renderScale });
                 rec.canvas.width = Math.floor(viewport.width);
                 rec.canvas.height = Math.floor(viewport.height);
                 rec.wrap.style.width = Math.floor(viewport.width) + 'px';
@@ -1919,7 +1968,12 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                     try { rec.renderTask.cancel(); } catch (e) {}
                     rec.renderTask = null;
                 }
-                const task = page.render({ canvasContext: rec.canvas.getContext('2d'), viewport });
+                const ctx = rec.canvas.getContext('2d', { alpha: false });
+                if (ctx) {
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                }
+                const task = page.render({ canvasContext: ctx, viewport });
                 rec.renderTask = task;
                 await task.promise;
                 rec.renderTask = null;
@@ -1939,7 +1993,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 rec.wrap.classList.remove('is-placeholder');
                 rec.state = 'ready';
                 // Page sizes can differ — keep the scroll host clipped to the visual scale.
-                syncScaledHost(zoomWrap, zoomHost, viewScale / RENDER_SCALE);
+                syncScaledHost(zoomWrap, zoomHost, viewScale / renderScale);
             } catch (e) {
                 // Cancelled renders (from unload/scroll) are expected — leave as idle so they retry.
                 if (e && e.name === 'RenderingCancelledException') {
@@ -1980,18 +2034,70 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         function applyFit() {
             if (!pages.length || !pages[0].page) return;
             const nat = naturalSize(pages[0].page);
-            const availW = viewportEl.clientWidth - 56;
-            const availH = viewportEl.clientHeight - 56;
+            const gutter = fitGutter();
+            const availW = Math.max(1, viewportEl.clientWidth - gutter);
+            const availH = Math.max(1, viewportEl.clientHeight - gutter);
             let scale;
             if (fitMode === 'fit-page') scale = Math.min(availW / nat.w, availH / nat.h);
             else scale = availW / nat.w;
             setViewScale(scale, true);
         }
 
+        function invalidateRenderedPages() {
+            pages.forEach(rec => {
+                if (rec.renderTask) {
+                    try { rec.renderTask.cancel(); } catch (e) {}
+                    rec.renderTask = null;
+                }
+                const ctx = rec.canvas.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, rec.canvas.width, rec.canvas.height);
+                rec.canvas.width = 0;
+                rec.canvas.height = 0;
+                rec.textLayer.innerHTML = '';
+                rec.wrap.classList.add('is-placeholder');
+                rec.state = 'idle';
+                rec.renderPromise = null;
+            });
+        }
+
+        function ensureRenderQuality() {
+            const needed = desiredRenderScale();
+            if (Math.abs(needed - renderScale) / Math.max(renderScale, 0.01) < 0.12) {
+                return false;
+            }
+            renderScale = needed;
+            invalidateRenderedPages();
+            if (pages[0]?.page) {
+                const vp = pages[0].page.getViewport({ scale: renderScale });
+                pages.forEach(rec => {
+                    rec.wrap.style.width = Math.floor(vp.width) + 'px';
+                    rec.wrap.style.height = Math.floor(vp.height) + 'px';
+                });
+            }
+            return true;
+        }
+
         function setViewScale(scale) {
+            const prev = viewScale;
             viewScale = Math.max(0.15, Math.min(4, scale));
-            syncScaledHost(zoomWrap, zoomHost, viewScale / RENDER_SCALE);
+            const qualityChanged = ensureRenderQuality();
+            syncScaledHost(zoomWrap, zoomHost, viewScale / renderScale);
             syncZoomLabel(viewScale);
+            syncZoomWideClass();
+
+            if (qualityChanged) {
+                clearTimeout(rerenderTimer);
+                rerenderTimer = setTimeout(() => {
+                    ensureRenderedRange(currentPage, LAZY_BUFFER);
+                }, 80);
+            }
+
+            // Keep vertical position stable when zooming; horizontal stays centred via syncZoomWideClass.
+            if (viewportEl && Number.isFinite(prev) && prev > 0 && Math.abs(viewScale - prev) > 0.001) {
+                const cy = viewportEl.scrollTop + viewportEl.clientHeight / 2;
+                const ratio = viewScale / prev;
+                viewportEl.scrollTop = Math.max(0, cy * ratio - viewportEl.clientHeight / 2);
+            }
         }
 
         function zoomBy(delta) {

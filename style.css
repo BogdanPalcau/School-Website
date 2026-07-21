@@ -14400,71 +14400,173 @@ a.grades-simple-row:hover {
 }
 
 /* --------------------------------------------------------------------------
-   Courses: mobile module cards
+   Courses: lean mobile list
    -------------------------------------------------------------------------- */
 
 @media (max-width: 900px) {
-    .course-year-shell {
-        padding: 14px !important;
-        gap: 12px !important;
+    .course-browser {
+        gap: 14px !important;
+    }
+
+    /* Filter: search-first, drop redundant intro chrome */
+    .course-filter-card {
+        padding: 12px !important;
+        gap: 10px !important;
         border-radius: 12px !important;
     }
 
-    .course-year-shell .section-head {
-        align-items: flex-start;
+    .course-filter-head {
+        margin: 0 0 2px;
+        align-items: center;
         gap: 8px;
     }
 
-    .course-year-shell .card-title {
-        font-size: 1.35rem;
-        line-height: 1.1;
+    .course-filter-intro {
+        display: none;
+    }
+
+    .course-filter-count {
+        margin-left: auto;
+        padding: 5px 10px;
+        font-size: 0.74rem;
+    }
+
+    .course-filter-form {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 8px !important;
+    }
+
+    .course-filter-field--search {
+        grid-column: 1 / -1;
+    }
+
+    .course-filter-field span {
+        font-size: 0.72rem;
+    }
+
+    .course-filter-field input,
+    .course-filter-field select {
+        padding: 9px 11px;
+        font-size: 0.9rem;
+    }
+
+    .course-filter-actions {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        margin-top: 2px;
+    }
+
+    .course-filter-actions .button {
+        flex: 0 0 auto;
+        width: auto;
+        padding: 8px 14px;
+        font-size: 0.84rem;
+    }
+
+    .course-filter-clear {
+        width: auto !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    /* Year groups: flat divider, not nested cards */
+    .course-year-shell {
+        padding: 0 !important;
+        gap: 8px !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .course-year-head {
+        align-items: baseline;
+        gap: 8px;
+        padding: 2px 2px 0;
+    }
+
+    .course-year-head .eyebrow {
+        display: none;
+    }
+
+    .course-year-head .card-title {
+        margin: 0;
+        font-size: 0.95rem;
+        line-height: 1.2;
+        letter-spacing: 0.01em;
+    }
+
+    .course-year-head .chip {
+        padding: 4px 8px;
+        font-size: 0.7rem;
     }
 
     .course-list {
-        gap: 10px !important;
+        gap: 8px !important;
     }
 
+    /* Thin course rows: title + when/where + one status pill */
     .course-list-item {
+        position: relative;
         display: grid !important;
-        grid-template-columns: 4px minmax(0, 1fr) !important;
-        grid-template-rows: auto auto;
+        grid-template-columns: 4px minmax(0, 1fr) auto !important;
+        grid-template-rows: auto;
+        align-items: start;
         width: 100%;
         border-radius: 12px !important;
         overflow: hidden;
+        background: #fff;
+        border: 1px solid rgba(130, 15, 26, 0.1);
+        box-shadow: 0 1px 2px rgba(40, 19, 21, 0.04);
     }
 
     .course-list-accent {
         grid-row: 1 / -1;
+        align-self: stretch;
     }
 
     .course-list-copy {
         grid-column: 2;
-        gap: 6px !important;
-        padding: 12px 12px 10px !important;
+        gap: 4px !important;
+        padding: 11px 10px 11px 12px !important;
         min-width: 0;
     }
 
     .course-list-copy h3 {
-        font-size: 1rem !important;
+        margin: 0;
+        font-size: 0.98rem !important;
         line-height: 1.25;
     }
 
     .course-list-code {
-        font-size: 0.7rem !important;
+        margin: 0;
+        font-size: 0.68rem !important;
+        letter-spacing: 0.04em;
     }
 
     .course-list-summary {
-        font-size: 0.84rem !important;
-        line-height: 1.4 !important;
+        display: none !important;
     }
 
     .course-list-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 0 !important;
+        gap: 2px 0 !important;
         margin-top: 2px;
-        font-size: 0.78rem !important;
+        font-size: 0.76rem !important;
         line-height: 1.35;
+        color: var(--muted);
     }
 
     .course-list-meta span {
@@ -14472,53 +14574,45 @@ a.grades-simple-row:hover {
     }
 
     .course-list-meta span:not(:last-child)::after {
-        content: " ? ";
+        content: " · ";
         position: static;
         display: inline;
         width: auto;
         height: auto;
-        margin: 0 0.15em;
+        margin: 0 0.1em;
         border-radius: 0;
         background: none;
         transform: none;
-        color: rgba(40, 19, 21, 0.35);
+        color: rgba(40, 19, 21, 0.32);
     }
 
     .course-list-right {
-        grid-column: 2 !important;
+        grid-column: 3 !important;
         display: flex !important;
-        flex-direction: row !important;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        width: 100%;
+        flex-direction: column !important;
+        align-items: flex-end;
+        justify-content: flex-start;
+        gap: 0;
+        width: auto;
         min-width: 0 !important;
         margin: 0;
-        padding: 10px 12px !important;
+        padding: 10px 10px 10px 0 !important;
         border-left: 0 !important;
-        border-top: 1px solid rgba(130, 15, 26, 0.08);
-        background: #faf6f5 !important;
-        justify-items: stretch;
+        border-top: 0 !important;
+        background: transparent !important;
+        justify-items: end;
     }
 
     .course-status-pill {
-        flex: 0 1 auto;
-        padding: 5px 10px !important;
-        font-size: 0.72rem !important;
+        flex: 0 0 auto;
+        padding: 4px 8px !important;
+        font-size: 0.68rem !important;
         font-weight: 700;
         white-space: nowrap;
     }
 
     .course-list-link {
-        flex: 0 0 auto;
-        font-size: 0.8rem !important;
-        font-weight: 700;
-        white-space: nowrap;
-    }
-
-    .course-filter-form {
-        grid-template-columns: 1fr !important;
-        gap: 8px !important;
+        display: none !important;
     }
 }
 
