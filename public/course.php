@@ -1834,7 +1834,8 @@ if ($sectionKey === 'announcements' && !empty($unreadAnnouncements)) {
 // marks from the dashboard "Returned grades" queue.
 if (!portal_can_manage_course($courseId)) {
     $openReviewRaw = (string) ($_GET['open_review'] ?? '');
-    if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
+    $hasOpenReview = preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch) === 1;
+    if ($hasOpenReview) {
         $_db->prepare(
             "UPDATE course_submissions
              SET grade_seen_at = datetime('now')
@@ -1843,7 +1844,7 @@ if (!portal_can_manage_course($courseId)) {
                AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
         )->execute([(int) $openReviewMatch[1], $courseId, (int) $_me['id']]);
     }
-    if ($sectionKey === 'gradebook') {
+    if ($sectionKey === 'gradebook' && !$hasOpenReview) {
         $_db->prepare(
             "UPDATE course_submissions
              SET grade_seen_at = datetime('now')

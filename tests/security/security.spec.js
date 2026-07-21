@@ -62,6 +62,19 @@ test('lets enrolled students open their course but blocks direct URL access to o
   await expect(page.getByRole('heading', { name: /security test - blocked course/i })).toHaveCount(0);
 });
 
+test('marks only the selected returned grade as seen from a deep link', async ({ page }) => {
+  await signIn(page, fixtures.users.student, fixtures.password);
+
+  const [selectedId, otherId] = fixtures.returnedGradeSubmissionIds;
+  await page.goto(
+    `/course.php?course=${fixtures.courses.openSlug}&section=gradebook&open_review=rvw-${selectedId}`,
+  );
+
+  await expect(page.locator(`#rvw-${selectedId}`)).toHaveClass(/rvw-overlay--in/);
+  expect(countFixtureRecord('seen-submission-id', String(selectedId))).toBe(1);
+  expect(countFixtureRecord('seen-submission-id', String(otherId))).toBe(0);
+});
+
 test('lets assigned teachers manage their course but blocks unassigned course access', async ({ page }) => {
   await signIn(page, fixtures.users.teacher, fixtures.password);
 
