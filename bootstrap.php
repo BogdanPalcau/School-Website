@@ -2334,6 +2334,7 @@ if (!function_exists('portal_run_migrations')) {
             'process_paste_events' => "ALTER TABLE course_submissions ADD COLUMN process_paste_events INTEGER NOT NULL DEFAULT 0",
             'process_pasted_chars' => "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
             'eula_accepted_at' => "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
+            'grade_seen_at' => "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
         ];
         foreach ($submissionAdds as $col => $sql) {
             if (!in_array($col, $submissionCols, true)) {

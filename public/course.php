@@ -87,6 +87,7 @@ foreach ([
     "ALTER TABLE course_submissions ADD COLUMN process_paste_events INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
@@ -143,8 +144,6 @@ try {
     ");
     portal_db()->exec("CREATE INDEX IF NOT EXISTS idx_submission_annotations ON course_submission_annotations(submission_id)");
 } catch (\PDOException $e) {}
-
-$integrityEulaVersion = 'integrity-tools-2026-07';
 
 function portal_course_normalize_external_url(string $url): string
 {
@@ -311,15 +310,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'host' => (string) (parse_url($url, PHP_URL_HOST) ?: $url),
             'verdict' => $verdict,
         ]);
-    }
-
-    if ($action === 'accept_integrity_eula' && portal_can_manage_course($courseId)) {
-        $db->prepare(
-            "INSERT OR IGNORE INTO integrity_eula_acceptances (user_id, version)
-             VALUES (?, ?)"
-        )->execute([(int) $me['id'], $integrityEulaVersion]);
-
-        $_SESSION['course_flash'] = ['success', 'Integrity tool EULA accepted for this account.'];
     }
 
     // ── AJAX: reorder folders (JSON, exits immediately) ──────────────────────
@@ -837,7 +827,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($chk->fetch()) {
                 $db->prepare(
                     "UPDATE course_submissions
-                     SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?
+                     SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?, grade_seen_at = ''
                      WHERE id = ? AND course_id = ?"
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
                 if (portal_is_fetch_request()) {
@@ -1388,7 +1378,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                              process_edit_seconds=excluded.process_edit_seconds,
                              process_paste_events=excluded.process_paste_events,
                              process_pasted_chars=excluded.process_pasted_chars,
-                             score=NULL, feedback='', marked_at='', marked_by=NULL,
+                             score=NULL, feedback='', marked_at='', marked_by=NULL, grade_seen_at='',
                              ai_status='', ai_score=NULL, ai_report='', ai_checked_at=''"
                     )->execute([
                         $itemId, $courseId, $uid,
@@ -1502,7 +1492,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (portal_is_fetch_request() && in_array($action, ['mark_submission', 'submit_work'], true)) {
         portal_json_response(['ok' => false, 'error' => 'Unexpected response.'], 500);
     }
-    if (in_array($action, ['mark_submission', 'accept_integrity_eula'], true)) {
+    if (in_array($action, ['mark_submission'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
         // Rebuild courses.meeting from current slots so the hero banner stays in sync
@@ -1727,17 +1717,6 @@ foreach ($_versionStmt->fetchAll() as $_version) {
     $submissionVersions[(int) $_version['submission_id']][] = $_version;
 }
 
-$integrityEulaAcceptedAt = '';
-if (portal_can_manage_course($courseId)) {
-    $_eulaStmt = $_db->prepare(
-        "SELECT accepted_at FROM integrity_eula_acceptances
-         WHERE user_id = ? AND version = ?
-         LIMIT 1"
-    );
-    $_eulaStmt->execute([(int) $_me['id'], $integrityEulaVersion]);
-    $integrityEulaAcceptedAt = (string) ($_eulaStmt->fetchColumn() ?: '');
-}
-
 // Class schedule
 $_schStmt = $_db->prepare(
     "SELECT * FROM course_schedule WHERE course_id = ? ORDER BY sort_order ASC, id ASC"
@@ -1849,6 +1828,31 @@ if ($sectionKey === 'announcements' && !empty($unreadAnnouncements)) {
         $_ins->execute([(int) $_me['id'], (int) $_ua['id']]);
     }
     $unreadAnnouncements = [];
+}
+
+// When a student opens Grades (or a deep-linked returned review), clear those
+// marks from the dashboard "Returned grades" queue.
+if (!portal_can_manage_course($courseId)) {
+    $openReviewRaw = (string) ($_GET['open_review'] ?? '');
+    if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
+        $_db->prepare(
+            "UPDATE course_submissions
+             SET grade_seen_at = datetime('now')
+             WHERE id = ? AND course_id = ? AND user_id = ?
+               AND marked_at != ''
+               AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+        )->execute([(int) $openReviewMatch[1], $courseId, (int) $_me['id']]);
+    }
+    if ($sectionKey === 'gradebook') {
+        $_db->prepare(
+            "UPDATE course_submissions
+             SET grade_seen_at = datetime('now')
+             WHERE course_id = ? AND user_id = ?
+               AND marked_at != ''
+               AND score IS NOT NULL
+               AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+        )->execute([$courseId, (int) $_me['id']]);
+    }
 }
 
 // Live badge counts — show only unread count
@@ -1983,7 +1987,7 @@ ob_start();
                 'calendar'      => 'Calendar',
                 'announcements' => 'Announcements',
                 'discussions'   => 'Discussions',
-                'gradebook'     => 'Gradebook',
+                'gradebook'     => 'Grades',
                 'groups'        => 'Groups',
             ];
             ?>
@@ -3062,11 +3066,11 @@ ob_start();
                 <section class="gb-shell">
                     <header class="gb-header">
                         <div>
-                            <p class="eyebrow">Course gradebook</p>
-                            <h3 class="card-title">Marks and feedback</h3>
+                            <p class="eyebrow"><?= $gbIsStaff ? 'Course gradebook' : 'Your grades' ?></p>
+                            <h3 class="card-title"><?= $gbIsStaff ? 'Marks and feedback' : 'Grades for this module' ?></h3>
                             <p class="gb-header-copy"><?= $gbIsStaff
                                 ? 'Track submissions and marks for this module.'
-                                : 'Your marks for this module, once work has been returned.' ?></p>
+                                : 'Individual marks and feedback for assignments in this module.' ?></p>
                         </div>
                         <div class="gb-stat-row">
                             <div class="gb-stat">
@@ -3083,25 +3087,6 @@ ob_start();
                             </div>
                         </div>
                     </header>
-
-                    <?php if ($gbIsStaff): ?>
-                        <?php if ($integrityEulaAcceptedAt !== ''): ?>
-                            <div class="gb-eula-chip" title="Integrity checks are available for this account">
-                                <span class="gb-eula-dot" aria-hidden="true"></span>
-                                Integrity tools ready
-                                <time datetime="<?= portal_escape((string) $integrityEulaAcceptedAt) ?>">
-                                    · <?= portal_escape(date('j M Y', portal_db_timestamp($integrityEulaAcceptedAt) ?? strtotime($integrityEulaAcceptedAt) ?: time())) ?>
-                                </time>
-                            </div>
-                        <?php else: ?>
-                            <form method="POST" class="gb-eula-accept">
-                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                <input type="hidden" name="action" value="accept_integrity_eula">
-                                <span>Accept integrity tools to mark work with originality checks.</span>
-                                <button type="submit" class="button button--sm">Accept</button>
-                            </form>
-                        <?php endif; ?>
-                    <?php endif; ?>
 
                     <?php if (empty($submissionGradebook)): ?>
                         <div class="gb-empty">

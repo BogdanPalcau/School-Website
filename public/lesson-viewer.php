@@ -398,17 +398,21 @@ $downloadUrl   = 'download.php?item=' . $itemId;
 
 // Rebuild the embed src here (not in the parser) so we can attach enablejsapi /
 // origin for YouTube postMessage time sync — no YouTube Data API key required.
+// Use youtube.com (not nocookie) + playsinline=1 so iOS/Android can start playback.
 $embedSrc = '';
 if ($isExternalVideo && is_array($videoMeta)) {
-    $embedSrc = (string) $videoMeta['embed_url'];
     if ($embedProvider === 'youtube') {
+        $embedSrc = 'https://www.youtube.com/embed/' . $videoMeta['video_id'];
         $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
             || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443);
         $origin = ($https ? 'https' : 'http') . '://' . (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
-        $embedSrc .= (str_contains($embedSrc, '?') ? '&' : '?')
-            . 'enablejsapi=1&rel=0&modestbranding=1&iv_load_policy=3&origin=' . rawurlencode($origin);
+        $embedSrc .= '?enablejsapi=1&playsinline=1&rel=0&modestbranding=1&iv_load_policy=3'
+            . '&origin=' . rawurlencode($origin);
     } elseif ($embedProvider === 'vimeo') {
-        $embedSrc .= (str_contains($embedSrc, '?') ? '&' : '?') . 'api=1';
+        $embedSrc = (string) $videoMeta['embed_url'];
+        $embedSrc .= (str_contains($embedSrc, '?') ? '&' : '?') . 'api=1&playsinline=1';
+    } else {
+        $embedSrc = (string) $videoMeta['embed_url'];
     }
 }
 
@@ -510,10 +514,12 @@ ob_start();
                                 class="lesson-embed-frame"
                                 src="<?= portal_escape($embedSrc) ?>"
                                 title="<?= portal_escape($item['title']) ?>"
-                                loading="lazy"
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                loading="eager"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
                                 referrerpolicy="strict-origin-when-cross-origin"
-                                allowfullscreen></iframe>
+                                allowfullscreen
+                                webkitallowfullscreen
+                                mozallowfullscreen></iframe>
                         </div>
                     <?php else: ?>
                     <video id="lesson-video" controls preload="metadata" playsinline controlsList="<?= $canDownload ? '' : 'nodownload' ?>">
@@ -834,11 +840,15 @@ ob_start();
 
     function ytPost(func, args) {
         if (!embedFrame || !embedFrame.contentWindow) return;
+        var target = 'https://www.youtube.com';
+        try {
+            target = new URL(embedFrame.src, window.location.href).origin || target;
+        } catch (err) {}
         embedFrame.contentWindow.postMessage(JSON.stringify({
             event: 'command',
             func: func,
             args: args || []
-        }), 'https://www.youtube-nocookie.com');
+        }), target);
     }
 
     function vimeoPost(method, value) {

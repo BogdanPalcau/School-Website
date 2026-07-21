@@ -230,6 +230,7 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
          WHERE cs.user_id = ?
            AND cs.course_id IN ($placeholders)
            AND cs.marked_at != ''
+           AND (cs.grade_seen_at = '' OR cs.grade_seen_at IS NULL)
          ORDER BY cs.marked_at DESC
          LIMIT 6"
     );
@@ -928,7 +929,7 @@ ob_start();
                                                 <?php endif; ?>
                                             </span>
                                         </div>
-                                        <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">View</a>
+                                        <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=gradebook&open_review=rvw-<?= (int) $row['id'] ?>">View</a>
                                     </li>
                                 <?php endforeach; ?>
                             </ul>

@@ -11624,6 +11624,7 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 .lesson-embed-wrap {
     position: absolute;
     inset: 0;
+    z-index: 1;
 }
 
 .lesson-embed-frame {
@@ -11632,6 +11633,8 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     display: block;
     border: 0;
     background: #12121c;
+    touch-action: manipulation;
+    pointer-events: auto;
 }
 
 .lesson-embed-note {
