@@ -1161,13 +1161,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $itemId = (int) ($_POST['item_id'] ?? 0);
         $slotChk = $db->prepare(
-            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts, description
-             FROM course_folder_items
-             WHERE id = ? AND course_id = ? AND type = 'submission'"
+            "SELECT cfi.id, cfi.submission_deadline, cfi.submission_ai_detection,
+                    cfi.submission_max_attempts, cfi.description, cfi.locked,
+                    cf.locked AS folder_locked
+             FROM course_folder_items cfi
+             JOIN course_folders cf ON cf.id = cfi.folder_id
+             WHERE cfi.id = ? AND cfi.course_id = ? AND cfi.type = 'submission'"
         );
         $slotChk->execute([$itemId, $courseId]);
         $slot = $slotChk->fetch();
-        if ($slot) {
+        $slotLocked = $slot
+            && !portal_can_manage_course($courseId)
+            && portal_folder_item_content_locked($slot);
+        if ($slotLocked) {
+            $msg = 'This submission slot is locked.';
+            $_SESSION['course_flash'] = ['error', $msg];
+            $submitJsonExit(false, [], $msg);
+        } elseif ($slot) {
             $maxAttempts = (int) ($slot['submission_max_attempts'] ?? 0);
             $attemptsUsed = 0;
             if ($maxAttempts > 0) {
