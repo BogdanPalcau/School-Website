@@ -14,12 +14,22 @@ $itemStmt = $db->prepare(
      FROM course_folder_items cfi
      JOIN course_folders cf ON cf.id = cfi.folder_id
      JOIN courses c ON c.id = cf.course_id
-     WHERE cfi.id = ? AND cfi.type = 'video' AND cfi.file_path != ''"
+     WHERE cfi.id = ? AND cfi.type = 'video' AND (cfi.file_path != '' OR cfi.url != '')"
 );
 $itemStmt->execute([$itemId]);
 $item = $itemStmt->fetch();
 
 if (!$item) { http_response_code(404); exit('Video not found.'); }
+
+// An external video item has no uploaded file — it points at an allowlisted platform
+// (YouTube/Vimeo) instead. Re-validate on every load (not just at creation) so a
+// database row can never smuggle an untrusted embed target to the browser.
+$isExternalVideo = (string) $item['file_path'] === '' && (string) $item['url'] !== '';
+$videoMeta = $isExternalVideo ? portal_parse_external_video_url((string) $item['url']) : null;
+if ($isExternalVideo && $videoMeta === null) {
+    http_response_code(404);
+    exit('Video not found.');
+}
 
 $courseId = (int) $item['course_id'];
 
@@ -53,6 +63,177 @@ $csrfToken = $_SESSION['_csrf'];
 $backUrl = 'course.php?course=' . urlencode((string) $item['course_slug']) . '&section=content';
 $viewerUrl = 'lesson-viewer.php?item=' . $itemId;
 
+/**
+ * Render a single Q&A card. Shared by the initial page render and the
+ * ask-question AJAX response so a newly posted question looks identical
+ * without requiring a full page reload (which would reset video playback).
+ */
+function portal_render_lesson_qa_item(array $q, bool $canManage, bool $isExternalVideo, string $csrfToken, int $meId, string $anchorAttr = ''): string
+{
+    $isAnswered = (string) $q['answer'] !== '';
+    $isOwn      = (int) $q['user_id'] === $meId;
+    $isPublic   = (int) ($q['is_public'] ?? 1) === 1;
+    $isPrivate  = $isAnswered && !$isPublic;
+    $isPinned   = !empty($q['pinned']) && $isPublic;
+    $canDelete  = $canManage || ($isOwn && !$isAnswered);
+    $videoSecs  = (int) ($q['video_seconds'] ?? 0);
+
+    ob_start();
+    ?>
+        <article class="qa-item <?= $isAnswered ? 'qa-item--answered' : 'qa-item--pending' ?><?= $isOwn ? ' qa-item--mine' : '' ?><?= $isPinned ? ' qa-item--pinned' : '' ?><?= $isPrivate ? ' qa-item--private' : '' ?>"
+                 id="q-<?= (int) $q['id'] ?>"<?= $anchorAttr ?>>
+            <div class="qa-question-row">
+                <div class="course-staff-avatar ann-avatar"><?= portal_escape((string) ($q['asker_initials'] ?: '?')) ?></div>
+                <div class="qa-question-body">
+                    <div class="qa-question-head">
+                        <strong><?= portal_escape((string) $q['asker_name']) ?><?= $isOwn ? ' <span class="qa-you">(you)</span>' : '' ?></strong>
+                        <?php if ($videoSecs >= 0): ?>
+                        <button type="button"
+                                class="qa-video-stamp"
+                                data-seek="<?= $videoSecs ?>"
+                                title="Jump to this moment in the video">
+                            <?= portal_icon('play', 'icon-xs') ?>
+                            <?= portal_escape(portal_format_video_timestamp($videoSecs)) ?>
+                        </button>
+                        <?php endif; ?>
+                        <span class="sub-date" title="Asked at"><?= portal_escape(date('j M · H:i', strtotime((string) $q['created_at']))) ?></span>
+                        <?php if ($isPinned): ?>
+                            <span class="qa-badge qa-badge--pinned">Pinned</span>
+                        <?php endif; ?>
+                        <?php if ($isPrivate): ?>
+                            <span class="qa-badge qa-badge--private">Private</span>
+                        <?php elseif ($isAnswered): ?>
+                            <span class="qa-badge qa-badge--answered">Public</span>
+                        <?php else: ?>
+                            <span class="qa-badge qa-badge--pending"><?= $canManage ? 'Needs answer' : 'Waiting' ?></span>
+                        <?php endif; ?>
+                    </div>
+                    <p class="qa-text"><?= nl2br(portal_escape((string) $q['question'])) ?></p>
+                </div>
+                <div class="qa-item-actions">
+                    <?php if ($canManage && $isAnswered && $isPublic): ?>
+                    <form method="POST" class="qa-pin-form">
+                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                        <input type="hidden" name="action" value="toggle_pin">
+                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
+                        <button type="submit" class="btn-icon" title="<?= $isPinned ? 'Unpin' : 'Pin as key answer' ?>">
+                            <?= portal_icon('pin', 'icon-sm') ?>
+                        </button>
+                    </form>
+                    <?php endif; ?>
+                    <?php if ($canDelete): ?>
+                    <form method="POST" class="qa-delete-form">
+                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                        <input type="hidden" name="action" value="delete_question">
+                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
+                        <button type="submit" class="btn-icon-danger" title="Delete question">
+                            <?= portal_icon('trash', 'icon-sm') ?>
+                        </button>
+                    </form>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <?php if ($isAnswered): ?>
+            <div class="qa-answer-row<?= $isPrivate ? ' qa-answer-row--private' : '' ?>">
+                <div class="course-staff-avatar ann-avatar teacher-avatar"><?= portal_escape((string) ($q['answerer_initials'] ?: '?')) ?></div>
+                <div class="qa-answer-body">
+                    <div class="qa-question-head">
+                        <strong><?= portal_escape((string) $q['answerer_name']) ?></strong>
+                        <span class="qa-role-tag"><?= $isPrivate ? 'Private reply' : 'Teacher' ?></span>
+                        <span class="sub-date"><?= portal_escape(date('j M · H:i', strtotime((string) $q['answered_at']))) ?></span>
+                    </div>
+                    <p class="qa-text"><?= nl2br(portal_escape((string) $q['answer'])) ?></p>
+                    <?php if ($isPrivate && $isOwn && !$canManage): ?>
+                    <p class="qa-waiting-note">Only you and your teacher can see this reply.</p>
+                    <?php endif; ?>
+                    <?php if ($isPrivate && $canManage): ?>
+                    <form method="POST" class="qa-publish-form">
+                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                        <input type="hidden" name="action" value="publish_answer">
+                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
+                        <button type="submit" class="button-secondary button--sm">Share with class</button>
+                    </form>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php elseif ($canManage): ?>
+            <details class="qa-reply-details">
+                <summary class="qa-reply-toggle">Answer this question</summary>
+                <form method="POST" class="qa-answer-form">
+                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                    <input type="hidden" name="action" value="answer_question">
+                    <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
+                    <textarea name="answer" required maxlength="2000" rows="2" placeholder="Write your reply…"></textarea>
+                    <div class="qa-answer-actions">
+                        <button type="submit" name="visibility" value="private" class="button-secondary button--sm">
+                            Reply privately
+                        </button>
+                        <button type="submit" name="visibility" value="public" class="button button--sm">
+                            Publish to class
+                        </button>
+                    </div>
+                    <p class="qa-answer-hint">Private replies are only visible to you and this student. You can share them with the class later.</p>
+                </form>
+            </details>
+            <?php elseif ($isOwn): ?>
+            <p class="qa-waiting-note">Waiting for your teacher — once answered, this becomes visible to the class unless they reply privately.</p>
+            <?php endif; ?>
+        </article>
+    <?php
+    return (string) ob_get_clean();
+}
+
+// ── AJAX: ask a question without a full page reload ───────────────────────────
+// A normal form POST would redirect back to this page, which resets native
+// <video> playback to 0:00. Submitting via fetch keeps the video playing and
+// just splices the new Q&A card into the existing list.
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST'
+    && (string) ($_POST['action'] ?? '') === 'ask_question'
+    && portal_is_fetch_request()
+) {
+    if (!portal_verify_csrf()) {
+        portal_json_response(['ok' => false, 'error' => 'Your session expired. Please refresh the page and try again.'], 403);
+    }
+    if (!$canAsk) {
+        portal_json_response(['ok' => false, 'error' => 'Only students can ask questions on lesson videos.'], 403);
+    }
+
+    $question = substr(trim((string) ($_POST['question'] ?? '')), 0, 1000);
+    $videoSeconds = (int) ($_POST['video_seconds'] ?? 0);
+    // -1 means the student opted out of attaching a timestamp
+    if ($videoSeconds < -1) {
+        $videoSeconds = -1;
+    }
+    if ($question === '') {
+        portal_json_response(['ok' => false, 'error' => 'Please type a question before sending.'], 422);
+    }
+
+    $db->prepare(
+        "INSERT INTO course_video_questions (item_id, course_id, user_id, question, video_seconds) VALUES (?,?,?,?,?)"
+    )->execute([$itemId, $courseId, (int) $me['id'], $question, $videoSeconds]);
+    $newQuestionId = (int) $db->lastInsertId();
+
+    $newQStmt = $db->prepare(
+        "SELECT q.*, u.name AS asker_name, u.initials AS asker_initials,
+                a.name AS answerer_name, a.initials AS answerer_initials
+         FROM course_video_questions q
+         JOIN users u ON u.id = q.user_id
+         LEFT JOIN users a ON a.id = q.answered_by
+         WHERE q.id = ?"
+    );
+    $newQStmt->execute([$newQuestionId]);
+    $newQuestionRow = $newQStmt->fetch();
+
+    portal_json_response([
+        'ok' => true,
+        'html' => $newQuestionRow
+            ? portal_render_lesson_qa_item($newQuestionRow, $canManage, $isExternalVideo, $csrfToken, (int) $me['id'])
+            : '',
+    ]);
+}
+
 // ── AJAX: save watch progress ─────────────────────────────────────────────────
 if (
     $_SERVER['REQUEST_METHOD'] === 'POST'
@@ -85,7 +266,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['lesson_flash'] = ['error', 'Only students can ask questions on lesson videos.'];
         } else {
             $question = substr(trim((string) ($_POST['question'] ?? '')), 0, 1000);
-            $videoSeconds = max(0, (int) ($_POST['video_seconds'] ?? 0));
+            $videoSeconds = (int) ($_POST['video_seconds'] ?? 0);
+            if ($videoSeconds < -1) {
+                $videoSeconds = -1;
+            }
             if ($question !== '') {
                 $db->prepare(
                     "INSERT INTO course_video_questions (item_id, course_id, user_id, question, video_seconds) VALUES (?,?,?,?,?)"
@@ -201,15 +385,34 @@ $lessonFlash = $_SESSION['lesson_flash'] ?? null;
 unset($_SESSION['lesson_flash']);
 
 $allowDownload = (bool) ($item['allow_download'] ?? 0);
-$canDownload   = $canManage || $allowDownload;
+$canDownload   = !$isExternalVideo && ($canManage || $allowDownload);
 $displayName   = $item['file_name'] !== '' ? $item['file_name'] : basename((string) $item['file_path']);
-$ext           = strtolower(pathinfo($displayName, PATHINFO_EXTENSION));
-$mime          = portal_video_mime_for_extension($ext);
+$ext           = $isExternalVideo ? '' : strtolower(pathinfo($displayName, PATHINFO_EXTENSION));
+$mime          = $isExternalVideo ? '' : portal_video_mime_for_extension($ext);
+$sourceLabel   = $isExternalVideo ? (string) ($videoMeta['label'] ?? 'Video') : strtoupper($ext);
+$embedProvider = $isExternalVideo ? (string) ($videoMeta['provider'] ?? '') : '';
 $description   = trim((string) ($item['description'] ?? ''));
 $lessonNotes   = trim((string) ($item['lesson_notes'] ?? ''));
 $videoUrl      = 'download.php?item=' . $itemId . '&view=1';
 $downloadUrl   = 'download.php?item=' . $itemId;
 
+// Rebuild the embed src here (not in the parser) so we can attach enablejsapi /
+// origin for YouTube postMessage time sync — no YouTube Data API key required.
+$embedSrc = '';
+if ($isExternalVideo && is_array($videoMeta)) {
+    $embedSrc = (string) $videoMeta['embed_url'];
+    if ($embedProvider === 'youtube') {
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443);
+        $origin = ($https ? 'https' : 'http') . '://' . (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+        $embedSrc .= (str_contains($embedSrc, '?') ? '&' : '?')
+            . 'enablejsapi=1&rel=0&modestbranding=1&iv_load_policy=3&origin=' . rawurlencode($origin);
+    } elseif ($embedProvider === 'vimeo') {
+        $embedSrc .= (str_contains($embedSrc, '?') ? '&' : '?') . 'api=1';
+    }
+}
+
+$savedPosition = 0;
 $progStmt = $db->prepare("SELECT position_seconds FROM course_video_progress WHERE item_id = ? AND user_id = ?");
 $progStmt->execute([$itemId, (int) $me['id']]);
 $savedPosition = (int) ($progStmt->fetchColumn() ?: 0);
@@ -259,13 +462,14 @@ ob_start();
 <section class="lesson-viewer" id="lesson-viewer-root"
          data-item-id="<?= $itemId ?>"
          data-csrf="<?= portal_escape($csrfToken) ?>"
-         data-resume="<?= $savedPosition ?>">
+         data-resume="<?= $savedPosition ?>"
+         data-embed-provider="<?= portal_escape($embedProvider) ?>">
     <div class="lesson-toolbar">
         <a class="lesson-back" href="<?= portal_escape($backUrl) ?>">
             <span aria-hidden="true">←</span> Course content
         </a>
         <div class="lesson-toolbar-actions">
-            <span class="lesson-pill"><?= portal_escape(strtoupper($ext)) ?></span>
+            <span class="lesson-pill"><?= portal_escape($sourceLabel) ?></span>
             <?php if ($canDownload): ?>
             <a class="lesson-toolbar-btn" href="<?= portal_escape($downloadUrl) ?>">
                 <?= portal_icon('download', 'icon-xs') ?>
@@ -299,6 +503,19 @@ ob_start();
         <div class="lesson-main">
             <article class="lesson-stage">
                 <div class="lesson-player" id="lesson-player">
+                    <?php if ($isExternalVideo): ?>
+                        <div class="lesson-embed-wrap">
+                            <iframe
+                                id="lesson-embed-frame"
+                                class="lesson-embed-frame"
+                                src="<?= portal_escape($embedSrc) ?>"
+                                title="<?= portal_escape($item['title']) ?>"
+                                loading="lazy"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                referrerpolicy="strict-origin-when-cross-origin"
+                                allowfullscreen></iframe>
+                        </div>
+                    <?php else: ?>
                     <video id="lesson-video" controls preload="metadata" playsinline controlsList="<?= $canDownload ? '' : 'nodownload' ?>">
                         <source src="<?= portal_escape($videoUrl) ?>" type="<?= portal_escape($mime) ?>">
                     </video>
@@ -312,6 +529,7 @@ ob_start();
                         </span>
                         <span class="lesson-play-label">Play lesson</span>
                     </button>
+                    <?php endif; ?>
                 </div>
 
                 <?php if ($savedPosition >= 5): ?>
@@ -342,7 +560,7 @@ ob_start();
                     </label>
                 </div>
 
-                <p class="lesson-keys-hint">Shortcuts: <kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> skip 10s · <kbd>F</kbd> fullscreen · <kbd>T</kbd> theater</p>
+                <p class="lesson-keys-hint">Shortcuts: <kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> skip 10s · <kbd>F</kbd> fullscreen · <kbd>T</kbd> theater<?= $isExternalVideo ? ' <span class="lesson-keys-hint-note">(click outside the player if a shortcut is ignored)</span>' : '' ?></p>
             </article>
 
             <article class="lesson-notes-card" id="lesson-notes">
@@ -388,11 +606,9 @@ ob_start();
                         <p class="eyebrow">Class Q&amp;A</p>
                         <h3>Questions</h3>
                     </div>
-                    <div class="lesson-qa-stats">
-                        <span class="lesson-stat" title="Answered"><?= (int) $answeredCount ?> answered</span>
-                        <?php if ($pendingCount > 0): ?>
-                        <span class="lesson-stat lesson-stat--hot"><?= (int) $pendingCount ?> open</span>
-                        <?php endif; ?>
+                    <div class="lesson-qa-stats" id="lesson-qa-stats">
+                        <span class="lesson-stat" id="lesson-qa-answered-stat" title="Answered"><?= (int) $answeredCount ?> answered</span>
+                        <span class="lesson-stat lesson-stat--hot" id="lesson-qa-open-stat" style="<?= $pendingCount > 0 ? '' : 'display:none;' ?>"><?= (int) $pendingCount ?> open</span>
                     </div>
                 </header>
 
@@ -413,7 +629,19 @@ ob_start();
                                   placeholder="Ask about this moment in the lesson…"></textarea>
                     </div>
                     <div class="lesson-composer-foot">
-                        <span class="lesson-stamp-hint" id="lesson-stamp-hint">Will attach at 0:00</span>
+                        <button type="button"
+                                class="lesson-stamp-toggle is-on"
+                                id="lesson-stamp-hint"
+                                aria-pressed="true"
+                                title="Turn timestamp attachment on or off">
+                            <span class="lesson-stamp-toggle-switch" aria-hidden="true">
+                                <span class="lesson-stamp-toggle-knob"></span>
+                            </span>
+                            <span class="lesson-stamp-toggle-copy">
+                                <span class="lesson-stamp-toggle-label" id="lesson-stamp-label">Include timestamp</span>
+                                <span class="lesson-stamp-toggle-time" id="lesson-stamp-time">0:00</span>
+                            </span>
+                        </button>
                         <span class="lesson-char-count" id="lesson-char-count">0 / 1000</span>
                         <button type="submit" class="button button--sm lesson-send-btn" id="lesson-send-btn" disabled>
                             Send question
@@ -424,135 +652,28 @@ ob_start();
                 <p class="lesson-staff-note">Students ask questions here. Reply privately (student only) or publish to the class. Click a time stamp to jump to that moment.</p>
                 <?php endif; ?>
 
-                <?php if (empty($questions)): ?>
-                    <div class="lesson-qa-empty">
-                        <div class="lesson-qa-empty-icon"><?= portal_icon('megaphone', 'icon-sm') ?></div>
-                        <?php if ($canAsk): ?>
-                            <p>No questions yet — start the conversation.</p>
-                        <?php else: ?>
-                            <p class="lesson-qa-empty-title">Waiting for student questions</p>
-                            <p>Share this lesson with your class. When students ask, open questions land here for you to answer publicly.</p>
-                        <?php endif; ?>
-                    </div>
-                <?php else: ?>
-                <div class="lesson-qa-list">
+                <div class="lesson-qa-empty" id="lesson-qa-empty" style="<?= empty($questions) ? '' : 'display:none;' ?>">
+                    <div class="lesson-qa-empty-icon"><?= portal_icon('megaphone', 'icon-sm') ?></div>
+                    <?php if ($canAsk): ?>
+                        <p>No questions yet — start the conversation.</p>
+                    <?php else: ?>
+                        <p class="lesson-qa-empty-title">Waiting for student questions</p>
+                        <p>Share this lesson with your class. When students ask, open questions land here for you to answer publicly.</p>
+                    <?php endif; ?>
+                </div>
+                <div class="lesson-qa-list" id="lesson-qa-list" style="<?= empty($questions) ? 'display:none;' : '' ?>">
                     <?php
                     $markedOpenAnchor = false;
                     foreach ($questions as $q):
-                        $isAnswered = (string) $q['answer'] !== '';
-                        $isOwn      = (int) $q['user_id'] === (int) $me['id'];
-                        $isPublic   = (int) ($q['is_public'] ?? 1) === 1;
-                        $isPrivate  = $isAnswered && !$isPublic;
-                        $isPinned   = !empty($q['pinned']) && $isPublic;
-                        $canDelete  = $canManage || ($isOwn && !$isAnswered);
-                        $videoSecs  = (int) ($q['video_seconds'] ?? 0);
                         $openAnchor = '';
-                        if (!$isAnswered && !$markedOpenAnchor) {
+                        if ((string) $q['answer'] === '' && !$markedOpenAnchor) {
                             $openAnchor = ' id="qa-open"';
                             $markedOpenAnchor = true;
                         }
+                        echo portal_render_lesson_qa_item($q, $canManage, $isExternalVideo, $csrfToken, (int) $me['id'], $openAnchor);
+                    endforeach;
                     ?>
-                        <article class="qa-item <?= $isAnswered ? 'qa-item--answered' : 'qa-item--pending' ?><?= $isOwn ? ' qa-item--mine' : '' ?><?= $isPinned ? ' qa-item--pinned' : '' ?><?= $isPrivate ? ' qa-item--private' : '' ?>"
-                                 id="q-<?= (int) $q['id'] ?>"<?= $openAnchor ?>>
-                            <div class="qa-question-row">
-                                <div class="course-staff-avatar ann-avatar"><?= portal_escape((string) ($q['asker_initials'] ?: '?')) ?></div>
-                                <div class="qa-question-body">
-                                    <div class="qa-question-head">
-                                        <strong><?= portal_escape((string) $q['asker_name']) ?><?= $isOwn ? ' <span class="qa-you">(you)</span>' : '' ?></strong>
-                                        <button type="button"
-                                                class="qa-video-stamp"
-                                                data-seek="<?= $videoSecs ?>"
-                                                title="Jump to this moment in the video">
-                                            <?= portal_icon('play', 'icon-xs') ?>
-                                            <?= portal_escape(portal_format_video_timestamp($videoSecs)) ?>
-                                        </button>
-                                        <span class="sub-date" title="Asked at"><?= portal_escape(date('j M · H:i', strtotime((string) $q['created_at']))) ?></span>
-                                        <?php if ($isPinned): ?>
-                                            <span class="qa-badge qa-badge--pinned">Pinned</span>
-                                        <?php endif; ?>
-                                        <?php if ($isPrivate): ?>
-                                            <span class="qa-badge qa-badge--private">Private</span>
-                                        <?php elseif ($isAnswered): ?>
-                                            <span class="qa-badge qa-badge--answered">Public</span>
-                                        <?php else: ?>
-                                            <span class="qa-badge qa-badge--pending"><?= $canManage ? 'Needs answer' : 'Waiting' ?></span>
-                                        <?php endif; ?>
-                                    </div>
-                                    <p class="qa-text"><?= nl2br(portal_escape((string) $q['question'])) ?></p>
-                                </div>
-                                <div class="qa-item-actions">
-                                    <?php if ($canManage && $isAnswered && $isPublic): ?>
-                                    <form method="POST" class="qa-pin-form">
-                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="toggle_pin">
-                                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
-                                        <button type="submit" class="btn-icon" title="<?= $isPinned ? 'Unpin' : 'Pin as key answer' ?>">
-                                            <?= portal_icon('pin', 'icon-sm') ?>
-                                        </button>
-                                    </form>
-                                    <?php endif; ?>
-                                    <?php if ($canDelete): ?>
-                                    <form method="POST" class="qa-delete-form">
-                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="delete_question">
-                                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
-                                        <button type="submit" class="btn-icon-danger" title="Delete question">
-                                            <?= portal_icon('trash', 'icon-sm') ?>
-                                        </button>
-                                    </form>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-
-                            <?php if ($isAnswered): ?>
-                            <div class="qa-answer-row<?= $isPrivate ? ' qa-answer-row--private' : '' ?>">
-                                <div class="course-staff-avatar ann-avatar teacher-avatar"><?= portal_escape((string) ($q['answerer_initials'] ?: '?')) ?></div>
-                                <div class="qa-answer-body">
-                                    <div class="qa-question-head">
-                                        <strong><?= portal_escape((string) $q['answerer_name']) ?></strong>
-                                        <span class="qa-role-tag"><?= $isPrivate ? 'Private reply' : 'Teacher' ?></span>
-                                        <span class="sub-date"><?= portal_escape(date('j M · H:i', strtotime((string) $q['answered_at']))) ?></span>
-                                    </div>
-                                    <p class="qa-text"><?= nl2br(portal_escape((string) $q['answer'])) ?></p>
-                                    <?php if ($isPrivate && $isOwn && !$canManage): ?>
-                                    <p class="qa-waiting-note">Only you and your teacher can see this reply.</p>
-                                    <?php endif; ?>
-                                    <?php if ($isPrivate && $canManage): ?>
-                                    <form method="POST" class="qa-publish-form">
-                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="publish_answer">
-                                        <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
-                                        <button type="submit" class="button-secondary button--sm">Share with class</button>
-                                    </form>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                            <?php elseif ($canManage): ?>
-                            <details class="qa-reply-details">
-                                <summary class="qa-reply-toggle">Answer this question</summary>
-                                <form method="POST" class="qa-answer-form">
-                                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                    <input type="hidden" name="action" value="answer_question">
-                                    <input type="hidden" name="question_id" value="<?= (int) $q['id'] ?>">
-                                    <textarea name="answer" required maxlength="2000" rows="2" placeholder="Write your reply…"></textarea>
-                                    <div class="qa-answer-actions">
-                                        <button type="submit" name="visibility" value="private" class="button-secondary button--sm">
-                                            Reply privately
-                                        </button>
-                                        <button type="submit" name="visibility" value="public" class="button button--sm">
-                                            Publish to class
-                                        </button>
-                                    </div>
-                                    <p class="qa-answer-hint">Private replies are only visible to you and this student. You can share them with the class later.</p>
-                                </form>
-                            </details>
-                            <?php elseif ($isOwn): ?>
-                            <p class="qa-waiting-note">Waiting for your teacher — once answered, this becomes visible to the class unless they reply privately.</p>
-                            <?php endif; ?>
-                        </article>
-                    <?php endforeach; ?>
                 </div>
-                <?php endif; ?>
             </article>
         </aside>
     </div>
@@ -573,6 +694,8 @@ ob_start();
     var root = document.getElementById('lesson-viewer-root');
     var player = document.getElementById('lesson-player');
     var video  = document.getElementById('lesson-video');
+    var embedFrame = document.getElementById('lesson-embed-frame');
+    var embedProvider = root ? (root.dataset.embedProvider || '') : '';
     var overlay = document.getElementById('lesson-play-overlay');
     var watchBar = document.getElementById('lesson-watch-bar');
     var watchFill = document.getElementById('lesson-watch-fill');
@@ -582,18 +705,32 @@ ob_start();
     var charCount = document.getElementById('lesson-char-count');
     var secondsInput = document.getElementById('lesson-video-seconds');
     var stampHint = document.getElementById('lesson-stamp-hint');
+    var stampLabel = document.getElementById('lesson-stamp-label');
+    var stampTime = document.getElementById('lesson-stamp-time');
     var askJump = document.getElementById('lesson-ask-jump');
     var mobileAsk = document.getElementById('lesson-mobile-ask-btn');
     var composer = document.getElementById('lesson-composer');
     var speedSelect = document.getElementById('lesson-speed-select');
     var theaterBtn = document.getElementById('lesson-theater-btn');
-    var layout = document.getElementById('lesson-layout');
     var resumeBox = document.getElementById('lesson-resume');
     var csrf = root ? root.dataset.csrf : '';
     var resumeAt = root ? parseInt(root.dataset.resume || '0', 10) : 0;
     var lastSaved = -1;
     var stampLocked = false;
     var lockedSeconds = 0;
+    var stampAttachEnabled = true;
+    var embedCurrentTime = 0;
+    var embedDuration = 0;
+    var embedPlaying = false;
+    var embedReady = false;
+    var pendingSeek = null;
+    var pendingSeekPlay = true;
+    var embedPollTimer = null;
+    var YT_ORIGINS = {
+        'https://www.youtube-nocookie.com': true,
+        'https://www.youtube.com': true
+    };
+    var VIMEO_ORIGIN = 'https://player.vimeo.com';
 
     function formatStamp(total) {
         total = Math.max(0, Math.floor(total || 0));
@@ -604,25 +741,90 @@ ob_start();
         return m + ':' + String(s).padStart(2, '0');
     }
 
+    function getPlaybackSeconds() {
+        if (video) return Math.floor(video.currentTime || 0);
+        return Math.floor(embedCurrentTime || 0);
+    }
+
+    function getPlaybackDuration() {
+        if (video) return video.duration || 0;
+        return embedDuration || 0;
+    }
+
+    function updateWatchBar() {
+        if (!watchBar || !watchFill || !watchLabel) return;
+        var duration = getPlaybackDuration();
+        var pos = getPlaybackSeconds();
+        if (!duration || duration <= 0) return;
+        watchBar.hidden = false;
+        var pct = Math.min(100, Math.round((pos / duration) * 100));
+        watchFill.style.width = pct + '%';
+        watchLabel.textContent = pct + '% watched';
+    }
+
     function currentStampSeconds() {
         if (stampLocked) return lockedSeconds;
-        return Math.floor((video && video.currentTime) || 0);
+        return getPlaybackSeconds();
     }
 
     function syncStamp() {
         if (!secondsInput) return;
+        if (!stampAttachEnabled) {
+            secondsInput.value = '-1';
+            if (stampHint) {
+                stampHint.classList.remove('is-on');
+                stampHint.classList.add('is-off');
+                stampHint.setAttribute('aria-pressed', 'false');
+                stampHint.title = 'Click to include the current video time with your question';
+            }
+            if (stampLabel) stampLabel.textContent = 'No timestamp';
+            if (stampTime) {
+                stampTime.textContent = 'Off';
+                stampTime.hidden = false;
+            }
+            if (input) input.placeholder = 'Ask a question about this lesson…';
+            return;
+        }
         var secs = currentStampSeconds();
         secondsInput.value = String(secs);
         if (stampHint) {
-            stampHint.textContent = (stampLocked ? 'Locked at ' : 'Will attach at ') + formatStamp(secs);
+            stampHint.classList.add('is-on');
+            stampHint.classList.remove('is-off');
+            stampHint.setAttribute('aria-pressed', 'true');
+            stampHint.title = 'Click to send your question without a timestamp';
         }
+        if (stampLabel) {
+            stampLabel.textContent = stampLocked ? 'Timestamp locked' : 'Include timestamp';
+        }
+        if (stampTime) {
+            stampTime.textContent = formatStamp(secs);
+            stampTime.hidden = false;
+        }
+        if (input) input.placeholder = 'Ask about this moment in the lesson…';
     }
 
     function lockStampFromVideo() {
-        if (!video) return;
+        if (!stampAttachEnabled) {
+            syncStamp();
+            return;
+        }
         stampLocked = true;
-        lockedSeconds = Math.floor(video.currentTime || 0);
+        lockedSeconds = getPlaybackSeconds();
         syncStamp();
+    }
+
+    if (stampHint) {
+        stampHint.addEventListener('click', function () {
+            stampAttachEnabled = !stampAttachEnabled;
+            if (!stampAttachEnabled) {
+                stampLocked = false;
+            } else if (input && document.activeElement === input) {
+                // Re-lock to the current moment if they turn it back on while typing
+                stampLocked = true;
+                lockedSeconds = getPlaybackSeconds();
+            }
+            syncStamp();
+        });
     }
 
     function hideOverlay() {
@@ -630,17 +832,254 @@ ob_start();
         if (player) player.classList.add('is-playing');
     }
 
-    function seekTo(seconds) {
-        if (!video) return;
-        video.currentTime = Math.max(0, Number(seconds) || 0);
-        hideOverlay();
-        video.play().catch(function () {});
+    function ytPost(func, args) {
+        if (!embedFrame || !embedFrame.contentWindow) return;
+        embedFrame.contentWindow.postMessage(JSON.stringify({
+            event: 'command',
+            func: func,
+            args: args || []
+        }), 'https://www.youtube-nocookie.com');
+    }
+
+    function vimeoPost(method, value) {
+        if (!embedFrame || !embedFrame.contentWindow) return;
+        var payload = { method: method };
+        if (typeof value !== 'undefined') payload.value = value;
+        embedFrame.contentWindow.postMessage(JSON.stringify(payload), VIMEO_ORIGIN);
+    }
+
+    function seekTo(seconds, playAfter) {
+        if (typeof playAfter === 'undefined') playAfter = true;
+        var secs = Math.max(0, Number(seconds) || 0);
+        var duration = getPlaybackDuration();
+        if (duration > 0) secs = Math.min(secs, duration);
+        embedCurrentTime = secs;
+        updateWatchBar();
+
+        if (video) {
+            video.currentTime = secs;
+            if (playAfter) {
+                hideOverlay();
+                video.play().catch(function () {});
+            }
+            player?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+
+        if (!embedProvider) return;
+
+        // Queue until the embed handshake finishes (common on first Resume click).
+        if (!embedReady) {
+            pendingSeek = secs;
+            pendingSeekPlay = playAfter;
+            return;
+        }
+
+        if (embedProvider === 'youtube') {
+            ytPost('seekTo', [secs, true]);
+            if (playAfter) {
+                ytPost('playVideo');
+                embedPlaying = true;
+            } else {
+                ytPost('pauseVideo');
+                embedPlaying = false;
+            }
+        } else if (embedProvider === 'vimeo') {
+            vimeoPost('setCurrentTime', secs);
+            if (playAfter) {
+                vimeoPost('play');
+                embedPlaying = true;
+            } else {
+                vimeoPost('pause');
+                embedPlaying = false;
+            }
+        }
         player?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    function pausePlayback() {
+        if (video && !video.paused) {
+            video.pause();
+            return;
+        }
+        if (embedProvider === 'youtube') {
+            ytPost('pauseVideo');
+            embedPlaying = false;
+        } else if (embedProvider === 'vimeo') {
+            vimeoPost('pause');
+            embedPlaying = false;
+        }
+    }
+
+    function playPlayback() {
+        if (video) {
+            video.play().catch(function () {});
+            return;
+        }
+        if (embedProvider === 'youtube') {
+            ytPost('playVideo');
+            embedPlaying = true;
+        } else if (embedProvider === 'vimeo') {
+            vimeoPost('play');
+            embedPlaying = true;
+        }
+    }
+
+    function togglePlayPause() {
+        if (video) {
+            if (video.paused) video.play().catch(function () {});
+            else video.pause();
+            return;
+        }
+        if (embedPlaying) pausePlayback();
+        else playPlayback();
+    }
+
+    function skipBy(delta) {
+        var next = Math.max(0, getPlaybackSeconds() + delta);
+        var duration = getPlaybackDuration();
+        if (duration > 0) next = Math.min(next, duration);
+        if (video) {
+            video.currentTime = next;
+            return;
+        }
+        seekTo(next);
+    }
+
+    function setPlaybackSpeed(rate) {
+        rate = parseFloat(rate) || 1;
+        if (video) {
+            video.playbackRate = rate;
+            return;
+        }
+        if (embedProvider === 'youtube') ytPost('setPlaybackRate', [rate]);
+        else if (embedProvider === 'vimeo') vimeoPost('setPlaybackRate', rate);
+    }
+
+    function onEmbedTime(seconds) {
+        if (typeof seconds !== 'number' || !isFinite(seconds)) return;
+        embedCurrentTime = Math.max(0, seconds);
+        if (!stampLocked) syncStamp();
+        updateWatchBar();
+        if (Math.floor(embedCurrentTime) % 5 === 0) saveProgress(false);
+    }
+
+    function onEmbedDuration(seconds) {
+        if (typeof seconds !== 'number' || !isFinite(seconds) || seconds <= 0) return;
+        embedDuration = seconds;
+        updateWatchBar();
+    }
+
+    function onEmbedReady() {
+        if (embedReady) return;
+        embedReady = true;
+        var savedSpeed = localStorage.getItem('lessonPlaybackSpeed') || '1';
+        if (speedSelect) speedSelect.value = savedSpeed;
+        setPlaybackSpeed(savedSpeed);
+        if (embedProvider === 'youtube') {
+            ytPost('addEventListener', ['onStateChange']);
+            ytPost('getDuration');
+            ytPost('getCurrentTime');
+        } else if (embedProvider === 'vimeo') {
+            vimeoPost('addEventListener', 'timeupdate');
+            vimeoPost('addEventListener', 'play');
+            vimeoPost('addEventListener', 'pause');
+            vimeoPost('addEventListener', 'ended');
+            vimeoPost('getDuration');
+            vimeoPost('getCurrentTime');
+        }
+        updateWatchBar();
+        if (pendingSeek !== null) {
+            var queued = pendingSeek;
+            var queuedPlay = pendingSeekPlay;
+            pendingSeek = null;
+            seekTo(queued, queuedPlay);
+        }
+    }
+
+    // YouTube/Vimeo parity with uploaded lessons — no Data API key; postMessage only.
+    function initEmbedBridge() {
+        if (!embedFrame || !embedProvider) return;
+
+        window.addEventListener('message', function (e) {
+            if (embedProvider === 'youtube') {
+                if (!YT_ORIGINS[e.origin]) return;
+                var data = e.data;
+                if (typeof data === 'string') {
+                    try { data = JSON.parse(data); } catch (err) { return; }
+                }
+                if (!data || typeof data !== 'object') return;
+                if (data.event === 'onReady') {
+                    onEmbedReady();
+                }
+                if (data.event === 'onStateChange') {
+                    var state = typeof data.info === 'number' ? data.info : null;
+                    // 1 playing, 2 paused, 0 ended, 3 buffering
+                    if (state === 1) embedPlaying = true;
+                    else if (state === 2 || state === 0) {
+                        embedPlaying = false;
+                        saveProgress(true);
+                    }
+                }
+                if (data.event === 'infoDelivery' && data.info && typeof data.info === 'object') {
+                    if (typeof data.info.currentTime === 'number') onEmbedTime(data.info.currentTime);
+                    if (typeof data.info.duration === 'number') onEmbedDuration(data.info.duration);
+                    if (typeof data.info.playerState === 'number') {
+                        embedPlaying = data.info.playerState === 1;
+                    }
+                }
+            } else if (embedProvider === 'vimeo') {
+                if (e.origin !== VIMEO_ORIGIN) return;
+                var vdata = e.data;
+                if (typeof vdata === 'string') {
+                    try { vdata = JSON.parse(vdata); } catch (err) { return; }
+                }
+                if (!vdata || typeof vdata !== 'object') return;
+                if (vdata.event === 'ready') onEmbedReady();
+                if (vdata.event === 'play') embedPlaying = true;
+                if (vdata.event === 'pause' || vdata.event === 'ended') {
+                    embedPlaying = false;
+                    saveProgress(true);
+                }
+                if (vdata.event === 'timeupdate' && vdata.data) {
+                    if (typeof vdata.data.seconds === 'number') onEmbedTime(vdata.data.seconds);
+                    if (typeof vdata.data.duration === 'number') onEmbedDuration(vdata.data.duration);
+                }
+                if (vdata.method === 'getCurrentTime' && typeof vdata.value === 'number') onEmbedTime(vdata.value);
+                if (vdata.method === 'getDuration' && typeof vdata.value === 'number') onEmbedDuration(vdata.value);
+            }
+        });
+
+        function handshake() {
+            if (!embedFrame.contentWindow) return;
+            if (embedProvider === 'youtube') {
+                embedFrame.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 1 }), '*');
+            } else if (embedProvider === 'vimeo') {
+                vimeoPost('addEventListener', 'ready');
+                vimeoPost('getCurrentTime');
+                vimeoPost('getDuration');
+            }
+        }
+
+        embedFrame.addEventListener('load', handshake);
+        handshake();
+
+        if (embedProvider === 'youtube') {
+            embedPollTimer = window.setInterval(function () {
+                if (!embedFrame.contentWindow) return;
+                ytPost('getCurrentTime');
+                if (!embedDuration) ytPost('getDuration');
+            }, 500);
+        }
+        syncStamp();
+    }
+
+    initEmbedBridge();
+
     function saveProgress(force) {
-        if (!video || !csrf) return;
-        var pos = Math.floor(video.currentTime || 0);
+        if (!csrf) return;
+        if (!video && !embedProvider) return;
+        var pos = getPlaybackSeconds();
         if (!force && Math.abs(pos - lastSaved) < 3) return;
         lastSaved = pos;
         var body = new FormData();
@@ -657,9 +1096,7 @@ ob_start();
 
     function focusComposer() {
         if (!composer || !input) return;
-        if (video && !video.paused) {
-            video.pause();
-        }
+        pausePlayback();
         lockStampFromVideo();
         composer.scrollIntoView({ behavior: 'smooth', block: 'center' });
         composer.classList.add('is-focused', 'is-pulse');
@@ -710,41 +1147,102 @@ ob_start();
         });
     }
 
-    if (speedSelect && video) {
+    if (speedSelect) {
         var savedSpeed = localStorage.getItem('lessonPlaybackSpeed') || '1';
         speedSelect.value = savedSpeed;
-        video.playbackRate = parseFloat(savedSpeed) || 1;
+        if (video) video.playbackRate = parseFloat(savedSpeed) || 1;
         speedSelect.addEventListener('change', function () {
-            video.playbackRate = parseFloat(speedSelect.value) || 1;
+            setPlaybackSpeed(speedSelect.value);
             localStorage.setItem('lessonPlaybackSpeed', speedSelect.value);
         });
     }
 
-    if (resumeBox && video && resumeAt >= 5) {
+    if (resumeBox && resumeAt >= 5) {
         document.getElementById('lesson-resume-yes')?.addEventListener('click', function () {
             seekTo(resumeAt);
             resumeBox.hidden = true;
         });
         document.getElementById('lesson-resume-no')?.addEventListener('click', function () {
-            video.currentTime = 0;
+            seekTo(0, false);
             resumeBox.hidden = true;
+            lastSaved = -1;
             saveProgress(true);
         });
     }
 
-    document.querySelectorAll('.qa-video-stamp[data-seek]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            seekTo(btn.getAttribute('data-seek'));
-        });
+    // Delegated (not per-element) so "jump to this moment" also works on Q&A
+    // cards that get inserted later via addQuestionCard(), without a page reload.
+    document.addEventListener('click', function (e) {
+        var btn = e.target.closest('.qa-video-stamp[data-seek]');
+        if (!btn) return;
+        seekTo(btn.getAttribute('data-seek'));
     });
 
     if (askJump) askJump.addEventListener('click', focusComposer);
     if (mobileAsk) mobileAsk.addEventListener('click', focusComposer);
 
+    function addQuestionCard(html) {
+        var list = document.getElementById('lesson-qa-list');
+        var empty = document.getElementById('lesson-qa-empty');
+        if (!html || !list) return;
+        if (empty) empty.style.display = 'none';
+        list.style.display = '';
+        list.insertAdjacentHTML('afterbegin', html);
+
+        var openStat = document.getElementById('lesson-qa-open-stat');
+        if (openStat) {
+            var openCount = (parseInt(openStat.textContent, 10) || 0) + 1;
+            openStat.textContent = openCount + ' open';
+            openStat.style.display = '';
+        }
+    }
+
+    // Ask a question over fetch, not a normal form POST: a normal POST redirects
+    // back to this page, which resets native <video> playback to 0:00. Submitting
+    // in the background keeps the lesson playing and just adds the new card.
     if (composer) {
-        composer.addEventListener('submit', function () {
-            stampLocked = true;
+        composer.addEventListener('submit', function (e) {
+            e.preventDefault();
+            if (!input) return;
+            var questionText = input.value.trim();
+            if (!questionText || !csrf) return;
+
+            stampLocked = stampAttachEnabled;
+            if (stampAttachEnabled) {
+                lockedSeconds = getPlaybackSeconds();
+            }
             syncStamp();
+            if (sendBtn) sendBtn.disabled = true;
+
+            var body = new FormData();
+            body.append('_token', csrf);
+            body.append('action', 'ask_question');
+            body.append('question', questionText);
+            body.append('video_seconds', stampAttachEnabled && secondsInput ? secondsInput.value : '-1');
+
+            fetch(window.location.pathname + window.location.search, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'fetch' },
+                body: body,
+                credentials: 'same-origin'
+            })
+                .then(function (res) { return res.json().catch(function () { return null; }); })
+                .then(function (data) {
+                    if (!data || !data.ok) {
+                        throw new Error((data && data.error) || 'Could not send your question. Please try again.');
+                    }
+                    addQuestionCard(data.html);
+                    input.value = '';
+                    stampLocked = false;
+                    syncStamp();
+                    composer.classList.remove('is-focused');
+                })
+                .catch(function (err) {
+                    window.alert(err.message || 'Could not send your question. Please check your connection and try again.');
+                })
+                .finally(function () {
+                    syncComposer();
+                });
         });
     }
 
@@ -760,7 +1258,7 @@ ob_start();
         input.addEventListener('input', syncComposer);
         input.addEventListener('focus', function () {
             composer?.classList.add('is-focused');
-            if (video && !video.paused) video.pause();
+            pausePlayback();
             lockStampFromVideo();
         });
         input.addEventListener('blur', function () {
@@ -769,14 +1267,22 @@ ob_start();
         syncComposer();
     }
 
+    function toggleTheater() {
+        if (!theaterBtn || !root) return;
+        root.classList.toggle('is-theater');
+        var on = root.classList.contains('is-theater');
+        theaterBtn.classList.toggle('lesson-toolbar-btn--accent', on);
+        var label = theaterBtn.querySelector('[data-theater-label]');
+        if (label) label.textContent = on ? 'Exit theater' : 'Theater';
+        // Pull focus out of the YouTube/Vimeo iframe so the next T / F press
+        // reaches this page instead of disappearing into the embed.
+        try { theaterBtn.focus({ preventScroll: true }); } catch (err) { theaterBtn.focus(); }
+    }
+
     // Theater mode: keep Q&A beside a larger player
     if (theaterBtn && root) {
         theaterBtn.addEventListener('click', function () {
-            root.classList.toggle('is-theater');
-            var on = root.classList.contains('is-theater');
-            theaterBtn.classList.toggle('lesson-toolbar-btn--accent', on);
-            var label = theaterBtn.querySelector('[data-theater-label]');
-            if (label) label.textContent = on ? 'Exit theater' : 'Theater';
+            toggleTheater();
         });
     }
 
@@ -800,33 +1306,42 @@ ob_start();
         });
     }
 
-    // Keyboard shortcuts (ignore when typing)
+    // Keyboard shortcuts (ignore when typing). Note: while focus is inside a
+    // cross-origin iframe the browser will not deliver keys here — after using
+    // theater we refocus the button so subsequent presses work again.
     document.addEventListener('keydown', function (e) {
         var tag = (e.target && e.target.tagName || '').toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
-        if (!video) return;
 
-        if (e.code === 'Space') {
-            e.preventDefault();
-            if (video.paused) video.play().catch(function () {});
-            else video.pause();
-        } else if (e.code === 'ArrowLeft') {
-            e.preventDefault();
-            video.currentTime = Math.max(0, video.currentTime - 10);
-        } else if (e.code === 'ArrowRight') {
-            e.preventDefault();
-            video.currentTime = Math.min(video.duration || video.currentTime + 10, video.currentTime + 10);
-        } else if (e.key === 'f' || e.key === 'F') {
+        if (e.key === 'f' || e.key === 'F') {
             e.preventDefault();
             if (document.fullscreenElement) document.exitFullscreen?.();
             else player?.requestFullscreen?.();
+            return;
         } else if (e.key === 't' || e.key === 'T') {
             e.preventDefault();
-            theaterBtn?.click();
+            toggleTheater();
+            return;
+        }
+
+        if (!video && !embedProvider) return;
+
+        if (e.code === 'Space') {
+            e.preventDefault();
+            togglePlayPause();
+        } else if (e.code === 'ArrowLeft') {
+            e.preventDefault();
+            skipBy(-10);
+        } else if (e.code === 'ArrowRight') {
+            e.preventDefault();
+            skipBy(10);
         }
     });
 
     window.addEventListener('beforeunload', function () { saveProgress(true); });
+    window.addEventListener('pagehide', function () {
+        if (embedPollTimer) window.clearInterval(embedPollTimer);
+    });
 
     function focusQuestionFromHash() {
         var hash = window.location.hash || '';
@@ -846,7 +1361,7 @@ ob_start();
         }
 
         var seekBtn = el.querySelector('[data-seek]');
-        if (seekBtn && video) {
+        if (seekBtn) {
             var secs = parseInt(seekBtn.getAttribute('data-seek') || '0', 10);
             if (secs > 0) {
                 window.setTimeout(function () { seekTo(secs); }, 150);

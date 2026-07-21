@@ -409,6 +409,123 @@ if (!function_exists('portal_format_video_timestamp')) {
     }
 }
 
+if (!function_exists('portal_video_embed_providers')) {
+    /**
+     * Allowlist of legitimate video platforms that lesson videos may be embedded from.
+     * Only these hosts are ever trusted enough to build an <iframe> src from — anything
+     * else is rejected outright so teachers cannot (even accidentally) point students at
+     * a lookalike or compromised domain. Keep this list short and only add platforms with
+     * a stable, well-documented embed URL scheme.
+     */
+    function portal_video_embed_providers(): array
+    {
+        return [
+            'youtube' => [
+                'label' => 'YouTube',
+                'hosts' => ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com', 'youtu.be'],
+            ],
+            'vimeo' => [
+                'label' => 'Vimeo',
+                'hosts' => ['vimeo.com', 'www.vimeo.com', 'player.vimeo.com'],
+            ],
+        ];
+    }
+}
+
+if (!function_exists('portal_supported_video_source_hint')) {
+    function portal_supported_video_source_hint(): string
+    {
+        return 'YouTube or Vimeo link';
+    }
+}
+
+if (!function_exists('portal_parse_external_video_url')) {
+    /**
+     * Strictly validate a teacher-supplied video link against a small allowlist of
+     * legitimate video platforms and extract a clean video ID from it.
+     *
+     * Security note: the returned `embed_url` is always rebuilt server-side from the
+     * platform's own trusted embed domain plus a character-restricted ID — the raw
+     * pasted URL (query strings, extra paths, redirects, etc.) is never forwarded to
+     * the browser. This means an attacker cannot smuggle an arbitrary/malicious domain
+     * into the page no matter what they paste; anything that doesn't match a known
+     * platform's URL shape is rejected with `null`.
+     *
+     * @return array{provider:string,label:string,video_id:string,watch_url:string,embed_url:string,thumbnail_url:string}|null
+     */
+    function portal_parse_external_video_url(string $url): ?array
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return null;
+        }
+        if (!preg_match('/^https?:\/\//i', $url)) {
+            $url = 'https://' . $url;
+        }
+
+        $parts = parse_url($url);
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($host === '') {
+            return null;
+        }
+
+        $providers = portal_video_embed_providers();
+
+        if (in_array($host, $providers['youtube']['hosts'], true)) {
+            $videoId = null;
+            $path = (string) ($parts['path'] ?? '');
+            $query = [];
+            if (!empty($parts['query'])) {
+                parse_str($parts['query'], $query);
+            }
+
+            if ($host === 'youtu.be') {
+                $videoId = trim($path, '/');
+            } elseif (isset($query['v'])) {
+                $videoId = (string) $query['v'];
+            } elseif (preg_match('~^/(?:embed|shorts|live)/([^/?#]+)~', $path, $m)) {
+                $videoId = $m[1];
+            }
+
+            if ($videoId === null || !preg_match('/^[A-Za-z0-9_-]{11}$/', $videoId)) {
+                return null;
+            }
+
+            return [
+                'provider' => 'youtube',
+                'label' => $providers['youtube']['label'],
+                'video_id' => $videoId,
+                'watch_url' => 'https://www.youtube.com/watch?v=' . $videoId,
+                'embed_url' => 'https://www.youtube-nocookie.com/embed/' . $videoId,
+                'thumbnail_url' => 'https://i.ytimg.com/vi/' . $videoId . '/hqdefault.jpg',
+            ];
+        }
+
+        if (in_array($host, $providers['vimeo']['hosts'], true)) {
+            $path = (string) ($parts['path'] ?? '');
+            $videoId = null;
+            if (preg_match('#^/(?:video/)?(\d+)(?:/[a-zA-Z0-9]+)?/?$#', $path, $m)) {
+                $videoId = $m[1];
+            }
+
+            if ($videoId === null || !preg_match('/^[0-9]{5,15}$/', $videoId)) {
+                return null;
+            }
+
+            return [
+                'provider' => 'vimeo',
+                'label' => $providers['vimeo']['label'],
+                'video_id' => $videoId,
+                'watch_url' => 'https://vimeo.com/' . $videoId,
+                'embed_url' => 'https://player.vimeo.com/video/' . $videoId,
+                'thumbnail_url' => '',
+            ];
+        }
+
+        return null;
+    }
+}
+
 if (!function_exists('portal_db_timestamp')) {
     /**
      * Parse a SQLite datetime('now') value (UTC, no timezone suffix) into a unix timestamp.

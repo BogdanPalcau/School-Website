@@ -534,8 +534,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileName = '';
             $createItemError = null;
 
-            // Handle file upload for document/video types
-            if (($type === 'document' || $type === 'video') && isset($_FILES['file'])) {
+            // Handle file upload for document/video types. A video item may instead point
+            // at an external link (YouTube/Vimeo) — only enter the upload branch when a
+            // file was actually attempted, so a video-link-only submission falls through
+            // to the external-video validation below instead of failing with "no file".
+            $videoFileAttempted = $type === 'video'
+                && isset($_FILES['file'])
+                && (int) ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+            $documentFileAttempted = $type === 'document' && isset($_FILES['file']);
+
+            if ($documentFileAttempted || $videoFileAttempted) {
                 $isVideoUpload = $type === 'video';
                 $fileError = (int) ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE);
                 $fileSize = (int) ($_FILES['file']['size'] ?? 0);
@@ -570,12 +578,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $createItemError = 'Upload failed while saving the file. Please try again.';
                     }
                 }
+            } elseif ($type === 'video' && $url !== '') {
+                $videoMeta = portal_parse_external_video_url($url);
+                if ($videoMeta === null) {
+                    $createItemError = 'That link is not a supported video source. Please use a ' . portal_supported_video_source_hint() . ', or upload a video file.';
+                } else {
+                    $url = $videoMeta['watch_url'];
+                }
             } elseif ($type === 'link' && $url === '') {
                 $createItemError = 'Please enter a valid link URL.';
             } elseif ($type === 'document' && $url === '') {
                 $createItemError = 'Please upload a file or provide a URL for this document item.';
             } elseif ($type === 'video' && $filePath === '') {
-                $createItemError = 'Please upload a video file for this item.';
+                $createItemError = 'Please upload a video file or paste a ' . portal_supported_video_source_hint() . '.';
             } elseif ($type === 'submission') {
                 $deadlineRaw = trim((string) ($_POST['submission_deadline'] ?? ''));
                 $deadlineTs = $deadlineRaw !== '' ? strtotime($deadlineRaw) : false;
@@ -645,6 +660,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($error === null && $itemRow['type'] === 'document' && $itemRow['file_path'] === '') {
                     if ($url === '') {
                         $error = 'Please enter a valid file URL.';
+                    }
+                } elseif ($error === null && $itemRow['type'] === 'video' && $itemRow['file_path'] === '') {
+                    $videoMeta = $url !== '' ? portal_parse_external_video_url($url) : null;
+                    if ($videoMeta === null) {
+                        $error = 'Please use a ' . portal_supported_video_source_hint() . '.';
+                    } else {
+                        $url = $videoMeta['watch_url'];
                     }
                 } elseif ($itemRow['type'] !== 'link') {
                     $url = (string) ($itemRow['url'] ?? '');
@@ -2168,6 +2190,15 @@ ob_start();
                                                             </button>
                                                             <?php endif; ?>
                                                         </div>
+                                                    <?php elseif ($item['type'] === 'video' && $item['url'] !== ''): ?>
+                                                        <?php $itemVideoMeta = portal_parse_external_video_url((string) $item['url']); ?>
+                                                        <div class="file-item-row">
+                                                            <a href="lesson-viewer.php?item=<?= (int) $item['id'] ?>" class="file-view-link" target="_blank">
+                                                                <?= portal_icon('video', 'icon-xs') ?>
+                                                                <?= portal_escape($item['title']) ?>
+                                                                <span class="file-ext-badge"><?= portal_escape($itemVideoMeta['label'] ?? 'Video') ?></span>
+                                                            </a>
+                                                        </div>
                                                     <?php elseif ($item['url'] !== ''): ?>
                                                         <a class="item-url-link"
                                                            href="<?= portal_escape($itemExternalUrl !== '' ? $itemExternalUrl : (string) $item['url']) ?>"
@@ -2230,6 +2261,11 @@ ob_start();
                                                                     <label class="folder-form-label">
                                                                         <span>URL</span>
                                                                         <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://... or www.example.com">
+                                                                    </label>
+                                                                <?php elseif ($item['type'] === 'video' && $item['file_path'] === ''): ?>
+                                                                    <label class="folder-form-label">
+                                                                        <span>Video link <small>(YouTube or Vimeo only)</small></span>
+                                                                        <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://www.youtube.com/watch?v=...">
                                                                     </label>
                                                                 <?php endif; ?>
                                                                 <?php if (($item['type'] === 'document' || $item['type'] === 'video') && $item['file_path'] !== ''): ?>
@@ -2619,13 +2655,15 @@ ob_start();
                                                            data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
                                                            data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
                                                            data-video-accept=".mp4,.webm,.mov,.m4v,.ogv"
-                                                           data-video-hint="Upload video <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>)</small>">
+                                                           data-video-hint="Upload a video file <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>) — or paste a link below</small>">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-url-group">
                                                 <label class="folder-form-label" style="grid-column:1/-1;">
                                                     <span class="item-url-label">Or paste URL <small>(optional)</small></span>
-                                                    <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" placeholder="https://... or www.example.com">
+                                                    <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" placeholder="https://... or www.example.com"
+                                                           data-doc-placeholder="https://... or www.example.com"
+                                                           data-video-placeholder="https://www.youtube.com/watch?v=... or https://vimeo.com/...">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row">
@@ -3894,7 +3932,7 @@ ob_start();
             const type      = sel.value;
             const isVideo   = type === 'video';
             if (fileGrp) fileGrp.style.display  = type === 'link' || type === 'submission' ? 'none' : '';
-            if (urlGrp)  urlGrp.style.display   = type === 'submission' || isVideo ? 'none' : '';
+            if (urlGrp)  urlGrp.style.display   = type === 'submission' ? 'none' : '';
             if (subGrp)  subGrp.style.display    = type === 'submission' ? '' : 'none';
             if (dlOpt)   dlOpt.style.display     = (type === 'document' || isVideo) ? '' : 'none';
             if (fileInput && fileLabel) {
@@ -3904,9 +3942,14 @@ ob_start();
             if (urlLabel) {
                 urlLabel.innerHTML = type === 'link'
                     ? 'Link URL <small>(required)</small>'
-                    : 'Or paste URL <small>(optional)</small>';
+                    : (isVideo ? 'Or paste a video link <small>(YouTube or Vimeo only, for student safety)</small>' : 'Or paste URL <small>(optional)</small>');
             }
-            if (urlInput) urlInput.required = type === 'link';
+            if (urlInput) {
+                urlInput.required = type === 'link';
+                urlInput.placeholder = isVideo
+                    ? (urlInput.dataset.videoPlaceholder || urlInput.placeholder)
+                    : (urlInput.dataset.docPlaceholder || urlInput.placeholder);
+            }
         };
         sel.addEventListener('change', update);
         update();

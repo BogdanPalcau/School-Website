@@ -11621,6 +11621,33 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 
 .lesson-player.is-errored video { display: none; }
 
+.lesson-embed-wrap {
+    position: absolute;
+    inset: 0;
+}
+
+.lesson-embed-frame {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border: 0;
+    background: #12121c;
+}
+
+.lesson-embed-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 2px 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+.lesson-keys-hint-note {
+    color: var(--muted);
+    font-weight: 600;
+}
+
 .lesson-player-error {
     display: none;
     position: absolute;
@@ -11806,11 +11833,98 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     100% { box-shadow: 0 0 0 3px rgba(193, 32, 47, 0.1); }
 }
 
-.lesson-stamp-hint {
-    font-size: 0.72rem;
-    font-weight: 800;
-    color: var(--primary-strong);
+.lesson-stamp-toggle {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     margin-right: auto;
+    padding: 5px 10px 5px 6px;
+    border: 1px solid rgba(193, 32, 47, 0.28);
+    border-radius: 999px;
+    background: #fff5f5;
+    color: var(--primary-strong);
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.lesson-stamp-toggle:hover,
+.lesson-stamp-toggle:focus-visible {
+    border-color: rgba(193, 32, 47, 0.45);
+    box-shadow: 0 0 0 3px rgba(193, 32, 47, 0.1);
+    outline: none;
+}
+
+.lesson-stamp-toggle-switch {
+    position: relative;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    background: rgba(193, 32, 47, 0.35);
+    transition: background 140ms ease;
+}
+
+.lesson-stamp-toggle-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(40, 19, 21, 0.25);
+    transition: transform 140ms ease;
+}
+
+.lesson-stamp-toggle.is-on .lesson-stamp-toggle-switch {
+    background: var(--primary);
+}
+
+.lesson-stamp-toggle.is-on .lesson-stamp-toggle-knob {
+    transform: translateX(12px);
+}
+
+.lesson-stamp-toggle-copy {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    min-width: 0;
+    line-height: 1.15;
+}
+
+.lesson-stamp-toggle-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.lesson-stamp-toggle-time {
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+}
+
+.lesson-stamp-toggle.is-off {
+    background: var(--surface-muted);
+    border-color: var(--border);
+    color: var(--muted);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-switch {
+    background: rgba(40, 19, 21, 0.22);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-knob {
+    transform: translateX(0);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-time {
+    opacity: 0.7;
 }
 
 .lesson-staff-note {
@@ -12268,9 +12382,13 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     grid-template-columns: minmax(0, 1.9fr) minmax(280px, 0.75fr);
 }
 
+/* Keep 16:9 even in theater — absolute iframe embeds have no intrinsic height,
+   so aspect-ratio:auto collapses the player to a thin strip. */
 .lesson-viewer.is-theater .lesson-player {
+    aspect-ratio: 16 / 9;
     max-height: min(72vh, 720px);
-    aspect-ratio: auto;
+    width: min(100%, calc(min(72vh, 720px) * 16 / 9));
+    margin-inline: auto;
 }
 
 .lesson-mobile-ask {
