@@ -1788,7 +1788,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
         let pdfDoc = null;
         let pageCount = 0;
-        let pages = []; // { wrap, canvas, textLayer, page, textContent, state, renderTask, renderPromise }
+        let pages = []; // { wrap, canvas, textLayer, page, textContent, state, renderTask, textLayerTask, renderPromise, renderGeneration }
         let viewScale = 1;
         let renderScale = baseRenderScale();
         let fitMode = 'fit-width';
@@ -1898,7 +1898,9 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                     textContent: null,
                     state: 'idle', // idle | rendering | ready
                     renderTask: null,
+                    textLayerTask: null,
                     renderPromise: null,
+                    renderGeneration: 0,
                 });
             }
 
@@ -1948,16 +1950,23 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             if (!rec) return Promise.resolve();
             if (rec.state === 'ready') return Promise.resolve();
             if (rec.renderPromise) return rec.renderPromise;
-            rec.renderPromise = renderPage(i).finally(() => { rec.renderPromise = null; });
-            return rec.renderPromise;
+            const generation = rec.renderGeneration;
+            const renderPromise = renderPage(i, generation);
+            const trackedPromise = renderPromise.finally(() => {
+                // A quality change may already have started a replacement render.
+                if (rec.renderPromise === trackedPromise) rec.renderPromise = null;
+            });
+            rec.renderPromise = trackedPromise;
+            return trackedPromise;
         }
 
-        async function renderPage(i) {
+        async function renderPage(i, generation) {
             const rec = pages[i];
-            if (!rec || rec.state === 'ready') return;
+            if (!rec || rec.state === 'ready' || rec.renderGeneration !== generation) return;
             rec.state = 'rendering';
             try {
                 const page = rec.page || (rec.page = await pdfDoc.getPage(i + 1));
+                if (rec.renderGeneration !== generation) return;
                 const viewport = page.getViewport({ scale: renderScale });
                 rec.canvas.width = Math.floor(viewport.width);
                 rec.canvas.height = Math.floor(viewport.height);
@@ -1976,25 +1985,32 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 const task = page.render({ canvasContext: ctx, viewport });
                 rec.renderTask = task;
                 await task.promise;
-                rec.renderTask = null;
+                if (rec.renderTask === task) rec.renderTask = null;
+                if (rec.renderGeneration !== generation) return;
 
                 rec.textLayer.innerHTML = '';
                 rec.textLayer.style.width = Math.floor(viewport.width) + 'px';
                 rec.textLayer.style.height = Math.floor(viewport.height) + 'px';
                 if (!rec.textContent) rec.textContent = await page.getTextContent();
+                if (rec.renderGeneration !== generation) return;
                 try {
-                    await pdfjsLib.renderTextLayer({
+                    const textLayerTask = pdfjsLib.renderTextLayer({
                         textContentSource: rec.textContent,
                         container: rec.textLayer,
                         viewport,
-                    }).promise;
+                    });
+                    rec.textLayerTask = textLayerTask;
+                    await textLayerTask.promise;
+                    if (rec.textLayerTask === textLayerTask) rec.textLayerTask = null;
                 } catch (e) { /* text layer is a progressive enhancement */ }
+                if (rec.renderGeneration !== generation) return;
 
                 rec.wrap.classList.remove('is-placeholder');
                 rec.state = 'ready';
                 // Page sizes can differ — keep the scroll host clipped to the visual scale.
                 syncScaledHost(zoomWrap, zoomHost, viewScale / renderScale);
             } catch (e) {
+                if (rec.renderGeneration !== generation) return;
                 // Cancelled renders (from unload/scroll) are expected — leave as idle so they retry.
                 if (e && e.name === 'RenderingCancelledException') {
                     rec.state = 'idle';
@@ -2010,9 +2026,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 const pageNum = i + 1;
                 if (Math.abs(pageNum - centerPage) <= KEEP_DISTANCE) return;
                 if (rec.state === 'idle') return;
+                rec.renderGeneration += 1;
                 if (rec.renderTask) {
                     try { rec.renderTask.cancel(); } catch (e) {}
                     rec.renderTask = null;
+                }
+                if (rec.textLayerTask) {
+                    try { rec.textLayerTask.cancel(); } catch (e) {}
+                    rec.textLayerTask = null;
                 }
                 // Drop the heavy canvas bitmap but keep the sized shell for scroll layout.
                 const ctx = rec.canvas.getContext('2d');
@@ -2045,9 +2066,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
         function invalidateRenderedPages() {
             pages.forEach(rec => {
+                rec.renderGeneration += 1;
                 if (rec.renderTask) {
                     try { rec.renderTask.cancel(); } catch (e) {}
                     rec.renderTask = null;
+                }
+                if (rec.textLayerTask) {
+                    try { rec.textLayerTask.cancel(); } catch (e) {}
+                    rec.textLayerTask = null;
                 }
                 const ctx = rec.canvas.getContext('2d');
                 if (ctx) ctx.clearRect(0, 0, rec.canvas.width, rec.canvas.height);
