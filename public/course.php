@@ -3543,6 +3543,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260713m"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -3744,6 +3745,20 @@ ob_start();
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    function sanitizeDocHtml(html) {
+        const raw = String(html || '');
+        if (!raw.trim()) return '';
+        if (window.DOMPurify && typeof DOMPurify.sanitize === 'function') {
+            return DOMPurify.sanitize(raw, {
+                USE_PROFILES: { html: true },
+                FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
+                ALLOW_DATA_ATTR: false,
+            });
+        }
+        // Fail closed if the sanitizer CDN is blocked: never inject raw HTML.
+        return '<p>' + escapeHtml(raw.replace(/<[^>]*>/g, ' ')) + '</p>';
     }
 
     function renderSheetToTable(sheet) {
@@ -4600,7 +4615,8 @@ ob_start();
                     }
                     const buf = await resp.arrayBuffer();
                     const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-                    mount.innerHTML = result.value || '<p class="rvw-doc-empty-msg">This document appears to be empty.</p>';
+                    const safeHtml = sanitizeDocHtml(result.value || '');
+                    mount.innerHTML = safeHtml || '<p class="rvw-doc-empty-msg">This document appears to be empty.</p>';
                 } else if (mode === 'xlsx') {
                     if (typeof XLSX === 'undefined') {
                         showErr('Spreadsheet preview library failed to load. Please refresh the page.');

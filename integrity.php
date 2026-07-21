@@ -4216,7 +4216,7 @@ if (!function_exists('portal_render_submission_review')) {
                     'comment'     => (string) $a['comment'],
                     'author'      => (string) ($a['author_name'] ?? ''),
                 ];
-            }, $annotations), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
+            }, $annotations), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?></script>
         </div>
         <?php
         return trim((string) ob_get_clean());
