@@ -3,11 +3,6 @@ declare(strict_types=1);
 require_once __DIR__ . '/../bootstrap.php';
 portal_require_login();
 
-// Safe migration — add allow_download if not yet present
-try {
-    portal_db()->exec("ALTER TABLE course_folder_items ADD COLUMN allow_download TINYINT(1) NOT NULL DEFAULT 0");
-} catch (\PDOException $e) {}
-
 $db  = portal_db();
 $me  = portal_current_user();
 
@@ -15,7 +10,7 @@ $itemId = (int) ($_GET['item'] ?? 0);
 if (!$itemId) { http_response_code(400); exit('Bad request.'); }
 
 $stmt = $db->prepare(
-    "SELECT cfi.*, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
+    "SELECT cfi.*, cf.locked AS folder_locked, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
      FROM course_folder_items cfi
      JOIN course_folders cf ON cf.id = cfi.folder_id
      JOIN courses c ON c.id = cf.course_id
@@ -36,6 +31,16 @@ if (!$canAccess) {
     $canAccess = (bool) $enr->fetch();
 }
 if (!$canAccess) { http_response_code(403); exit('Access denied.'); }
+
+if (!$canManage && portal_folder_item_content_locked($item)) {
+    portal_log_security_event(
+        'forbidden_download',
+        'medium',
+        'Blocked view of locked course material item ' . $itemId
+    );
+    http_response_code(403);
+    exit('This material is locked.');
+}
 
 if (!function_exists('portal_view_presentation_converter')) {
     function portal_view_presentation_converter(): ?string
@@ -128,41 +133,61 @@ if (!function_exists('portal_view_presentation_pdf')) {
             return [$cachePdf, null];
         }
 
-        @set_time_limit(90);
-        $tmpDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'portal-presentation-' . bin2hex(random_bytes(8));
-        if (!mkdir($tmpDir, 0755, true)) {
-            return [null, 'Could not prepare a temporary folder for presentation preview.'];
+        // Singleflight: only one LibreOffice conversion per cache key at a time.
+        $lockPath = $cachePdf . '.lock';
+        $lockFh = @fopen($lockPath, 'c+');
+        if ($lockFh === false) {
+            return [null, 'Could not lock presentation conversion.'];
+        }
+        if (!flock($lockFh, LOCK_EX)) {
+            fclose($lockFh);
+            return [null, 'Could not lock presentation conversion.'];
         }
 
-        $converterArg = preg_match('/[\\\\\\/]/', $converter) ? escapeshellarg($converter) : $converter;
-        $cmd = $converterArg
-            . ' --headless --nologo --nofirststartwizard --convert-to pdf --outdir '
-            . escapeshellarg($tmpDir) . ' ' . escapeshellarg($source) . ' 2>&1';
+        try {
+            if (is_file($cachePdf) && filesize($cachePdf) > 0) {
+                return [$cachePdf, null];
+            }
 
-        $output = [];
-        $code = 1;
-        exec($cmd, $output, $code);
+            @set_time_limit(90);
+            $tmpDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'portal-presentation-' . bin2hex(random_bytes(8));
+            if (!mkdir($tmpDir, 0755, true)) {
+                return [null, 'Could not prepare a temporary folder for presentation preview.'];
+            }
 
-        $expected = $tmpDir . DIRECTORY_SEPARATOR . pathinfo($source, PATHINFO_FILENAME) . '.pdf';
-        $generated = is_file($expected) ? $expected : (glob($tmpDir . DIRECTORY_SEPARATOR . '*.pdf')[0] ?? null);
+            $converterArg = preg_match('/[\\\\\\/]/', $converter) ? escapeshellarg($converter) : $converter;
+            $cmd = $converterArg
+                . ' --headless --nologo --nofirststartwizard --convert-to pdf --outdir '
+                . escapeshellarg($tmpDir) . ' ' . escapeshellarg($source) . ' 2>&1';
 
-        if ($code !== 0 || $generated === null || !is_file($generated) || filesize($generated) <= 0) {
+            $output = [];
+            $code = 1;
+            exec($cmd, $output, $code);
+
+            $expected = $tmpDir . DIRECTORY_SEPARATOR . pathinfo($source, PATHINFO_FILENAME) . '.pdf';
+            $generated = is_file($expected) ? $expected : (glob($tmpDir . DIRECTORY_SEPARATOR . '*.pdf')[0] ?? null);
+
+            if ($code !== 0 || $generated === null || !is_file($generated) || filesize($generated) <= 0) {
+                portal_view_remove_dir($tmpDir);
+                $detail = trim(implode(' ', array_slice($output, -3)));
+                return [null, $detail !== '' ? 'Could not convert this presentation: ' . $detail : 'Could not convert this presentation.'];
+            }
+
+            if (!@rename($generated, $cachePdf)) {
+                @copy($generated, $cachePdf);
+                @unlink($generated);
+            }
             portal_view_remove_dir($tmpDir);
-            $detail = trim(implode(' ', array_slice($output, -3)));
-            return [null, $detail !== '' ? 'Could not convert this presentation: ' . $detail : 'Could not convert this presentation.'];
-        }
 
-        if (!@rename($generated, $cachePdf)) {
-            @copy($generated, $cachePdf);
-            @unlink($generated);
-        }
-        portal_view_remove_dir($tmpDir);
+            if (!is_file($cachePdf) || filesize($cachePdf) <= 0) {
+                return [null, 'Could not save the converted presentation preview.'];
+            }
 
-        if (!is_file($cachePdf) || filesize($cachePdf) <= 0) {
-            return [null, 'Could not save the converted presentation preview.'];
+            return [$cachePdf, null];
+        } finally {
+            flock($lockFh, LOCK_UN);
+            fclose($lockFh);
         }
-
-        return [$cachePdf, null];
     }
 }
 
@@ -991,6 +1016,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <?php endif; ?>
 <?php if (in_array($engineKind, ['docx', 'xlsx', 'pptx'], true)): ?>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -1173,6 +1199,21 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     });
 
     // ── Fetch helpers shared by office renderers ─────────────────────────────
+    function sanitizeDocHtml(html) {
+        const raw = String(html || '');
+        if (!raw.trim()) return '';
+        if (window.DOMPurify && typeof DOMPurify.sanitize === 'function') {
+            return DOMPurify.sanitize(raw, {
+                USE_PROFILES: { html: true },
+                FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
+                ALLOW_DATA_ATTR: false,
+            });
+        }
+        // Fail closed if the sanitizer CDN is blocked: never inject raw HTML.
+        const tmp = document.createElement('div');
+        tmp.textContent = raw.replace(/<[^>]*>/g, ' ');
+        return '<p>' + tmp.innerHTML + '</p>';
+    }
     async function fetchBuf() {
         const r = await fetch(FILE_URL);
         if (!r.ok) { showErr(await r.text() || 'Could not load file.'); return null; }
@@ -1472,9 +1513,11 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         (async () => {
             const buf = await fetchBuf(); if (!buf) return;
             const res = await mammoth.convertToHtml({ arrayBuffer: buf });
-            const html = (res.value && res.value.trim())
-                ? res.value
-                : '<p style="color:#999"><em>This document appears to be empty.</em></p>';
+            const html = sanitizeDocHtml(
+                (res.value && res.value.trim())
+                    ? res.value
+                    : '<p style="color:#999"><em>This document appears to be empty.</em></p>'
+            ) || '<p style="color:#999"><em>This document appears to be empty.</em></p>';
             let count;
             if (readingMode) {
                 count = renderReading(html);

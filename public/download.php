@@ -127,7 +127,7 @@ if (isset($_GET['item'])) {
     $itemId = (int) $_GET['item'];
 
     $stmt = $db->prepare(
-        "SELECT cfi.*, c.id AS course_id
+        "SELECT cfi.*, cf.locked AS folder_locked, c.id AS course_id
          FROM course_folder_items cfi
          JOIN course_folders cf ON cf.id = cfi.folder_id
          JOIN courses c ON c.id = cf.course_id
@@ -157,8 +157,19 @@ if (isset($_GET['item'])) {
         exit('Access denied.');
     }
 
+    $canManage = portal_is_admin() || portal_can_manage_course($courseId);
+    if (!$canManage && portal_folder_item_content_locked($item)) {
+        portal_log_security_event(
+            'forbidden_download',
+            'medium',
+            'Blocked download of locked course material item ' . $itemId
+        );
+        http_response_code(403);
+        exit('This material is locked.');
+    }
+
     // Students may only download if the teacher enabled it (inline view is always allowed)
-    $canDownload = portal_is_admin() || portal_can_manage_course($courseId);
+    $canDownload = $canManage;
     if (!$canDownload && !$inlineView) {
         if (empty($item['allow_download'])) {
             http_response_code(403);

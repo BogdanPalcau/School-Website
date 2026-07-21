@@ -10,7 +10,7 @@ $itemId = (int) ($_GET['item'] ?? 0);
 if (!$itemId) { http_response_code(400); exit('Bad request.'); }
 
 $itemStmt = $db->prepare(
-    "SELECT cfi.*, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
+    "SELECT cfi.*, cf.locked AS folder_locked, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
      FROM course_folder_items cfi
      JOIN course_folders cf ON cf.id = cfi.folder_id
      JOIN courses c ON c.id = cf.course_id
@@ -34,6 +34,15 @@ if (!portal_can_access_course($courseId)) {
 }
 
 $canManage = portal_can_manage_course($courseId);
+if (!$canManage && portal_folder_item_content_locked($item)) {
+    portal_log_security_event(
+        'unauthorised_course_access',
+        'medium',
+        'Blocked access to locked lesson video item: ' . $itemId
+    );
+    http_response_code(403);
+    exit('This material is locked.');
+}
 $canAsk = !$canManage;
 
 if (empty($_SESSION['_csrf'])) {

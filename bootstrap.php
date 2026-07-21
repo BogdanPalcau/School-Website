@@ -2430,4 +2430,16 @@ if (!function_exists('portal_can_manage_course')) {
     }
 }
 
+if (!function_exists('portal_folder_item_content_locked')) {
+    /**
+     * True when an enrolled non-manager must not open this material because the
+     * item or its parent folder is locked. Expects item row keys `locked` and,
+     * when joined, `folder_locked`.
+     */
+    function portal_folder_item_content_locked(array $item): bool
+    {
+        return !empty($item['locked']) || !empty($item['folder_locked']);
+    }
+}
+
 require_once __DIR__ . '/integrity.php';
