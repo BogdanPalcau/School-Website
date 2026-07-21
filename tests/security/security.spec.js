@@ -70,7 +70,7 @@ test('marks only the selected returned grade as seen from a deep link', async ({
     `/course.php?course=${fixtures.courses.openSlug}&section=gradebook&open_review=rvw-${selectedId}`,
   );
 
-  await expect(page.locator(`#rvw-${selectedId}`)).toHaveClass(/is-open/);
+  await expect(page.locator(`#rvw-${selectedId}`)).toHaveClass(/rvw-overlay--in/);
   expect(countFixtureRecord('seen-submission-id', String(selectedId))).toBe(1);
   expect(countFixtureRecord('seen-submission-id', String(otherId))).toBe(0);
 });
