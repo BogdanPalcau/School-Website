@@ -504,20 +504,49 @@ if (!function_exists('portal_parse_external_video_url')) {
         if (in_array($host, $providers['vimeo']['hosts'], true)) {
             $path = (string) ($parts['path'] ?? '');
             $videoId = null;
-            if (preg_match('#^/(?:video/)?(\d+)(?:/[a-zA-Z0-9]+)?/?$#', $path, $m)) {
+            $privacyHash = '';
+            if (preg_match('#^/(?:video/)?(\d+)(?:/([A-Za-z0-9]{1,128}))?/?$#', $path, $m)) {
                 $videoId = $m[1];
+                $privacyHash = (string) ($m[2] ?? '');
             }
 
             if ($videoId === null || !preg_match('/^[0-9]{5,15}$/', $videoId)) {
                 return null;
             }
 
+            $query = [];
+            if (!empty($parts['query'])) {
+                parse_str((string) $parts['query'], $query);
+            }
+            if (array_key_exists('h', $query) && !is_string($query['h'])) {
+                return null;
+            }
+            $queryHash = isset($query['h']) ? $query['h'] : '';
+            if ($queryHash !== '' && !preg_match('/^[A-Za-z0-9]{1,128}$/', $queryHash)) {
+                return null;
+            }
+            if ($privacyHash !== '' && $queryHash !== '' && !hash_equals($privacyHash, $queryHash)) {
+                return null;
+            }
+            if ($privacyHash === '') {
+                $privacyHash = $queryHash;
+            }
+
+            $watchUrl = 'https://vimeo.com/' . $videoId;
+            $embedUrl = 'https://player.vimeo.com/video/' . $videoId;
+            if ($privacyHash !== '') {
+                // Vimeo requires this token for unlisted videos. Preserve it in the
+                // canonical stored URL so re-parsing the DB row cannot lose access.
+                $watchUrl .= '/' . $privacyHash;
+                $embedUrl .= '?h=' . rawurlencode($privacyHash);
+            }
+
             return [
                 'provider' => 'vimeo',
                 'label' => $providers['vimeo']['label'],
                 'video_id' => $videoId,
-                'watch_url' => 'https://vimeo.com/' . $videoId,
-                'embed_url' => 'https://player.vimeo.com/video/' . $videoId,
+                'watch_url' => $watchUrl,
+                'embed_url' => $embedUrl,
                 'thumbnail_url' => '',
             ];
         }

@@ -54,6 +54,24 @@ expect_true($vim1 !== null && $vim1['embed_url'] === 'https://player.vimeo.com/v
 $vim2 = portal_parse_external_video_url('https://player.vimeo.com/video/76979871');
 expect_true($vim2 !== null && $vim2['video_id'] === '76979871', 'accepts an already-embedded player.vimeo.com URL');
 
+$vim3 = portal_parse_external_video_url('https://vimeo.com/76979871/8272103f6e');
+expect_true(
+    $vim3 !== null && $vim3['watch_url'] === 'https://vimeo.com/76979871/8272103f6e',
+    'preserves the privacy hash in a canonical unlisted Vimeo watch URL'
+);
+expect_true(
+    $vim3 !== null && $vim3['embed_url'] === 'https://player.vimeo.com/video/76979871?h=8272103f6e',
+    'passes the privacy hash to the unlisted Vimeo embed'
+);
+
+$vim4 = portal_parse_external_video_url('https://player.vimeo.com/video/76979871?h=8272103f6e&autoplay=1');
+expect_true(
+    $vim4 !== null
+        && $vim4['watch_url'] === 'https://vimeo.com/76979871/8272103f6e'
+        && $vim4['embed_url'] === 'https://player.vimeo.com/video/76979871?h=8272103f6e',
+    'preserves an unlisted Vimeo embed h parameter while dropping unrelated options'
+);
+
 // ── Rejected: lookalike / attacker-controlled hosts ─────────────────────────────
 expect_null(
     portal_parse_external_video_url('https://youtube.com.evil-mirror.example/watch?v=dQw4w9WgXcQ'),
@@ -74,6 +92,14 @@ expect_null(
 expect_null(
     portal_parse_external_video_url('https://vimeo.com/not-a-number'),
     'rejects a non-numeric vimeo path'
+);
+expect_null(
+    portal_parse_external_video_url('https://vimeo.com/76979871/8272103f6e?h=different'),
+    'rejects conflicting Vimeo privacy hashes'
+);
+expect_null(
+    portal_parse_external_video_url('https://player.vimeo.com/video/76979871?h[]=8272103f6e'),
+    'rejects a non-scalar Vimeo privacy hash'
 );
 expect_null(
     portal_parse_external_video_url(''),
