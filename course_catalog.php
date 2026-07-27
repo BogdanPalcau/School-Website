@@ -306,7 +306,7 @@ if (!function_exists('portal_course_tab_definitions')) {
             ],
             'gradebook' => [
                 'key' => 'gradebook',
-                'label' => 'Gradebook',
+                'label' => 'Grades',
                 'description' => 'Marks, feedback, and released results for this course.',
             ],
             'groups' => [

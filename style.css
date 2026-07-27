@@ -1644,7 +1644,7 @@ select {
 
 }
 
-/* ─── Global entrance animations ─── */
+/* ??? Global entrance animations ??? */
 
 @keyframes sidebarSlide {
     from { opacity: 0; transform: translateX(-18px); }
@@ -1776,7 +1776,7 @@ select {
     text-transform: uppercase;
 }
 
-/* ─── Events page redesign ─── */
+/* ??? Events page redesign ??? */
 
 .ev-hero {
     padding: 28px;
@@ -1973,7 +1973,7 @@ select {
     line-height: 1.55;
 }
 
-/* ─── Communication page redesign ─── */
+/* ??? Communication page redesign ??? */
 
 .nl-cover-top {
     display: flex;
@@ -4020,7 +4020,7 @@ body {
     }
 }
 
-/* ─── Admin panel ─── */
+/* ??? Admin panel ??? */
 
 .admin-layout {
     display: grid;
@@ -4837,7 +4837,7 @@ select.is-validation-shaking {
     }
 }
 
-/* ─── Admin dashboard shell ─── */
+/* ??? Admin dashboard shell ??? */
 
 .visually-hidden {
     position: absolute;
@@ -4875,7 +4875,7 @@ select.is-validation-shaking {
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 18px 22px;
+    padding: 11px 18px;
     border-radius: var(--radius-lg);
     background: #fff;
     border: 1px solid rgba(22, 36, 90, 0.1);
@@ -5036,6 +5036,73 @@ select.is-validation-shaking {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 14px;
+}
+
+.admin-attention-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.admin-attention-card {
+    display: grid;
+    gap: 7px;
+    min-height: 132px;
+    padding: 18px;
+    border: 1px solid rgba(22, 36, 90, 0.12);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text);
+    text-decoration: none;
+    box-shadow: 0 8px 22px rgba(24, 18, 20, 0.04);
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.admin-attention-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(193, 32, 47, 0.3);
+    box-shadow: 0 12px 28px rgba(24, 18, 20, 0.09);
+}
+
+.admin-attention-card > span {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.admin-attention-card > strong {
+    font-family: 'Fraunces', serif;
+    font-size: 1.55rem;
+    line-height: 1.1;
+    color: var(--primary-strong);
+}
+
+.admin-attention-card > small {
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.35;
+}
+
+.admin-attention-card--warning {
+    border-color: #f0d2a0;
+    background: #fffaf1;
+}
+
+.admin-attention-card--alert {
+    border-color: #f0c0c5;
+    background: #fff7f7;
+    box-shadow: inset 3px 0 0 var(--primary), 0 8px 22px rgba(24, 18, 20, 0.04);
+}
+
+.admin-attention-card:focus-visible {
+    outline: 3px solid rgba(193, 32, 47, 0.38);
+    outline-offset: 2px;
+}
+
+.admin-stat-grid--inventory {
+    padding-top: 4px;
 }
 
 .admin-stat-card {
@@ -5648,6 +5715,10 @@ select.is-validation-shaking {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .admin-attention-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .admin-dashboard-grid,
     .admin-status-row {
         grid-template-columns: 1fr;
@@ -5677,10 +5748,7 @@ select.is-validation-shaking {
     }
 
     .admin-topbar {
-        flex-direction: row;
-        align-items: center;
-        padding: 12px 14px;
-        gap: 10px;
+        display: none;
     }
 
     .admin-breadcrumb {
@@ -5737,6 +5805,16 @@ select.is-validation-shaking {
     .admin-stat-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
+    }
+
+    .admin-attention-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .admin-attention-card {
+        min-height: 0;
+        padding: 14px;
     }
 
     .admin-stat-grid > .admin-stat-card:not(.admin-stat-card--priority) {
@@ -6527,7 +6605,7 @@ select.is-validation-shaking {
     }
 }
 
-/* ── Course folders ──────────────────────────────────────────────────────────── */
+/* ?? Course folders ???????????????????????????????????????????????????????????? */
 
 .folder-card {
     background: var(--surface);
@@ -6729,7 +6807,7 @@ select.is-validation-shaking {
     font-size: 0.88rem;
 }
 
-/* ── Locked item state (student view) ───────────────────────────────────── */
+/* ?? Locked item state (student view) ????????????????????????????????????? */
 .folder-item--student-locked .item-type-icon {
     opacity: 0.25;
 }
@@ -7140,7 +7218,7 @@ select.is-validation-shaking {
     }
 }
 
-/* ── Teacher role badge ───────────────────────────────────────────────────────── */
+/* ?? Teacher role badge ????????????????????????????????????????????????????????? */
 
 .admin-role-badge.role-teacher {
     background: #e0f2fe;
@@ -7251,7 +7329,7 @@ select.is-validation-shaking {
     justify-content: center;
 }
 
-/* ── Tab settings bar ────────────────────────────────────────────────────────── */
+/* ?? Tab settings bar ?????????????????????????????????????????????????????????? */
 
 .course-tab--settings {
     background: transparent;
@@ -7278,7 +7356,7 @@ select.is-validation-shaking {
     border-radius: 0 0 var(--radius-sm) var(--radius-sm);
 }
 
-/* display: flex overrides [hidden]{display:none} — apply it only when visible */
+/* display: flex overrides [hidden]{display:none} ? apply it only when visible */
 .tab-settings-panel:not([hidden]) {
     display: flex;
 }
@@ -7325,9 +7403,9 @@ select.is-validation-shaking {
     font-size: 0.83rem;
 }
 
-/* ── Folder stack drag-and-drop ──────────────────────────────────────────────── */
+/* ?? Folder stack drag-and-drop ???????????????????????????????????????????????? */
 
-/* ── Folder stack: spaced individual cards ───────────────────────────────── */
+/* ?? Folder stack: spaced individual cards ????????????????????????????????? */
 
 .folder-stack {
     display: grid;
@@ -7345,7 +7423,7 @@ select.is-validation-shaking {
     animation: none !important;
 }
 
-/* ── Reorder-mode jiggle ─────────────────────────────────────────────────── */
+/* ?? Reorder-mode jiggle ??????????????????????????????????????????????????? */
 
 @keyframes folder-jiggle {
     0%, 100% { transform: rotate(-0.6deg); }
@@ -7388,7 +7466,7 @@ select.is-validation-shaking {
     color: var(--primary);
 }
 
-/* ── Drag handle ─────────────────────────────────────────────────────────── */
+/* ?? Drag handle ??????????????????????????????????????????????????????????? */
 
 .folder-drag-handle {
     display: grid;
@@ -7431,9 +7509,9 @@ select.is-validation-shaking {
     min-width: 0;
 }
 
-/* ── Folder: file download link ──────────────────────────────────────────────── */
+/* ?? Folder: file download link ???????????????????????????????????????????????? */
 
-/* ── File view link (default action) ─────────────────────────────────────── */
+/* ?? File view link (default action) ??????????????????????????????????????? */
 .file-view-link {
     display: inline-flex;
     align-items: center;
@@ -7447,7 +7525,7 @@ select.is-validation-shaking {
 }
 .file-view-link:hover { color: var(--primary); }
 
-/* ── Download icon button ─────────────────────────────────────────────────── */
+/* ?? Download icon button ??????????????????????????????????????????????????? */
 .btn-file-dl {
     display: inline-flex;
     align-items: center;
@@ -7464,7 +7542,7 @@ select.is-validation-shaking {
 }
 .btn-file-dl:hover { background: var(--primary-soft); color: var(--primary-strong); }
 
-/* ── Manager download-permission toggle ──────────────────────────────────── */
+/* ?? Manager download-permission toggle ???????????????????????????????????? */
 .btn-dl-toggle {
     display: inline-flex;
     align-items: center;
@@ -7514,7 +7592,7 @@ select.is-validation-shaking {
 
 
 
-/* ── External link item ───────────────────────────────────────────────────── */
+/* ?? External link item ????????????????????????????????????????????????????? */
 .item-url-link {
     display: inline-flex;
     align-items: center;
@@ -7528,7 +7606,7 @@ select.is-validation-shaking {
 }
 .item-url-link:hover { color: var(--primary); }
 
-/* legacy — kept so existing bookmarks still work */
+/* legacy ? kept so existing bookmarks still work */
 .file-download-link {
     display: inline-flex;
     align-items: center;
@@ -7559,7 +7637,7 @@ select.is-validation-shaking {
     flex-shrink: 0;
 }
 
-/* ── Submission list (teacher view) ──────────────────────────────────────────── */
+/* ?? Submission list (teacher view) ???????????????????????????????????????????? */
 
 .submission-list {
     margin-top: 10px;
@@ -7569,7 +7647,7 @@ select.is-validation-shaking {
     gap: 8px;
 }
 
-/* ── Submission slot card (inline summary) ────────────────────────────── */
+/* ?? Submission slot card (inline summary) ?????????????????????????????? */
 
 .sub-slot-card {
     margin-top: 6px;
@@ -7598,6 +7676,20 @@ select.is-validation-shaking {
     justify-content: space-between;
     gap: 10px;
     min-width: 0;
+}
+
+.sub-slot-card-row--manage {
+    align-items: center;
+    gap: 12px;
+}
+
+.sub-slot-card-meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
 .sub-slot-file {
@@ -7666,7 +7758,7 @@ select.is-validation-shaking {
     opacity: 0.85;
 }
 
-/* ── Submission deadline badge ────────────────────────────────────────── */
+/* ?? Submission deadline badge ?????????????????????????????????????????? */
 
 .sub-slot-deadline {
     display: flex;
@@ -7817,7 +7909,7 @@ select.is-validation-shaking {
     text-transform: uppercase;
 }
 
-/* ── Submission slot modal ────────────────────────────────────────────── */
+/* ?? Submission slot modal ?????????????????????????????????????????????? */
 
 body.sub-slot-body-lock {
     overflow: clip;
@@ -7882,6 +7974,27 @@ body.sub-slot-body-lock {
 .sub-slot-card-edit {
     margin-left: auto;
     flex-shrink: 0;
+    width: auto;
+    white-space: nowrap;
+    gap: 6px;
+}
+
+.sub-slot-card-row--manage .sub-slot-card-edit {
+    margin-left: 0;
+}
+
+.sub-slot-dialog-header-actions .button--sm {
+    width: auto;
+    white-space: nowrap;
+    gap: 6px;
+}
+
+.slot-actions .btn-icon.settings-toggle,
+.slot-actions .btn-icon {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    gap: 0;
 }
 
 .sub-slot-edit-panel {
@@ -8343,7 +8456,7 @@ body.sub-slot-body-lock {
     margin-top: 8px;
 }
 
-/* ── Submit work form (student view) ─────────────────────────────────────────── */
+/* ?? Submit work form (student view) ??????????????????????????????????????????? */
 
 .submit-work-form {
     margin-top: 10px;
@@ -8685,6 +8798,77 @@ body.sub-slot-body-lock {
     font-size: 0.75rem;
 }
 
+.integrity-extraction-banner {
+    display: grid;
+    gap: 4px;
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid #fdba74;
+    border-radius: 8px;
+    background: #fff7ed;
+    color: #9a3412;
+    font-size: 0.86rem;
+    line-height: 1.4;
+}
+
+.integrity-extraction-banner strong {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.integrity-match-map {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.integrity-match-map strong,
+.integrity-match-map .rvw-evidence-title {
+    font-size: 0.82rem;
+}
+
+.integrity-match-map-text {
+    margin: 0;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+.integrity-map-mark,
+.rvw-match-phrases mark {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 0 2px;
+    border-radius: 3px;
+}
+
+.rvw-match-phrases {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.rvw-match-phrases mark {
+    display: inline-block;
+    padding: 2px 6px;
+    font-size: 0.74rem;
+    font-weight: 600;
+}
+
+.rvw-card-note--warn {
+    color: #9a3412;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
 .integrity-ai-panel {
     display: grid;
     gap: 4px;
@@ -8786,7 +8970,7 @@ body.sub-slot-body-lock {
     }
 }
 
-/* ── Sidebar: signed-in user card ────────────────────────────────────────────── */
+/* ?? Sidebar: signed-in user card ?????????????????????????????????????????????? */
 
 .sidebar-logged-in-label {
     margin: 0 0 8px;
@@ -8877,7 +9061,7 @@ body.sub-slot-body-lock {
     min-width: 0;
 }
 
-/* ── Calendar: schedule slots ────────────────────────────────────────────────── */
+/* ?? Calendar: schedule slots ?????????????????????????????????????????????????? */
 
 .schedule-grid { display: grid; gap: 10px; }
 
@@ -8956,7 +9140,7 @@ body.sub-slot-body-lock {
 
 .slot-edit-panel { margin-top: 2px; }
 
-/* ── Course description inline edit ─────────────────────────────────────────── */
+/* ?? Course description inline edit ??????????????????????????????????????????? */
 
 .course-hero-desc-row {
     display: flex;
@@ -9004,7 +9188,7 @@ body.sub-slot-body-lock {
     box-sizing: border-box;
 }
 
-/* ── Forum: discussions ──────────────────────────────────────────────────────── */
+/* ?? Forum: discussions ???????????????????????????????????????????????????????? */
 
 .forum-back-link {
     display: inline-flex;
@@ -9083,7 +9267,7 @@ body.sub-slot-body-lock {
 }
 .forum-textarea:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
 
-/* ── Quill rich text editor ─────────────────────────────────────────────────── */
+/* ?? Quill rich text editor ??????????????????????????????????????????????????? */
 /* Specificity must beat quill.snow.css (loaded after style.css on editor pages). */
 
 .quill-wrap {
@@ -9101,7 +9285,7 @@ body.sub-slot-body-lock {
     z-index: 40;
 }
 
-/* Kill Quill’s default #ccc frame — wrap owns the only outer border (no stray line). */
+/* Kill Quill?s default #ccc frame ? wrap owns the only outer border (no stray line). */
 .quill-wrap .ql-toolbar.ql-snow,
 .quill-wrap .ql-container.ql-snow {
     border: none !important;
@@ -9131,7 +9315,7 @@ body.sub-slot-body-lock {
     margin-right: 0;
 }
 
-/* Compact icon buttons — Quill defaults are chunky (28×24). */
+/* Compact icon buttons ? Quill defaults are chunky (28?24). */
 .quill-wrap .ql-snow.ql-toolbar button,
 .quill-wrap .ql-snow .ql-toolbar button {
     width: 22px;
@@ -9215,7 +9399,7 @@ body.sub-slot-body-lock {
     line-height: 1.3;
 }
 
-/* Clearer picker labels — avoid duplicate “Normal” / long “Sans Serif”. */
+/* Clearer picker labels ? avoid duplicate ?Normal? / long ?Sans Serif?. */
 .quill-wrap .ql-snow .ql-picker.ql-font {
     width: 72px;
 }
@@ -9342,7 +9526,7 @@ body.sub-slot-body-lock {
     border-radius: 6px;
 }
 
-/* ── Rich body display (rendered HTML from Quill) ────────────────────────────── */
+/* ?? Rich body display (rendered HTML from Quill) ?????????????????????????????? */
 
 .rich-body { font-size: 0.92rem; line-height: 1.6; }
 .rich-body p  { margin: 0 0 0.5em; }
@@ -9400,7 +9584,7 @@ body.sub-slot-body-lock {
 .forum-topic-row-info strong { font-size: 0.95rem; font-weight: 700; }
 .forum-topic-row-info span { font-size: 0.78rem; color: var(--muted); }
 
-/* ── Groups ──────────────────────────────────────────────────────────────────── */
+/* ?? Groups ???????????????????????????????????????????????????????????????????? */
 
 .groups-grid {
     display: grid;
@@ -9491,9 +9675,9 @@ body.sub-slot-body-lock {
 }
 .group-delete-form { margin: 0; }
 
-/* ── File viewer modal ───────────────────────────────────────────────────────── */
+/* ?? File viewer modal ????????????????????????????????????????????????????????? */
 
-/* ── Announcement notification modal ─────────────────────────────────────────── */
+/* ?? Announcement notification modal ??????????????????????????????????????????? */
 
 .ann-notify-overlay {
     position: fixed;
@@ -9596,76 +9780,105 @@ body.sub-slot-body-lock {
     border-top: 1px solid var(--border);
 }
 
-/* ── File viewer ─────────────────────────────────────────────────────────────── */
+/* ── Document viewer overlay (same-tab, smooth — mirrors .rvw-overlay) ──────────── */
 
-.viewer-overlay {
+.docviewer-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1000;
-    background: rgba(0,0,0,0.65);
+    z-index: 1300;
     display: flex;
-    align-items: center;
-    justify-content: center;
     padding: 20px;
+    background: rgba(40, 19, 21, 0.62);
+    opacity: 0;
+    transition: opacity 200ms ease;
 }
+.docviewer-overlay[hidden] { display: none !important; }
+.docviewer-overlay--in { opacity: 1; }
 
-.viewer-overlay[hidden] { display: none !important; }
-
-.viewer-box {
-    background: var(--surface);
+.docviewer-dialog {
+    width: 100%;
+    height: 100%;
+    margin: 0 auto;
+    max-width: 1600px;
     border-radius: var(--radius-lg);
-    width: min(900px,100%);
-    max-height: 90vh;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 30px 90px rgba(40, 19, 21, 0.4);
+    transform: translateY(12px) scale(0.98);
+    transition: transform 200ms ease;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 32px 80px rgba(0,0,0,0.4);
-    overflow: hidden;
 }
+.docviewer-overlay--in .docviewer-dialog { transform: none; }
 
-.viewer-header {
+.docviewer-dialog-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 14px;
-    padding: 14px 20px;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--surface);
     border-bottom: 1px solid var(--border);
-    background: var(--surface-muted);
     flex-shrink: 0;
 }
-
-.viewer-filename {
-    font-size: 0.9rem;
-    font-weight: 700;
-    white-space: nowrap;
+.docviewer-dialog-heading { min-width: 0; }
+.docviewer-dialog-heading .eyebrow { margin: 0 0 2px; }
+.docviewer-dialog-heading h3 {
+    margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'Fraunces', serif;
+    font-size: 1.05rem;
 }
-
-.viewer-close {
-    font-size: 1.4rem;
-    width: 32px;
-    height: 32px;
-    border: 0;
-    background: transparent;
+.docviewer-dialog-sub {
+    margin: 3px 0 0;
     color: var(--muted);
-    cursor: pointer;
-    border-radius: 6px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.docviewer-dialog-sub:empty { display: none; }
+.docviewer-close {
     display: grid;
     place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--surface-muted);
+    color: var(--text);
+    cursor: pointer;
     flex-shrink: 0;
 }
-.viewer-close:hover { background: var(--primary-soft); color: var(--primary); }
+.docviewer-close:hover { background: var(--primary-soft); color: var(--primary-strong); }
+.docviewer-close-icon { width: 19px; height: 19px; }
+.docviewer-frame-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.docviewer-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 
-.viewer-body { flex: 1; overflow-y: auto; padding: 28px 32px; }
-
-.viewer-loading, .viewer-error {
-    margin: 0;
-    color: var(--muted);
-    text-align: center;
-    padding: 60px 0;
+@media (max-width: 860px) {
+    .docviewer-overlay { padding: 0; align-items: stretch; }
+    .docviewer-dialog {
+        width: 100%;
+        height: 100dvh;
+        max-height: 100dvh;
+        border-radius: 0;
+        box-shadow: none;
+        transform: none;
+    }
+    .docviewer-dialog-header {
+        padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+        gap: 10px;
+    }
+    .docviewer-dialog-heading .eyebrow,
+    .docviewer-dialog-sub { display: none; }
+    .docviewer-dialog-heading h3 { font-size: 1rem; }
+    .docviewer-close {
+        width: 40px;
+        height: 40px;
+    }
 }
-
-.viewer-iframe { width: 100%; height: 70vh; border: 0; }
 
 .docx-content { font-size: 0.95rem; line-height: 1.7; }
 .docx-content h1,.docx-content h2,.docx-content h3 {
@@ -9733,7 +9946,7 @@ body.sub-slot-body-lock {
     gap: 6px;
 }
 
-/* ── File item row (view + download) ─────────────────────────────────────────── */
+/* ?? File item row (view + download) ??????????????????????????????????????????? */
 
 .file-item-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -9750,7 +9963,7 @@ body.sub-slot-body-lock {
 }
 .btn-view-file:hover { background: var(--primary-soft-strong); }
 
-/* ── Settings page ───────────────────────────────────────────────────────────── */
+/* ?? Settings page ????????????????????????????????????????????????????????????? */
 
 .settings-page {
     display: grid;
@@ -10017,7 +10230,9 @@ body.sub-slot-body-lock {
     gap: 2px;
 }
 
-.settings-toggle {
+/* Scoped to the settings page ? .settings-toggle is also a JS hook on
+   course "Edit slot" / panel buttons and must not inherit these switch styles. */
+.settings-toggles .settings-toggle {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -10028,22 +10243,22 @@ body.sub-slot-body-lock {
     transition: background 140ms ease;
 }
 
-.settings-toggle + .settings-toggle {
+.settings-toggles .settings-toggle + .settings-toggle {
     border-top: 1px solid rgba(130, 15, 26, 0.05);
 }
 
-.settings-toggle:hover {
+.settings-toggles .settings-toggle:hover {
     background: rgba(255, 248, 247, 0.85);
 }
 
-.settings-toggle strong {
+.settings-toggles .settings-toggle strong {
     display: block;
     font-size: 0.88rem;
     font-weight: 650;
     color: var(--text);
 }
 
-.settings-toggle small {
+.settings-toggles .settings-toggle small {
     display: block;
     margin-top: 2px;
     font-size: 0.76rem;
@@ -10052,7 +10267,7 @@ body.sub-slot-body-lock {
     line-height: 1.35;
 }
 
-.settings-toggle input[type="checkbox"] {
+.settings-toggles .settings-toggle input[type="checkbox"] {
     appearance: none;
     width: 36px;
     height: 20px;
@@ -10065,7 +10280,7 @@ body.sub-slot-body-lock {
     transition: background 180ms ease;
 }
 
-.settings-toggle input[type="checkbox"]::after {
+.settings-toggles .settings-toggle input[type="checkbox"]::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -10078,15 +10293,15 @@ body.sub-slot-body-lock {
     transition: transform 180ms ease;
 }
 
-.settings-toggle input[type="checkbox"]:checked {
+.settings-toggles .settings-toggle input[type="checkbox"]:checked {
     background: var(--primary);
 }
 
-.settings-toggle input[type="checkbox"]:checked::after {
+.settings-toggles .settings-toggle input[type="checkbox"]:checked::after {
     transform: translateX(16px);
 }
 
-.settings-toggle input[type="checkbox"]:focus-visible {
+.settings-toggles .settings-toggle input[type="checkbox"]:focus-visible {
     outline: 2px solid rgba(193, 32, 47, 0.35);
     outline-offset: 2px;
 }
@@ -10236,9 +10451,9 @@ body.sub-slot-body-lock {
     }
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
+/* ??????????????????????????????????????????????????????????????????????????
    Turnitin-style submission review
-   ══════════════════════════════════════════════════════════════════════════ */
+   ?????????????????????????????????????????????????????????????????????????? */
 
 .rvw-overlay {
     position: fixed;
@@ -10592,7 +10807,7 @@ mark.rvw-hl--pulse { animation: rvw-hl-pulse 700ms ease-out; }
 .rvw-grade-cancel { display: none; }
 .rvw-grade-cancel.is-visible { display: inline-flex; }
 
-/* Submission modal — AJAX states */
+/* Submission modal ? AJAX states */
 .is-hidden { display: none !important; }
 .sub-modal-mine { display: none; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
 .sub-modal-mine.is-visible { display: flex; animation: rvw-fade-in 280ms ease; }
@@ -10978,7 +11193,7 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     }
 }
 
-/* ── Communication page: major + module announcements ─────────────────────── */
+/* ?? Communication page: major + module announcements ??????????????????????? */
 
 .comm-layout {
     display: grid;
@@ -11245,9 +11460,9 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     }
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
+/* ??????????????????????????????????????????????????????????????????????????
    Lesson viewer + video Q&A
-   ══════════════════════════════════════════════════════════════════════════ */
+   ?????????????????????????????????????????????????????????????????????????? */
 
 .page-content:has(.lesson-viewer) {
     max-width: none;
@@ -11405,6 +11620,36 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 }
 
 .lesson-player.is-errored video { display: none; }
+
+.lesson-embed-wrap {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+}
+
+.lesson-embed-frame {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border: 0;
+    background: #12121c;
+    touch-action: manipulation;
+    pointer-events: auto;
+}
+
+.lesson-embed-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 2px 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+.lesson-keys-hint-note {
+    color: var(--muted);
+    font-weight: 600;
+}
 
 .lesson-player-error {
     display: none;
@@ -11591,11 +11836,98 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     100% { box-shadow: 0 0 0 3px rgba(193, 32, 47, 0.1); }
 }
 
-.lesson-stamp-hint {
-    font-size: 0.72rem;
-    font-weight: 800;
-    color: var(--primary-strong);
+.lesson-stamp-toggle {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     margin-right: auto;
+    padding: 5px 10px 5px 6px;
+    border: 1px solid rgba(193, 32, 47, 0.28);
+    border-radius: 999px;
+    background: #fff5f5;
+    color: var(--primary-strong);
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.lesson-stamp-toggle:hover,
+.lesson-stamp-toggle:focus-visible {
+    border-color: rgba(193, 32, 47, 0.45);
+    box-shadow: 0 0 0 3px rgba(193, 32, 47, 0.1);
+    outline: none;
+}
+
+.lesson-stamp-toggle-switch {
+    position: relative;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    background: rgba(193, 32, 47, 0.35);
+    transition: background 140ms ease;
+}
+
+.lesson-stamp-toggle-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(40, 19, 21, 0.25);
+    transition: transform 140ms ease;
+}
+
+.lesson-stamp-toggle.is-on .lesson-stamp-toggle-switch {
+    background: var(--primary);
+}
+
+.lesson-stamp-toggle.is-on .lesson-stamp-toggle-knob {
+    transform: translateX(12px);
+}
+
+.lesson-stamp-toggle-copy {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    min-width: 0;
+    line-height: 1.15;
+}
+
+.lesson-stamp-toggle-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.lesson-stamp-toggle-time {
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+}
+
+.lesson-stamp-toggle.is-off {
+    background: var(--surface-muted);
+    border-color: var(--border);
+    color: var(--muted);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-switch {
+    background: rgba(40, 19, 21, 0.22);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-knob {
+    transform: translateX(0);
+}
+
+.lesson-stamp-toggle.is-off .lesson-stamp-toggle-time {
+    opacity: 0.7;
 }
 
 .lesson-staff-note {
@@ -12053,9 +12385,13 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     grid-template-columns: minmax(0, 1.9fr) minmax(280px, 0.75fr);
 }
 
+/* Keep 16:9 even in theater — absolute iframe embeds have no intrinsic height,
+   so aspect-ratio:auto collapses the player to a thin strip. */
 .lesson-viewer.is-theater .lesson-player {
+    aspect-ratio: 16 / 9;
     max-height: min(72vh, 720px);
-    aspect-ratio: auto;
+    width: min(100%, calc(min(72vh, 720px) * 16 / 9));
+    margin-inline: auto;
 }
 
 .lesson-mobile-ask {
@@ -12189,12 +12525,35 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     .is-validation-shaking,
     .admin-flash.error .admin-flash-icon,
     .auth-message.error .auth-message-icon,
-    .sub-submit-error.is-visible {
+    .sub-submit-error.is-visible,
+    .dash-stat {
         animation: none !important;
     }
 }
 
-/* ── Student / teacher dashboard ───────────────────────────────────────────── */
+/* Student / teacher dashboard */
+
+.skip-link {
+    position: fixed;
+    z-index: 10000;
+    top: 14px;
+    left: 14px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--primary-strong);
+    font-size: 0.88rem;
+    font-weight: 800;
+    box-shadow: var(--shadow);
+    transform: translateY(-160%);
+    transition: transform 0.16s ease;
+}
+
+.skip-link:focus {
+    transform: translateY(0);
+    outline: 3px solid rgba(193, 32, 47, 0.3);
+    outline-offset: 2px;
+}
 
 .dash-layout {
     display: grid;
@@ -12229,6 +12588,7 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 .dash-stat--alert {
     border-color: rgba(193, 32, 47, 0.28);
     background: linear-gradient(180deg, #fff8f8 0%, #fff 100%);
+    box-shadow: inset 3px 0 0 var(--primary), 0 10px 28px rgba(130, 15, 26, 0.05);
 }
 
 .dash-stat-label {
@@ -12266,6 +12626,31 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.9fr);
     gap: 18px;
     align-items: start;
+}
+
+.dash-main.stack {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Priorities are the primary task; schedule remains available as context. */
+.dash-main > .dash-work:first-child {
+    order: 2;
+}
+
+.dash-main > #to-do,
+.dash-main > #priorities {
+    order: 1;
+}
+
+.dash-main > #to-do + .dash-work,
+.dash-main > #priorities + .dash-work {
+    order: 3;
+}
+
+.dash-side {
+    position: sticky;
+    top: 18px;
 }
 
 .dash-empty {
@@ -12395,8 +12780,15 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 14px;
     align-items: center;
-    padding: 12px 0;
+    padding: 12px 10px;
+    margin: 0 -10px;
+    border-radius: var(--radius-sm);
     border-bottom: 1px solid rgba(130, 15, 26, 0.07);
+    transition: background 0.15s ease;
+}
+
+.dash-work-row:hover {
+    background: var(--surface-muted);
 }
 
 .dash-work-row--actions {
@@ -12412,11 +12804,22 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
 
 .dash-work-row:last-child {
     border-bottom: none;
-    padding-bottom: 2px;
+    padding-bottom: 12px;
 }
 
 .dash-work-row.is-stale .dash-work-row-main strong {
     color: var(--primary-strong);
+}
+
+.dash-work-row--past {
+    opacity: 0.58;
+}
+
+.dash-work-row--current {
+    background: #fff8f8;
+    border: 1px solid rgba(193, 32, 47, 0.14);
+    border-bottom-color: rgba(193, 32, 47, 0.14);
+    box-shadow: inset 3px 0 0 var(--primary);
 }
 
 .dash-work-row-main {
@@ -12615,6 +13018,32 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     border-color: #b8dfbe;
 }
 
+.dash-status--current {
+    background: #fff6e8;
+    color: #8a4b00;
+    border-color: #f0d2a0;
+}
+
+.dash-status--past {
+    background: #f1f1ef;
+    color: #6c6c67;
+    border-color: #dbdbd6;
+}
+
+.dash-work-row-main .dash-status {
+    margin-left: 3px;
+    vertical-align: middle;
+}
+
+.dash-stat-link:focus-visible,
+.dash-work-row a:focus-visible,
+.dash-announce-list a:focus-visible,
+.dash-course-link:focus-visible,
+.dash-workload-item a:focus-visible {
+    outline: 3px solid rgba(193, 32, 47, 0.38);
+    outline-offset: 2px;
+}
+
 .dash-course-link {
     display: grid;
     grid-template-columns: 6px minmax(0, 1fr);
@@ -12699,6 +13128,10 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     .dash-columns {
         grid-template-columns: 1fr;
     }
+
+    .dash-side {
+        position: static;
+    }
 }
 
 @media (max-width: 640px) {
@@ -12751,7 +13184,7 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     }
 }
 
-/* ── Course gradebook + My grades ──────────────────────────────────────────── */
+/* ?? Course gradebook + My grades ???????????????????????????????????????????? */
 
 .gb-shell {
     display: grid;
@@ -14034,7 +14467,7 @@ a.grades-simple-row:hover {
         border-radius: 7px;
     }
 
-    .settings-toggle {
+    .settings-toggles .settings-toggle {
         padding: 9px 2px;
     }
 
@@ -14088,71 +14521,173 @@ a.grades-simple-row:hover {
 }
 
 /* --------------------------------------------------------------------------
-   Courses: mobile module cards
+   Courses: lean mobile list
    -------------------------------------------------------------------------- */
 
 @media (max-width: 900px) {
-    .course-year-shell {
-        padding: 14px !important;
-        gap: 12px !important;
+    .course-browser {
+        gap: 14px !important;
+    }
+
+    /* Filter: search-first, drop redundant intro chrome */
+    .course-filter-card {
+        padding: 12px !important;
+        gap: 10px !important;
         border-radius: 12px !important;
     }
 
-    .course-year-shell .section-head {
-        align-items: flex-start;
+    .course-filter-head {
+        margin: 0 0 2px;
+        align-items: center;
         gap: 8px;
     }
 
-    .course-year-shell .card-title {
-        font-size: 1.35rem;
-        line-height: 1.1;
+    .course-filter-intro {
+        display: none;
+    }
+
+    .course-filter-count {
+        margin-left: auto;
+        padding: 5px 10px;
+        font-size: 0.74rem;
+    }
+
+    .course-filter-form {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 8px !important;
+    }
+
+    .course-filter-field--search {
+        grid-column: 1 / -1;
+    }
+
+    .course-filter-field span {
+        font-size: 0.72rem;
+    }
+
+    .course-filter-field input,
+    .course-filter-field select {
+        padding: 9px 11px;
+        font-size: 0.9rem;
+    }
+
+    .course-filter-actions {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        margin-top: 2px;
+    }
+
+    .course-filter-actions .button {
+        flex: 0 0 auto;
+        width: auto;
+        padding: 8px 14px;
+        font-size: 0.84rem;
+    }
+
+    .course-filter-clear {
+        width: auto !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    /* Year groups: flat divider, not nested cards */
+    .course-year-shell {
+        padding: 0 !important;
+        gap: 8px !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .course-year-head {
+        align-items: baseline;
+        gap: 8px;
+        padding: 2px 2px 0;
+    }
+
+    .course-year-head .eyebrow {
+        display: none;
+    }
+
+    .course-year-head .card-title {
+        margin: 0;
+        font-size: 0.95rem;
+        line-height: 1.2;
+        letter-spacing: 0.01em;
+    }
+
+    .course-year-head .chip {
+        padding: 4px 8px;
+        font-size: 0.7rem;
     }
 
     .course-list {
-        gap: 10px !important;
+        gap: 8px !important;
     }
 
+    /* Thin course rows: title + when/where + one status pill */
     .course-list-item {
+        position: relative;
         display: grid !important;
-        grid-template-columns: 4px minmax(0, 1fr) !important;
-        grid-template-rows: auto auto;
+        grid-template-columns: 4px minmax(0, 1fr) auto !important;
+        grid-template-rows: auto;
+        align-items: start;
         width: 100%;
         border-radius: 12px !important;
         overflow: hidden;
+        background: #fff;
+        border: 1px solid rgba(130, 15, 26, 0.1);
+        box-shadow: 0 1px 2px rgba(40, 19, 21, 0.04);
     }
 
     .course-list-accent {
         grid-row: 1 / -1;
+        align-self: stretch;
     }
 
     .course-list-copy {
         grid-column: 2;
-        gap: 6px !important;
-        padding: 12px 12px 10px !important;
+        gap: 4px !important;
+        padding: 11px 10px 11px 12px !important;
         min-width: 0;
     }
 
     .course-list-copy h3 {
-        font-size: 1rem !important;
+        margin: 0;
+        font-size: 0.98rem !important;
         line-height: 1.25;
     }
 
     .course-list-code {
-        font-size: 0.7rem !important;
+        margin: 0;
+        font-size: 0.68rem !important;
+        letter-spacing: 0.04em;
     }
 
     .course-list-summary {
-        font-size: 0.84rem !important;
-        line-height: 1.4 !important;
+        display: none !important;
     }
 
     .course-list-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 0 !important;
+        gap: 2px 0 !important;
         margin-top: 2px;
-        font-size: 0.78rem !important;
+        font-size: 0.76rem !important;
         line-height: 1.35;
+        color: var(--muted);
     }
 
     .course-list-meta span {
@@ -14165,48 +14700,40 @@ a.grades-simple-row:hover {
         display: inline;
         width: auto;
         height: auto;
-        margin: 0 0.15em;
+        margin: 0 0.1em;
         border-radius: 0;
         background: none;
         transform: none;
-        color: rgba(40, 19, 21, 0.35);
+        color: rgba(40, 19, 21, 0.32);
     }
 
     .course-list-right {
-        grid-column: 2 !important;
+        grid-column: 3 !important;
         display: flex !important;
-        flex-direction: row !important;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        width: 100%;
+        flex-direction: column !important;
+        align-items: flex-end;
+        justify-content: flex-start;
+        gap: 0;
+        width: auto;
         min-width: 0 !important;
         margin: 0;
-        padding: 10px 12px !important;
+        padding: 10px 10px 10px 0 !important;
         border-left: 0 !important;
-        border-top: 1px solid rgba(130, 15, 26, 0.08);
-        background: #faf6f5 !important;
-        justify-items: stretch;
+        border-top: 0 !important;
+        background: transparent !important;
+        justify-items: end;
     }
 
     .course-status-pill {
-        flex: 0 1 auto;
-        padding: 5px 10px !important;
-        font-size: 0.72rem !important;
+        flex: 0 0 auto;
+        padding: 4px 8px !important;
+        font-size: 0.68rem !important;
         font-weight: 700;
         white-space: nowrap;
     }
 
     .course-list-link {
-        flex: 0 0 auto;
-        font-size: 0.8rem !important;
-        font-weight: 700;
-        white-space: nowrap;
-    }
-
-    .course-filter-form {
-        grid-template-columns: 1fr !important;
-        gap: 8px !important;
+        display: none !important;
     }
 }
 
@@ -14377,6 +14904,9 @@ a.grades-simple-row:hover {
     .folder-card {
         border-radius: 10px !important;
         background: #faf7f6 !important;
+        overflow: hidden;
+        max-width: 100%;
+        box-sizing: border-box;
     }
 
     .folder-summary {
@@ -14484,6 +15014,140 @@ a.grades-simple-row:hover {
     .folder-item-info p,
     .folder-item-meta {
         font-size: 0.72rem !important;
+    }
+
+    .folder-info > p {
+        -webkit-line-clamp: 2;
+        max-width: 100%;
+    }
+
+    /* Assignment / submission cards — contain width, stack for phones */
+    .folder-item,
+    .folder-item--managed,
+    .folder-item-info,
+    .folder-items,
+    .folder-body {
+        min-width: 0 !important;
+        max-width: 100%;
+    }
+
+    .folder-item--submission .folder-item-info {
+        gap: 6px;
+        overflow: hidden;
+    }
+
+    .sub-slot-card {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 100%;
+        margin-top: 8px;
+        padding: 12px;
+        border-radius: 12px;
+        display: grid;
+        gap: 10px;
+        overflow: hidden;
+    }
+
+    .sub-slot-deadline {
+        margin-bottom: 0;
+        padding: 10px 12px;
+        gap: 8px;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .sub-slot-deadline-body {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    .sub-slot-deadline-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    .sub-slot-deadline-value,
+    .sub-slot-deadline-label {
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .sub-slot-card-row,
+    .sub-slot-card-row--manage {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) !important;
+        gap: 8px !important;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .sub-slot-card-meta-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .sub-slot-card-row .sub-slot-file,
+    .sub-slot-card-meta-line .sub-slot-file {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        font-size: 0.86rem;
+    }
+
+    .sub-slot-file span:last-child {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sub-slot-card-row .sub-slot-card-edit,
+    .sub-slot-card-row--manage .sub-slot-card-edit {
+        width: 100% !important;
+        max-width: 100%;
+        margin-left: 0 !important;
+        justify-content: center;
+        min-height: 40px;
+        padding: 10px 12px;
+        font-size: 0.86rem;
+        box-sizing: border-box;
+    }
+
+    .sub-slot-weight,
+    .sub-slot-attempts-limit,
+    .sub-slot-status {
+        flex: 0 1 auto;
+        max-width: 100%;
+        font-size: 0.7rem;
+        padding: 4px 9px;
+        white-space: nowrap;
+    }
+
+    .sub-slot-card-meta,
+    .sub-slot-attempts-note {
+        margin-top: 0;
+        font-size: 0.76rem;
+        overflow-wrap: anywhere;
+    }
+
+    .folder-item--submission .folder-item-actions {
+        width: 100%;
+        max-width: 100%;
+        justify-content: flex-start;
+        margin-top: 4px;
+        padding-top: 2px;
+        gap: 6px;
+        box-sizing: border-box;
+    }
+
+    .folder-item--submission .folder-item-actions .btn-icon {
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
     }
 
     .course-mobile-peek {

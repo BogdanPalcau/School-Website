@@ -87,6 +87,7 @@ foreach ([
     "ALTER TABLE course_submissions ADD COLUMN process_paste_events INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
@@ -143,8 +144,6 @@ try {
     ");
     portal_db()->exec("CREATE INDEX IF NOT EXISTS idx_submission_annotations ON course_submission_annotations(submission_id)");
 } catch (\PDOException $e) {}
-
-$integrityEulaVersion = 'integrity-tools-2026-07';
 
 function portal_course_normalize_external_url(string $url): string
 {
@@ -311,15 +310,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'host' => (string) (parse_url($url, PHP_URL_HOST) ?: $url),
             'verdict' => $verdict,
         ]);
-    }
-
-    if ($action === 'accept_integrity_eula' && portal_can_manage_course($courseId)) {
-        $db->prepare(
-            "INSERT OR IGNORE INTO integrity_eula_acceptances (user_id, version)
-             VALUES (?, ?)"
-        )->execute([(int) $me['id'], $integrityEulaVersion]);
-
-        $_SESSION['course_flash'] = ['success', 'Integrity tool EULA accepted for this account.'];
     }
 
     // ── AJAX: reorder folders (JSON, exits immediately) ──────────────────────
@@ -534,8 +524,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileName = '';
             $createItemError = null;
 
-            // Handle file upload for document/video types
-            if (($type === 'document' || $type === 'video') && isset($_FILES['file'])) {
+            // Handle file upload for document/video types. A video item may instead point
+            // at an external link (YouTube/Vimeo) — only enter the upload branch when a
+            // file was actually attempted, so a video-link-only submission falls through
+            // to the external-video validation below instead of failing with "no file".
+            $videoFileAttempted = $type === 'video'
+                && isset($_FILES['file'])
+                && (int) ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+            $documentFileAttempted = $type === 'document' && isset($_FILES['file']);
+
+            if ($documentFileAttempted || $videoFileAttempted) {
                 $isVideoUpload = $type === 'video';
                 $fileError = (int) ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE);
                 $fileSize = (int) ($_FILES['file']['size'] ?? 0);
@@ -570,12 +568,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $createItemError = 'Upload failed while saving the file. Please try again.';
                     }
                 }
+            } elseif ($type === 'video' && $url !== '') {
+                $videoMeta = portal_parse_external_video_url($url);
+                if ($videoMeta === null) {
+                    $createItemError = 'That link is not a supported video source. Please use a ' . portal_supported_video_source_hint() . ', or upload a video file.';
+                } else {
+                    $url = $videoMeta['watch_url'];
+                }
             } elseif ($type === 'link' && $url === '') {
                 $createItemError = 'Please enter a valid link URL.';
             } elseif ($type === 'document' && $url === '') {
                 $createItemError = 'Please upload a file or provide a URL for this document item.';
             } elseif ($type === 'video' && $filePath === '') {
-                $createItemError = 'Please upload a video file for this item.';
+                $createItemError = 'Please upload a video file or paste a ' . portal_supported_video_source_hint() . '.';
             } elseif ($type === 'submission') {
                 $deadlineRaw = trim((string) ($_POST['submission_deadline'] ?? ''));
                 $deadlineTs = $deadlineRaw !== '' ? strtotime($deadlineRaw) : false;
@@ -645,6 +650,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($error === null && $itemRow['type'] === 'document' && $itemRow['file_path'] === '') {
                     if ($url === '') {
                         $error = 'Please enter a valid file URL.';
+                    }
+                } elseif ($error === null && $itemRow['type'] === 'video' && $itemRow['file_path'] === '') {
+                    $videoMeta = $url !== '' ? portal_parse_external_video_url($url) : null;
+                    if ($videoMeta === null) {
+                        $error = 'Please use a ' . portal_supported_video_source_hint() . '.';
+                    } else {
+                        $url = $videoMeta['watch_url'];
                     }
                 } elseif ($itemRow['type'] !== 'link') {
                     $url = (string) ($itemRow['url'] ?? '');
@@ -815,7 +827,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($chk->fetch()) {
                 $db->prepare(
                     "UPDATE course_submissions
-                     SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?
+                     SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?, grade_seen_at = ''
                      WHERE id = ? AND course_id = ?"
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
                 if (portal_is_fetch_request()) {
@@ -1161,7 +1173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $itemId = (int) ($_POST['item_id'] ?? 0);
         $slotChk = $db->prepare(
-            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts
+            "SELECT id, submission_deadline, submission_ai_detection, submission_max_attempts, description
              FROM course_folder_items
              WHERE id = ? AND course_id = ? AND type = 'submission'"
         );
@@ -1292,18 +1304,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if ($saved) {
-                    $fileText = $hasFile ? portal_extract_submission_text($savedAbs, $originalName) : '';
+                    $extraction = $hasFile
+                        ? portal_extract_submission_text_detailed($savedAbs, $originalName)
+                        : [
+                            'text' => '',
+                            'extractor' => 'paste',
+                            'char_count' => 0,
+                            'word_count' => 0,
+                            'confidence' => 'high',
+                            'note' => '',
+                        ];
+                    $fileText = (string) ($extraction['text'] ?? '');
                     $combinedText = portal_integrity_normalize_text(trim($pastedText . "\n\n" . $fileText));
                     if ($combinedText !== '' && function_exists('mb_substr')) {
                         $combinedText = mb_substr($combinedText, 0, 200000);
                     } elseif ($combinedText !== '') {
                         $combinedText = substr($combinedText, 0, 200000);
                     }
+                    // Pasted text alone is high-confidence even if the file extract failed.
+                    if ($pastedText !== '' && count(portal_integrity_words($pastedText)) >= 25) {
+                        $extraction['confidence'] = 'high';
+                        $extraction['note'] = '';
+                    } elseif (!$hasFile) {
+                        $extraction['confidence'] = 'high';
+                        $extraction['extractor'] = 'paste';
+                    }
                     $receiptNumber = portal_integrity_receipt_number($courseId, $itemId, $uid);
                     $fileHash = is_file($savedAbs) ? hash_file('sha256', $savedAbs) : '';
                     $fileMetadata = is_file($savedAbs)
                         ? portal_extract_submission_file_metadata($savedAbs, $originalName)
                         : ['available' => false, 'format' => $hasFile ? $ext : 'txt'];
+                    $slotInstructions = trim((string) ($slot['description'] ?? ''));
                     $submissionContext = [
                         'course_id' => $courseId,
                         'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
@@ -1312,6 +1343,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'process_pasted_chars' => $processPastedChars,
                         'file_metadata' => $fileMetadata,
                         'student_name' => (string) ($me['name'] ?? ''),
+                        'extraction' => $extraction,
+                        'slot_instructions' => $slotInstructions,
                     ];
                     $similarity = portal_integrity_check_similarity(
                         $db,
@@ -1345,7 +1378,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                              process_edit_seconds=excluded.process_edit_seconds,
                              process_paste_events=excluded.process_paste_events,
                              process_pasted_chars=excluded.process_pasted_chars,
-                             score=NULL, feedback='', marked_at='', marked_by=NULL,
+                             score=NULL, feedback='', marked_at='', marked_by=NULL, grade_seen_at='',
                              ai_status='', ai_score=NULL, ai_report='', ai_checked_at=''"
                     )->execute([
                         $itemId, $courseId, $uid,
@@ -1459,7 +1492,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (portal_is_fetch_request() && in_array($action, ['mark_submission', 'submit_work'], true)) {
         portal_json_response(['ok' => false, 'error' => 'Unexpected response.'], 500);
     }
-    if (in_array($action, ['mark_submission', 'accept_integrity_eula'], true)) {
+    if (in_array($action, ['mark_submission'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
         // Rebuild courses.meeting from current slots so the hero banner stays in sync
@@ -1684,17 +1717,6 @@ foreach ($_versionStmt->fetchAll() as $_version) {
     $submissionVersions[(int) $_version['submission_id']][] = $_version;
 }
 
-$integrityEulaAcceptedAt = '';
-if (portal_can_manage_course($courseId)) {
-    $_eulaStmt = $_db->prepare(
-        "SELECT accepted_at FROM integrity_eula_acceptances
-         WHERE user_id = ? AND version = ?
-         LIMIT 1"
-    );
-    $_eulaStmt->execute([(int) $_me['id'], $integrityEulaVersion]);
-    $integrityEulaAcceptedAt = (string) ($_eulaStmt->fetchColumn() ?: '');
-}
-
 // Class schedule
 $_schStmt = $_db->prepare(
     "SELECT * FROM course_schedule WHERE course_id = ? ORDER BY sort_order ASC, id ASC"
@@ -1806,6 +1828,31 @@ if ($sectionKey === 'announcements' && !empty($unreadAnnouncements)) {
         $_ins->execute([(int) $_me['id'], (int) $_ua['id']]);
     }
     $unreadAnnouncements = [];
+}
+
+// When a student opens Grades (or a deep-linked returned review), clear those
+// marks from the dashboard "Returned grades" queue.
+if (!portal_can_manage_course($courseId)) {
+    $openReviewRaw = (string) ($_GET['open_review'] ?? '');
+    if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
+        $_db->prepare(
+            "UPDATE course_submissions
+             SET grade_seen_at = datetime('now')
+             WHERE id = ? AND course_id = ? AND user_id = ?
+               AND marked_at != ''
+               AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+        )->execute([(int) $openReviewMatch[1], $courseId, (int) $_me['id']]);
+    }
+    if ($sectionKey === 'gradebook') {
+        $_db->prepare(
+            "UPDATE course_submissions
+             SET grade_seen_at = datetime('now')
+             WHERE course_id = ? AND user_id = ?
+               AND marked_at != ''
+               AND score IS NOT NULL
+               AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+        )->execute([$courseId, (int) $_me['id']]);
+    }
 }
 
 // Live badge counts — show only unread count
@@ -1940,7 +1987,7 @@ ob_start();
                 'calendar'      => 'Calendar',
                 'announcements' => 'Announcements',
                 'discussions'   => 'Discussions',
-                'gradebook'     => 'Gradebook',
+                'gradebook'     => 'Grades',
                 'groups'        => 'Groups',
             ];
             ?>
@@ -2126,7 +2173,9 @@ ob_start();
                                                                 : 'view.php?item=' . (int) $item['id'];
                                                         ?>
                                                         <div class="file-item-row">
-                                                            <a href="<?= portal_escape($itemViewerUrl) ?>" class="file-view-link" target="_blank">
+                                                            <a href="<?= portal_escape($itemViewerUrl) ?>"
+                                                               class="file-view-link"
+                                                               <?php if ($isVideoItem): ?>target="_blank"<?php else: ?>data-doc-viewer="1"<?php endif; ?>>
                                                                 <?= portal_icon($isVideoItem ? 'video' : ($isPresentation ? 'presentation' : 'file'), 'icon-xs') ?>
                                                                 <?= portal_escape($item['title']) ?>
                                                                 <span class="file-ext-badge"><?= portal_escape(strtoupper($fExt)) ?></span>
@@ -2144,6 +2193,15 @@ ob_start();
                                                                 <?= portal_icon('download', 'icon-xs') ?>
                                                             </button>
                                                             <?php endif; ?>
+                                                        </div>
+                                                    <?php elseif ($item['type'] === 'video' && $item['url'] !== ''): ?>
+                                                        <?php $itemVideoMeta = portal_parse_external_video_url((string) $item['url']); ?>
+                                                        <div class="file-item-row">
+                                                            <a href="lesson-viewer.php?item=<?= (int) $item['id'] ?>" class="file-view-link" target="_blank">
+                                                                <?= portal_icon('video', 'icon-xs') ?>
+                                                                <?= portal_escape($item['title']) ?>
+                                                                <span class="file-ext-badge"><?= portal_escape($itemVideoMeta['label'] ?? 'Video') ?></span>
+                                                            </a>
                                                         </div>
                                                     <?php elseif ($item['url'] !== ''): ?>
                                                         <a class="item-url-link"
@@ -2208,6 +2266,11 @@ ob_start();
                                                                         <span>URL</span>
                                                                         <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://... or www.example.com">
                                                                     </label>
+                                                                <?php elseif ($item['type'] === 'video' && $item['file_path'] === ''): ?>
+                                                                    <label class="folder-form-label">
+                                                                        <span>Video link <small>(YouTube or Vimeo only)</small></span>
+                                                                        <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" value="<?= portal_escape($item['url']) ?>" placeholder="https://www.youtube.com/watch?v=...">
+                                                                    </label>
                                                                 <?php endif; ?>
                                                                 <?php if (($item['type'] === 'document' || $item['type'] === 'video') && $item['file_path'] !== ''): ?>
                                                                     <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
@@ -2247,15 +2310,17 @@ ob_start();
                                                              aria-label="Open submission details for <?= portal_escape($item['title']) ?>">
                                                             <?= portal_render_submission_deadline((string) $item['submission_deadline']) ?>
                                                             <?php if (portal_can_manage_course($courseId)): ?>
-                                                                <div class="sub-slot-card-row">
-                                                                    <span class="sub-slot-file">
-                                                                        <?= portal_icon('upload', 'icon-xs') ?>
-                                                                        <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
-                                                                    </span>
-                                                                    <?php if ($slotMaxAttempts > 0): ?>
-                                                                    <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
-                                                                    <?php endif; ?>
-                                                                    <span class="sub-slot-weight">Weight <?= portal_escape($slotWeightLabel) ?></span>
+                                                                <div class="sub-slot-card-row sub-slot-card-row--manage">
+                                                                    <div class="sub-slot-card-meta-line">
+                                                                        <span class="sub-slot-file">
+                                                                            <?= portal_icon('upload', 'icon-xs') ?>
+                                                                            <span><?= count($subs) ?> submission<?= count($subs) !== 1 ? 's' : '' ?></span>
+                                                                        </span>
+                                                                        <?php if ($slotMaxAttempts > 0): ?>
+                                                                        <span class="sub-slot-attempts-limit">Max <?= $slotMaxAttempts ?> attempt<?= $slotMaxAttempts === 1 ? '' : 's' ?></span>
+                                                                        <?php endif; ?>
+                                                                        <span class="sub-slot-weight">Weight <?= portal_escape($slotWeightLabel) ?></span>
+                                                                    </div>
                                                                     <button type="button"
                                                                             class="button button--sm sub-slot-card-edit"
                                                                             data-sub-open-edit="<?= portal_escape($modalId) ?>"
@@ -2594,13 +2659,15 @@ ob_start();
                                                            data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
                                                            data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
                                                            data-video-accept=".mp4,.webm,.mov,.m4v,.ogv"
-                                                           data-video-hint="Upload video <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>)</small>">
+                                                           data-video-hint="Upload a video file <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>) — or paste a link below</small>">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-url-group">
                                                 <label class="folder-form-label" style="grid-column:1/-1;">
                                                     <span class="item-url-label">Or paste URL <small>(optional)</small></span>
-                                                    <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" placeholder="https://... or www.example.com">
+                                                    <input type="text" inputmode="url" autocomplete="url" name="url" maxlength="2000" placeholder="https://... or www.example.com"
+                                                           data-doc-placeholder="https://... or www.example.com"
+                                                           data-video-placeholder="https://www.youtube.com/watch?v=... or https://vimeo.com/...">
                                                 </label>
                                             </div>
                                             <div class="folder-form-row">
@@ -2999,11 +3066,11 @@ ob_start();
                 <section class="gb-shell">
                     <header class="gb-header">
                         <div>
-                            <p class="eyebrow">Course gradebook</p>
-                            <h3 class="card-title">Marks and feedback</h3>
+                            <p class="eyebrow"><?= $gbIsStaff ? 'Course gradebook' : 'Your grades' ?></p>
+                            <h3 class="card-title"><?= $gbIsStaff ? 'Marks and feedback' : 'Grades for this module' ?></h3>
                             <p class="gb-header-copy"><?= $gbIsStaff
                                 ? 'Track submissions and marks for this module.'
-                                : 'Your marks for this module, once work has been returned.' ?></p>
+                                : 'Individual marks and feedback for assignments in this module.' ?></p>
                         </div>
                         <div class="gb-stat-row">
                             <div class="gb-stat">
@@ -3020,25 +3087,6 @@ ob_start();
                             </div>
                         </div>
                     </header>
-
-                    <?php if ($gbIsStaff): ?>
-                        <?php if ($integrityEulaAcceptedAt !== ''): ?>
-                            <div class="gb-eula-chip" title="Integrity checks are available for this account">
-                                <span class="gb-eula-dot" aria-hidden="true"></span>
-                                Integrity tools ready
-                                <time datetime="<?= portal_escape((string) $integrityEulaAcceptedAt) ?>">
-                                    · <?= portal_escape(date('j M Y', portal_db_timestamp($integrityEulaAcceptedAt) ?? strtotime($integrityEulaAcceptedAt) ?: time())) ?>
-                                </time>
-                            </div>
-                        <?php else: ?>
-                            <form method="POST" class="gb-eula-accept">
-                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
-                                <input type="hidden" name="action" value="accept_integrity_eula">
-                                <span>Accept integrity tools to mark work with originality checks.</span>
-                                <button type="submit" class="button button--sm">Accept</button>
-                            </form>
-                        <?php endif; ?>
-                    <?php endif; ?>
 
                     <?php if (empty($submissionGradebook)): ?>
                         <div class="gb-empty">
@@ -3497,21 +3545,28 @@ ob_start();
 </div>
 <?php endif; ?>
 
-<!-- ── File viewer modal ───────────────────────────────────────────────────── -->
-<div id="file-viewer" class="viewer-overlay" hidden role="dialog" aria-modal="true" aria-label="File viewer">
-    <div class="viewer-box">
-        <div class="viewer-header">
-            <span class="viewer-filename" id="viewer-filename"></span>
-            <button class="viewer-close" id="viewer-close" aria-label="Close viewer">×</button>
-        </div>
-        <div class="viewer-body" id="viewer-body">
-            <p class="viewer-loading">Loading…</p>
+<!-- ── Document viewer overlay (same-tab, smooth — mirrors the assignment review dialog) ── -->
+<div id="doc-viewer-overlay" class="docviewer-overlay" hidden role="dialog" aria-modal="true" aria-label="Document viewer">
+    <div class="docviewer-dialog">
+        <header class="docviewer-dialog-header">
+            <div class="docviewer-dialog-heading">
+                <p class="eyebrow">Course document</p>
+                <h3 id="doc-viewer-title">Document viewer</h3>
+                <p class="docviewer-dialog-sub" id="doc-viewer-meta"></p>
+            </div>
+            <button type="button" class="docviewer-close" id="doc-viewer-close" aria-label="Close document viewer">
+                <?= portal_icon('x', 'docviewer-close-icon') ?>
+            </button>
+        </header>
+        <div class="docviewer-frame-wrap">
+            <iframe id="doc-viewer-frame" class="docviewer-frame" title="Document viewer" allow="fullscreen" allowfullscreen></iframe>
         </div>
     </div>
 </div>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260713m"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -3637,23 +3692,75 @@ ob_start();
     externalLinkModal?.addEventListener('click', e => {
         if (e.target === externalLinkModal) closeExternalLinkModal();
     });
-    // ── .docx / .xlsx / .pptx / PDF inline viewer ───────────────────────────
-    const viewerOverlay = document.getElementById('file-viewer');
-    const viewerBody    = document.getElementById('viewer-body');
-    const viewerName    = document.getElementById('viewer-filename');
-    const viewerClose   = document.getElementById('viewer-close');
+    // ── Document viewer overlay (same-tab, smooth) ──────────────────────────
+    // Clicking a course document fades in a full-viewport lightbox (mirrors the
+    // assignment-review dialog's open/close transition) with the redesigned
+    // view.php loaded inside an iframe. Plain <a href> semantics are preserved
+    // so ctrl/cmd/middle-click and "open in new tab" keep working natively.
+    const docViewerOverlay = document.getElementById('doc-viewer-overlay');
+    const docViewerFrame   = document.getElementById('doc-viewer-frame');
+    const docViewerTitle   = document.getElementById('doc-viewer-title');
+    const docViewerMeta    = document.getElementById('doc-viewer-meta');
+    let docViewerLastFocus = null;
 
-    if (viewerOverlay) {
-        viewerClose.addEventListener('click', closeViewer);
-        viewerOverlay.addEventListener('click', e => { if (e.target === viewerOverlay) closeViewer(); });
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeViewer(); });
+    function anyPortalOverlayOpen() {
+        return !!document.querySelector('.rvw-overlay:not([hidden]), .sub-slot-overlay:not([hidden]), .docviewer-overlay:not([hidden])');
     }
 
-    function closeViewer() {
-        viewerOverlay.hidden = true;
-        viewerBody.innerHTML = '';
+    function openDocViewer(url, link) {
+        if (!docViewerOverlay || !docViewerFrame) { window.location.href = url; return; }
+        docViewerLastFocus = document.activeElement;
+        const extension = link?.querySelector('.file-ext-badge')?.textContent?.trim() || '';
+        const title = Array.from(link?.childNodes || [])
+            .filter(node => node.nodeType === Node.TEXT_NODE)
+            .map(node => node.textContent.trim())
+            .filter(Boolean)
+            .join(' ') || link?.textContent?.replace(extension, '').trim() || 'Document viewer';
+        if (docViewerTitle) docViewerTitle.textContent = title;
+        if (docViewerMeta) docViewerMeta.textContent = extension ? extension + ' document' : '';
+        try {
+            const next = new URL(url, window.location.href);
+            next.searchParams.set('embed', '1');
+            docViewerFrame.src = next.pathname + next.search + next.hash;
+        } catch (_) {
+            docViewerFrame.src = url + (url.includes('?') ? '&' : '?') + 'embed=1';
+        }
+        docViewerOverlay.hidden = false;
+        document.body.classList.add('sub-slot-body-lock');
+        requestAnimationFrame(() => docViewerOverlay.classList.add('docviewer-overlay--in'));
     }
 
+    function closeDocViewer() {
+        if (!docViewerOverlay || docViewerOverlay.hidden) return;
+        docViewerOverlay.classList.remove('docviewer-overlay--in');
+        setTimeout(() => {
+            docViewerOverlay.hidden = true;
+            docViewerFrame.src = 'about:blank';
+            if (!anyPortalOverlayOpen()) {
+                document.body.classList.remove('sub-slot-body-lock');
+            }
+            if (docViewerLastFocus && typeof docViewerLastFocus.focus === 'function') docViewerLastFocus.focus();
+        }, 220);
+    }
+
+    document.addEventListener('click', e => {
+        const link = e.target.closest('.file-view-link[data-doc-viewer]');
+        if (!link) return;
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        openDocViewer(link.href, link);
+    });
+    document.getElementById('doc-viewer-close')?.addEventListener('click', closeDocViewer);
+    docViewerOverlay?.addEventListener('click', e => { if (e.target === docViewerOverlay) closeDocViewer(); });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && docViewerOverlay && !docViewerOverlay.hidden) closeDocViewer();
+    });
+    window.addEventListener('message', e => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data && e.data.type === 'portal-doc-viewer-close') closeDocViewer();
+    });
+
+    // ── Shared client-side file renderers (used by the assignment review dialog) ─
     function escapeHtml(value) {
         return String(value)
             .replace(/&/g, '&amp;')
@@ -3663,10 +3770,24 @@ ob_start();
             .replace(/'/g, '&#039;');
     }
 
+    function sanitizeDocHtml(html) {
+        const raw = String(html || '');
+        if (!raw.trim()) return '';
+        if (window.DOMPurify && typeof DOMPurify.sanitize === 'function') {
+            return DOMPurify.sanitize(raw, {
+                USE_PROFILES: { html: true },
+                FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
+                ALLOW_DATA_ATTR: false,
+            });
+        }
+        // Fail closed if the sanitizer CDN is blocked: never inject raw HTML.
+        return '<p>' + escapeHtml(raw.replace(/<[^>]*>/g, ' ')) + '</p>';
+    }
+
     function renderSheetToTable(sheet) {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         if (!rows.length) {
-            return '<p class="viewer-error">This workbook sheet is empty.</p>';
+            return '<p class="rvw-doc-error">This workbook sheet is empty.</p>';
         }
 
         const maxCols = rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
@@ -3730,78 +3851,6 @@ ob_start();
 
         return slides;
     }
-
-    window.openFileViewer = async function(itemId, filename, ext) {
-        const url = 'download.php?item=' + encodeURIComponent(itemId) + '&view=1';
-        if (!viewerOverlay) {
-            window.location.href = url;
-            return;
-        }
-        viewerOverlay.hidden = false;
-        viewerName.textContent = filename;
-        viewerBody.innerHTML = '<p class="viewer-loading">Loading…</p>';
-
-        try {
-            if (ext === 'pdf') {
-                viewerBody.innerHTML = '<iframe src="' + url + '" class="viewer-iframe"></iframe>';
-            } else if (ext === 'docx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
-                viewerBody.innerHTML = '<div class="docx-content">' + result.value + '</div>';
-            } else if (ext === 'xlsx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const wb     = XLSX.read(buffer, { type: 'array' });
-                const firstSheetName = wb.SheetNames[0];
-                const sheet = wb.Sheets[firstSheetName];
-                if (!sheet) {
-                    viewerBody.innerHTML = '<p class="viewer-error">Could not read this workbook.</p>';
-                    return;
-                }
-
-                viewerBody.innerHTML = '<div class="viewer-sheet-head">Sheet: ' + escapeHtml(firstSheetName) + '</div>'
-                    + renderSheetToTable(sheet);
-            } else if (ext === 'pptx') {
-                const resp   = await fetch(url);
-                if (!resp.ok) {
-                    const message = await resp.text();
-                    viewerBody.innerHTML = '<p class="viewer-error">' + escapeHtml(message || 'Could not load file.') + '</p>';
-                    return;
-                }
-                const buffer = await resp.arrayBuffer();
-                const slides = await extractPptxSlides(buffer);
-                if (!slides.length) {
-                    viewerBody.innerHTML = '<p class="viewer-error">Could not read slide text from this presentation.</p>';
-                    return;
-                }
-
-                viewerBody.innerHTML = slides.map((lines, idx) => {
-                    const safeLines = lines.length
-                        ? lines.map(line => '<li>' + escapeHtml(line) + '</li>').join('')
-                        : '<li><em>(No text content found on this slide)</em></li>';
-                    return '<section class="pptx-slide">'
-                        + '<h4>Slide ' + (idx + 1) + '</h4>'
-                        + '<ul>' + safeLines + '</ul>'
-                        + '</section>';
-                }).join('');
-            } else {
-                viewerBody.innerHTML = '<p class="viewer-error">Preview not available for this file type. Please download to view.</p>';
-            }
-        } catch (err) {
-            viewerBody.innerHTML = '<p class="viewer-error">Could not load file.</p>';
-        }
-    };
 
     // ── Tab settings toggle ───────────────────────────────────────────────────
     const settingsBtn   = document.getElementById('tab-settings-btn');
@@ -3868,7 +3917,7 @@ ob_start();
             const type      = sel.value;
             const isVideo   = type === 'video';
             if (fileGrp) fileGrp.style.display  = type === 'link' || type === 'submission' ? 'none' : '';
-            if (urlGrp)  urlGrp.style.display   = type === 'submission' || isVideo ? 'none' : '';
+            if (urlGrp)  urlGrp.style.display   = type === 'submission' ? 'none' : '';
             if (subGrp)  subGrp.style.display    = type === 'submission' ? '' : 'none';
             if (dlOpt)   dlOpt.style.display     = (type === 'document' || isVideo) ? '' : 'none';
             if (fileInput && fileLabel) {
@@ -3878,9 +3927,14 @@ ob_start();
             if (urlLabel) {
                 urlLabel.innerHTML = type === 'link'
                     ? 'Link URL <small>(required)</small>'
-                    : 'Or paste URL <small>(optional)</small>';
+                    : (isVideo ? 'Or paste a video link <small>(YouTube or Vimeo only, for student safety)</small>' : 'Or paste URL <small>(optional)</small>');
             }
-            if (urlInput) urlInput.required = type === 'link';
+            if (urlInput) {
+                urlInput.required = type === 'link';
+                urlInput.placeholder = isVideo
+                    ? (urlInput.dataset.videoPlaceholder || urlInput.placeholder)
+                    : (urlInput.dataset.docPlaceholder || urlInput.placeholder);
+            }
         };
         sel.addEventListener('change', update);
         update();
@@ -3945,7 +3999,7 @@ ob_start();
             overlay.hidden = true;
             if (openSubSlotModal === overlay) {
                 openSubSlotModal = null;
-                if (!document.querySelector('.sub-slot-overlay:not([hidden])')) {
+                if (!anyPortalOverlayOpen()) {
                     document.body.classList.remove('sub-slot-body-lock');
                 }
             }
@@ -4268,7 +4322,7 @@ ob_start();
             setTimeout(() => {
                 overlay.hidden = true;
                 if (openReview === overlay) openReview = null;
-                if (!document.querySelector('.rvw-overlay:not([hidden]), .sub-slot-overlay:not([hidden])')) {
+                if (!anyPortalOverlayOpen()) {
                     document.body.classList.remove('sub-slot-body-lock');
                 }
             }, 200);
@@ -4589,7 +4643,8 @@ ob_start();
                     }
                     const buf = await resp.arrayBuffer();
                     const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-                    mount.innerHTML = result.value || '<p class="rvw-doc-empty-msg">This document appears to be empty.</p>';
+                    const safeHtml = sanitizeDocHtml(result.value || '');
+                    mount.innerHTML = safeHtml || '<p class="rvw-doc-empty-msg">This document appears to be empty.</p>';
                 } else if (mode === 'xlsx') {
                     if (typeof XLSX === 'undefined') {
                         showErr('Spreadsheet preview library failed to load. Please refresh the page.');

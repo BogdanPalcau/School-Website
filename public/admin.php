@@ -726,8 +726,10 @@ $adminUrl = static function (string $targetSection, array $extra = []) use ($adm
 $page_title       = 'Admin | ' . portal_school_name();
 $active_page      = 'admin';
 $page_eyebrow     = 'Administration';
-$page_heading     = 'Admin';
-$page_description = '';
+$page_heading     = $sectionTitles[$section] ?? 'Dashboard';
+$page_description = $section === 'dashboard'
+    ? 'Review priorities, system health, and portal activity.'
+    : 'Manage ' . strtolower($sectionTitles[$section] ?? 'portal settings') . '.';
 
 ob_start();
 ?>
@@ -739,14 +741,6 @@ ob_start();
                 <span aria-hidden="true">/</span>
                 <span><?= portal_escape($sectionTitles[$section] ?? 'Dashboard') ?></span>
             </nav>
-            <h2 class="admin-topbar-title"><?= portal_escape($sectionTitles[$section] ?? 'Dashboard') ?></h2>
-        </div>
-        <div class="admin-topbar-user">
-            <div class="admin-topbar-user-text">
-                <strong><?= portal_escape($currentUser['name']) ?></strong>
-                <span class="admin-badge admin-badge--<?= portal_escape($currentUser['role']) ?>"><?= portal_escape(ucfirst($currentUser['role'])) ?></span>
-            </div>
-            <div class="admin-avatar" aria-hidden="true"><?= portal_escape($currentUser['initials'] ?? 'AD') ?></div>
         </div>
     </header>
 
@@ -776,16 +770,46 @@ ob_start();
 
             <!-- Dashboard -->
             <section id="admin-section-dashboard" class="admin-section<?= $section === 'dashboard' ? ' is-active' : '' ?>">
-                <div class="admin-stat-grid">
+                <div class="admin-attention-grid">
+                    <a class="admin-attention-card<?= (int) $securityStats['active_alerts'] > 0 ? ' admin-attention-card--alert' : '' ?>" href="<?= portal_escape($adminUrl('security', ['sec_reviewed' => 'unreviewed', 'sec_severity' => 'medium'])) ?>">
+                        <span>Security alerts</span>
+                        <strong><?= (int) $securityStats['active_alerts'] ?></strong>
+                        <small><?= (int) $securityStats['active_alerts'] > 0 ? 'Review unresolved medium/high events' : 'No unresolved alerts' ?></small>
+                    </a>
+                    <a class="admin-attention-card<?= (int) $securityStats['failed_logins'] > 0 ? ' admin-attention-card--warning' : '' ?>" href="<?= portal_escape($adminUrl('security', ['sec_type' => 'failed_login'])) ?>">
+                        <span>Failed logins</span>
+                        <strong><?= (int) $securityStats['failed_logins'] ?></strong>
+                        <small>In the last 24 hours</small>
+                    </a>
+                    <a class="admin-attention-card<?= $integrityPolicyIncomplete || !$safeBrowsingKeySet ? ' admin-attention-card--warning' : '' ?>" href="<?= portal_escape($adminUrl('integrity')) ?>">
+                        <span>Integrity setup</span>
+                        <strong><?= $integrityPolicyIncomplete || !$safeBrowsingKeySet ? 'Review' : 'Ready' ?></strong>
+                        <small><?= $integrityPolicyIncomplete ? 'AI policy needs a GPTZero key' : (!$safeBrowsingKeySet ? 'Safe Browsing key is missing' : 'External checks are configured') ?></small>
+                    </a>
+                    <a class="admin-attention-card<?= $stats['draft_courses'] > 0 ? ' admin-attention-card--warning' : '' ?>" href="<?= portal_escape($adminUrl('courses', ['course_status' => 'draft'])) ?>">
+                        <span>Draft courses</span>
+                        <strong><?= $stats['draft_courses'] ?></strong>
+                        <small><?= $stats['draft_courses'] > 0 ? 'Courses still need publishing' : 'No courses awaiting publication' ?></small>
+                    </a>
+                    <?php if ($systemNeedsDevReview): ?>
+                    <a class="admin-attention-card admin-attention-card--alert" href="<?= portal_escape($adminUrl('security')) ?>">
+                        <span>System review</span>
+                        <strong>Needed</strong>
+                        <small>Developer security review is required</small>
+                    </a>
+                    <?php endif; ?>
+                </div>
+
+                <div class="admin-stat-grid admin-stat-grid--inventory">
                     <article class="admin-stat-card admin-stat-card--priority">
                         <p class="admin-stat-label">Total users</p>
                         <strong class="admin-stat-value"><?= $stats['total_users'] ?></strong>
                     </article>
-                    <article class="admin-stat-card admin-stat-card--priority">
+                    <article class="admin-stat-card">
                         <p class="admin-stat-label">Students</p>
                         <strong class="admin-stat-value"><?= $stats['students'] ?></strong>
                     </article>
-                    <article class="admin-stat-card admin-stat-card--priority">
+                    <article class="admin-stat-card">
                         <p class="admin-stat-label">Teachers</p>
                         <strong class="admin-stat-value"><?= $stats['teachers'] ?></strong>
                     </article>

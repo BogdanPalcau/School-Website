@@ -6,11 +6,15 @@ require_once __DIR__ . '/../course_catalog.php';
 
 portal_require_login();
 
+$staffCourseView = portal_is_teacher() || portal_is_admin() || portal_is_owner();
+
 $page_title = 'Courses | ' . portal_school_name();
 $active_page = 'courses';
-$page_eyebrow = 'Course browser';
+$page_eyebrow = 'Portal';
 $page_heading = 'Courses';
-$page_description = 'Browse current and archived course spaces. Each course follows a consistent student layout so materials, notices, discussions, and progress are easy to find.';
+$page_description = $staffCourseView
+    ? 'Your assigned and managed course spaces.'
+    : 'Your enrolled course spaces.';
 
 $currentUser  = portal_current_user();
 $catalog      = portal_user_course_catalog((int) $currentUser['id']);
@@ -54,23 +58,23 @@ $resultCount = count($filteredCourses);
 ob_start();
 ?>
 <section class="course-browser">
-    <article class="card-shell">
-        <div class="section-head">
-            <div>
+    <article class="card-shell course-filter-card">
+        <div class="section-head course-filter-head">
+            <div class="course-filter-intro">
                 <p class="eyebrow">Browse</p>
                 <h3 class="card-title">Find a course</h3>
-                <p>Each course opens into the same shared student structure so navigation stays consistent across the portal.</p>
+                <p class="course-filter-lead">Each course opens into the same shared student structure so navigation stays consistent across the portal.</p>
             </div>
-            <span class="chip"><?= $resultCount ?> results</span>
+            <span class="chip course-filter-count"><?= $resultCount ?> results</span>
         </div>
 
         <form class="course-filter-form" method="get" action="courses.php">
-            <label class="course-filter-field">
+            <label class="course-filter-field course-filter-field--search">
                 <span>Search</span>
                 <input type="search" name="q" value="<?= portal_escape($query) ?>" placeholder="Search by title, code, teacher, or room">
             </label>
 
-            <label class="course-filter-field">
+            <label class="course-filter-field course-filter-field--year">
                 <span>Academic year</span>
                 <select name="year">
                     <option value="all">All years</option>
@@ -80,7 +84,7 @@ ob_start();
                 </select>
             </label>
 
-            <label class="course-filter-field">
+            <label class="course-filter-field course-filter-field--status">
                 <span>Status</span>
                 <select name="status">
                     <option value="all"<?= $statusFilter === 'all' ? ' selected' : '' ?>>All courses</option>
@@ -92,7 +96,7 @@ ob_start();
 
             <div class="course-filter-actions">
                 <button class="button" type="submit">Update list</button>
-                <a class="button-secondary" href="courses.php">Clear</a>
+                <a class="button-secondary course-filter-clear" href="courses.php">Clear</a>
             </div>
         </form>
     </article>
@@ -105,7 +109,7 @@ ob_start();
     <?php else: ?>
         <?php foreach ($groupedCourses as $year => $courses): ?>
             <article class="card-shell course-year-shell">
-                <div class="section-head">
+                <div class="section-head course-year-head">
                     <div>
                         <p class="eyebrow">Academic year</p>
                         <h3 class="card-title"><?= portal_escape($year) ?></h3>
@@ -115,24 +119,37 @@ ob_start();
 
                 <div class="course-list">
                     <?php foreach ($courses as $course): ?>
+                        <?php
+                        $studentCount = (int) ($course['student_count'] ?? 0);
+                        $staffNames = implode(', ', array_column($course['staff'] ?? [], 'name'));
+                        ?>
                         <a class="course-list-item" href="course.php?course=<?= portal_escape($course['slug']) ?>&amp;section=content" style="--course-accent: <?= portal_escape($course['accent']) ?>;">
                             <span class="course-list-accent" aria-hidden="true"></span>
 
                             <div class="course-list-copy">
                                 <p class="course-list-code"><?= portal_escape($course['code']) ?></p>
-                                <h3><?= portal_escape($course['full_title']) ?></h3>
+                                <h3><?= portal_escape($course['title']) ?></h3>
                                 <p class="course-list-summary"><?= portal_escape($course['summary']) ?></p>
 
                                 <div class="course-list-meta">
-                                    <span><?= portal_escape($course['status_label']) ?></span>
-                                    <span><?= portal_escape(implode(', ', array_column($course['staff'], 'name'))) ?></span>
-                                    <span><?= portal_escape($course['meeting']) ?></span>
-                                    <span><?= portal_escape($course['room']) ?></span>
+                                    <?php if ($staffCourseView): ?>
+                                        <?php if ($studentCount > 0): ?>
+                                            <span><?= $studentCount ?> students</span>
+                                        <?php endif; ?>
+                                        <span><?= portal_escape($course['meeting']) ?></span>
+                                        <span><?= portal_escape($course['room']) ?></span>
+                                    <?php else: ?>
+                                        <?php if ($staffNames !== ''): ?>
+                                            <span><?= portal_escape($staffNames) ?></span>
+                                        <?php endif; ?>
+                                        <span><?= portal_escape($course['meeting']) ?></span>
+                                        <span><?= portal_escape($course['room']) ?></span>
+                                    <?php endif; ?>
                                 </div>
                             </div>
 
                             <div class="course-list-right">
-                                <span class="course-status-pill<?= $course['status'] === 'open' ? ' active' : '' ?>"><?= portal_escape($course['term']) ?></span>
+                                <span class="course-status-pill<?= $course['status'] === 'open' ? ' active' : '' ?>"><?= portal_escape($course['status_label']) ?></span>
                                 <span class="course-list-link">Open course</span>
                             </div>
                         </a>
