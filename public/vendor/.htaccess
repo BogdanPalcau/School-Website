@@ -1,0 +1,5 @@
+# Ensure ES modules are served with a JS MIME type (required for import()).
+<IfModule mod_mime.c>
+    AddType text/javascript .js
+    AddType text/javascript .mjs
+</IfModule>

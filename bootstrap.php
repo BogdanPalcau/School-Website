@@ -314,6 +314,7 @@ if (!function_exists('portal_icon')) {
             'upload'        => '<polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>',
             'plus'          => '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
             'trash'         => '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
+            'search'        => '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
             'chevron-down'  => '<polyline points="6 9 12 15 18 9"/>',
             'video'         => '<path d="m22 8.5-6 3.5 6 3.5v-7Z"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
             'play'          => '<polygon points="6 3 20 12 6 21 6 3"/>',
@@ -324,6 +325,24 @@ if (!function_exists('portal_icon')) {
             'alert'         => '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
             'menu'          => '<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>',
             'x'             => '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+            'activity'      => '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8"/><path d="M8 11h6"/><path d="M8 15h4"/>',
+            'check-circle'  => '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+            'help-circle'   => '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+            'list-ordered'  => '<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
+            'layers'        => '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+            'star'          => '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+            'trophy'        => '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
+            'flag'          => '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+            'image'         => '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+            'mic'           => '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>',
+            'copy'          => '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+            'eye'           => '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+            'save'          => '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+            'history'       => '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+            'chevron-up'    => '<polyline points="18 15 12 9 6 15"/>',
+            'chevron-left'  => '<polyline points="15 18 9 12 15 6"/>',
+            'chevron-right' => '<polyline points="9 18 15 12 9 6"/>',
+            'more'          => '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
         ];
 
         $body = $icons[$name] ?? $icons['book-open'];
@@ -1642,58 +1661,7 @@ if (!function_exists('portal_system_needs_developer_review')) {
 
 // ── Upload content-type validation ────────────────────────────────────────────
 
-if (!function_exists('portal_upload_mime_ok')) {
-    function portal_upload_mime_ok(string $tmpPath, string $ext): bool
-    {
-        // If we cannot inspect the file, fall back to the extension whitelist
-        // plus the upload-directory .htaccess that blocks script execution.
-        if ($tmpPath === '' || !is_file($tmpPath) || !class_exists('finfo')) {
-            return true;
-        }
-
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
-        $mime  = (string) $finfo->file($tmpPath);
-        if ($mime === '') {
-            return true;
-        }
-
-        $zip = 'application/zip';
-        $ole = ['application/x-ole-storage', 'application/vnd.ms-office', 'application/CDFV2'];
-
-        $allowed = [
-            'pdf'  => ['application/pdf'],
-            'txt'  => ['text/plain', 'text/csv', 'application/csv'],
-            'png'  => ['image/png'],
-            'jpg'  => ['image/jpeg'],
-            'jpeg' => ['image/jpeg'],
-            'gif'  => ['image/gif'],
-            'webp' => ['image/webp'],
-            'doc'  => array_merge(['application/msword'], $ole),
-            'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', $zip],
-            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $zip],
-            'pptx' => ['application/vnd.openxmlformats-officedocument.presentationml.presentation', $zip],
-            'ppsx' => ['application/vnd.openxmlformats-officedocument.presentationml.slideshow', $zip],
-            'potx' => ['application/vnd.openxmlformats-officedocument.presentationml.template', $zip],
-            'odp'  => ['application/vnd.oasis.opendocument.presentation', $zip],
-            'ppt'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
-            'pps'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
-            'pot'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
-            'mp4'  => ['video/mp4'],
-            'm4v'  => ['video/mp4', 'video/x-m4v'],
-            'webm' => ['video/webm'],
-            'ogv'  => ['video/ogg', 'application/ogg'],
-            'ogg'  => ['video/ogg', 'application/ogg'],
-            'mov'  => ['video/quicktime'],
-        ];
-
-        // Unknown extension: extension whitelist already handled this elsewhere.
-        if (!isset($allowed[$ext])) {
-            return true;
-        }
-
-        return in_array($mime, $allowed[$ext], true);
-    }
-}
+// portal_upload_mime_ok() is defined in submission_security.php (fail-closed).
 
 // ── Protect sensitive directories from direct web access ──────────────────────
 
@@ -2335,12 +2303,31 @@ if (!function_exists('portal_run_migrations')) {
             'process_pasted_chars' => "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
             'eula_accepted_at' => "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
             'grade_seen_at' => "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
+            'declared_file_type' => "ALTER TABLE course_submissions ADD COLUMN declared_file_type TEXT",
         ];
         foreach ($submissionAdds as $col => $sql) {
             if (!in_array($col, $submissionCols, true)) {
                 $db->exec($sql);
             }
         }
+
+        // Unique receipts for recovery lookup. Backfill blank legacy receipts first.
+        try {
+            $db->exec("UPDATE course_submissions SET receipt_number = 'LEGACY-' || id || '-' || lower(hex(randomblob(8))) WHERE receipt_number IS NULL OR trim(receipt_number) = ''");
+            $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_receipt_unique ON course_submissions(receipt_number)');
+        } catch (\Throwable $e) {
+            // leave without unique index if still conflicted
+        }
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS receipt_lookup_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                ip TEXT NOT NULL DEFAULT '',
+                attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_receipt_lookup_attempts ON receipt_lookup_attempts(user_id, ip, attempted_at)');
 
         // ── Site-wide settings (admin) ─────────────────────────────────────────
         $db->exec("
@@ -2359,6 +2346,10 @@ if (!function_exists('portal_run_migrations')) {
 }
 
 portal_run_migrations();
+require_once __DIR__ . '/activity.php';
+if (function_exists('portal_activity_run_migrations')) {
+    portal_activity_run_migrations();
+}
 portal_protect_sensitive_paths();
 
 // ── Teacher / course-manager permission helpers ───────────────────────────────
@@ -2499,6 +2490,11 @@ if (!function_exists('portal_my_announcement_course_ids')) {
 if (!function_exists('portal_uploads_base')) {
     function portal_uploads_base(): string
     {
+        $env = getenv('PORTAL_UPLOADS_PATH');
+        if (is_string($env) && trim($env) !== '') {
+            return rtrim(trim($env), "\\/");
+        }
+
         return __DIR__ . DIRECTORY_SEPARATOR . 'uploads';
     }
 }
@@ -2561,3 +2557,5 @@ if (!function_exists('portal_folder_item_content_locked')) {
 }
 
 require_once __DIR__ . '/integrity.php';
+require_once __DIR__ . '/submission_security.php';
+// activity.php is loaded earlier so migrations run with portal_run_migrations()

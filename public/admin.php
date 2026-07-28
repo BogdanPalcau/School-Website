@@ -10,7 +10,7 @@ $currentUser = portal_current_user();
 $isOwner     = portal_is_owner();
 $pdo         = portal_db();
 
-$adminSections = ['dashboard', 'users', 'courses', 'enrollments', 'integrity', 'security'];
+$adminSections = ['dashboard', 'users', 'courses', 'enrollments', 'activities', 'integrity', 'security'];
 $section       = (string) ($_GET['section'] ?? 'dashboard');
 if (!in_array($section, $adminSections, true)) {
     $section = 'dashboard';
@@ -482,6 +482,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
     }
 
+    if ($action === 'lookup_submission_receipt') {
+        if (!portal_is_admin()) {
+            portal_log_security_event('unauthorised_admin_access', 'high', 'Blocked receipt lookup');
+            $_SESSION['admin_flash'] = ['error', 'Access denied.'];
+            $redirectSection('dashboard');
+        }
+
+        $adminId = (int) ($currentUser['id'] ?? 0);
+        $ip = portal_client_ip();
+        portal_receipt_lookup_record_attempt($adminId, $ip);
+
+        if (portal_receipt_lookup_rate_limited($adminId, $ip)) {
+            portal_log_security_event(
+                'unauthorised_admin_access',
+                'medium',
+                'Receipt lookup rate limited for admin #' . $adminId
+            );
+            $_SESSION['admin_flash'] = ['error', 'Too many receipt lookups. Try again later.'];
+            unset($_SESSION['admin_receipt_result']);
+            $redirectSection('dashboard');
+        }
+
+        $normalized = portal_normalize_receipt_number((string) ($_POST['receipt_number'] ?? ''));
+        $masked = portal_mask_receipt_number($normalized);
+        $found = portal_receipt_format_ok($normalized) ? portal_find_submission_by_receipt($normalized) : null;
+
+        if ($found === null) {
+            portal_log_security_event(
+                'unauthorised_admin_access',
+                'low',
+                'Receipt lookup miss ' . $masked . ' by admin #' . $adminId
+            );
+            $_SESSION['admin_flash'] = ['error', 'Receipt not found.'];
+            unset($_SESSION['admin_receipt_result']);
+        } else {
+            portal_log_security_event(
+                'unauthorised_admin_access',
+                'info',
+                'Receipt lookup hit ' . $masked . ' submission #' . (int) $found['id'] . ' by admin #' . $adminId
+            );
+            unset($found['filepath']);
+            $_SESSION['admin_flash'] = ['success', 'Submission found.'];
+            $_SESSION['admin_receipt_result'] = $found;
+        }
+        $redirectSection('dashboard');
+    }
+
     if ($action === 'save_integrity_settings') {
         $policy = (string) ($_POST['external_ai_policy'] ?? 'disabled');
         if (!in_array($policy, ['disabled', 'site_wide', 'per_module'], true)) {
@@ -642,7 +689,53 @@ $stats = [
     'draft_courses'     => count(array_filter($adminCourses, fn($c) => $c['status'] === 'draft')),
     'total_enrollments' => (int) $pdo->query('SELECT COUNT(*) FROM enrollments')->fetchColumn(),
     'total_submissions' => (int) $pdo->query('SELECT COUNT(*) FROM course_submissions')->fetchColumn(),
+    'total_activities'  => (int) $pdo->query('SELECT COUNT(*) FROM course_activities')->fetchColumn(),
 ];
+
+$actFilterMode = (string) ($_GET['act_mode'] ?? '');
+$actFilterStatus = (string) ($_GET['act_status'] ?? '');
+$actSearch = trim((string) ($_GET['act_q'] ?? ''));
+$actSql = "SELECT a.id, a.title, a.mode, a.status, a.published_at, a.updated_at,
+                  c.title AS course_title, c.slug AS course_slug, c.code AS course_code,
+                  u.name AS author_name
+           FROM course_activities a
+           JOIN courses c ON c.id = a.course_id
+           LEFT JOIN users u ON u.id = a.created_by
+           WHERE 1=1";
+$actParams = [];
+if ($actFilterMode !== '' && in_array($actFilterMode, portal_activity_modes(), true)) {
+    $actSql .= ' AND a.mode = ?';
+    $actParams[] = $actFilterMode;
+}
+if ($actFilterStatus !== '' && in_array($actFilterStatus, ['draft', 'published', 'archived'], true)) {
+    $actSql .= ' AND a.status = ?';
+    $actParams[] = $actFilterStatus;
+}
+if ($actSearch !== '') {
+    $actSql .= ' AND (a.title LIKE ? OR c.title LIKE ? OR u.name LIKE ?)';
+    $like = '%' . $actSearch . '%';
+    $actParams[] = $like;
+    $actParams[] = $like;
+    $actParams[] = $like;
+}
+$actSql .= ' ORDER BY a.updated_at DESC, a.id DESC LIMIT 100';
+$actStmt = $pdo->prepare($actSql);
+$actStmt->execute($actParams);
+$adminActivities = $actStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+$activityAuditStmt = $pdo->query(
+    "SELECT ae.id, ae.action, ae.created_at, ae.activity_id, a.title AS activity_title,
+            c.title AS course_title, u.name AS actor_name
+     FROM activity_audit_events ae
+     LEFT JOIN course_activities a ON a.id = ae.activity_id
+     LEFT JOIN courses c ON c.id = ae.course_id
+     LEFT JOIN users u ON u.id = ae.user_id
+     ORDER BY ae.id DESC LIMIT 40"
+);
+$activityAuditRows = $activityAuditStmt ? ($activityAuditStmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+
+$badgeCount = (int) $pdo->query('SELECT COUNT(*) FROM gamification_badges WHERE enabled = 1')->fetchColumn();
+$templateCount = (int) $pdo->query('SELECT COUNT(*) FROM activity_templates')->fetchColumn();
 
 $integrityPolicy    = portal_external_ai_policy();
 $integrityKeySet    = portal_gptzero_key_configured();
@@ -705,6 +798,7 @@ $sectionTitles = [
     'users'       => 'Manage Users',
     'courses'     => 'Course Management',
     'enrollments' => 'Enrolments',
+    'activities'  => 'Activity Management',
     'integrity'   => 'Integrity & Link Safety',
     'security'    => 'Security Activity',
 ];
@@ -714,8 +808,9 @@ $navItems = [
     ['key' => 'users',       'label' => 'Manage Users',            'icon' => 'users'],
     ['key' => 'courses',     'label' => 'Course Management',       'icon' => 'book-open'],
     ['key' => 'enrollments', 'label' => 'Enrolments',              'icon' => 'folder'],
+    ['key' => 'activities',  'label' => 'Activity Management',     'icon' => 'activity'],
     ['key' => 'integrity',   'label' => 'Integrity & Link Safety', 'icon' => 'shield'],
-    ['key' => 'security',    'label' => 'Security Activity',     'icon' => 'lock'],
+    ['key' => 'security',    'label' => 'Security Activity',       'icon' => 'lock'],
 ];
 
 $adminUrl = static function (string $targetSection, array $extra = []) use ($adminSections): string {
@@ -842,6 +937,61 @@ ob_start();
                         <strong class="admin-stat-value"><?= $stats['total_submissions'] ?></strong>
                     </article>
                 </div>
+
+                <?php
+                $receiptResult = $_SESSION['admin_receipt_result'] ?? null;
+                unset($_SESSION['admin_receipt_result']);
+                ?>
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Support</p>
+                            <h3>Find submission by receipt</h3>
+                            <p class="admin-card-lead">Paste a student receipt number to locate a submission if work appears missing.</p>
+                        </div>
+                    </header>
+                    <form method="post" action="<?= portal_escape($adminUrl('dashboard')) ?>" class="admin-filter-row">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="lookup_submission_receipt">
+                        <label class="admin-search admin-field--grow">
+                            <span class="visually-hidden">Receipt number</span>
+                            <input type="text" name="receipt_number" required autocomplete="off" spellcheck="false"
+                                   placeholder="RIEO-…" pattern="[Rr][Ii][Ee][Oo]-[A-Fa-f0-9]{32}">
+                        </label>
+                        <button type="submit" class="admin-btn admin-btn--primary">Look up</button>
+                    </form>
+                    <?php if (is_array($receiptResult)): ?>
+                    <div class="admin-receipt-result">
+                        <p><strong>Receipt:</strong> <?= portal_escape((string) ($receiptResult['receipt_number'] ?? '')) ?></p>
+                        <p><strong>Student:</strong> <?= portal_escape((string) ($receiptResult['student_name'] ?? '')) ?>
+                            (<?= portal_escape((string) ($receiptResult['student_username'] ?? '')) ?>)</p>
+                        <p><strong>Course:</strong> <?= portal_escape((string) ($receiptResult['course_title'] ?? '')) ?></p>
+                        <p><strong>Assignment:</strong> <?= portal_escape((string) ($receiptResult['assignment_title'] ?? '')) ?></p>
+                        <p><strong>File:</strong> <?= portal_escape((string) ($receiptResult['filename'] ?? '')) ?>
+                            <?php if (!empty($receiptResult['declared_file_type'])): ?>
+                            · <?= portal_escape((string) $receiptResult['declared_file_type']) ?>
+                            <?php endif; ?>
+                        </p>
+                        <p><strong>Submitted:</strong>
+                            <?= portal_escape((string) ($receiptResult['submitted_at'] ?? '')) ?>
+                        </p>
+                        <?php if (!empty($receiptResult['file_sha256'])): ?>
+                        <p><strong>SHA-256:</strong> <code><?= portal_escape((string) $receiptResult['file_sha256']) ?></code></p>
+                        <?php endif; ?>
+                        <p><strong>Grade:</strong>
+                            <?= $receiptResult['score'] !== null && $receiptResult['score'] !== ''
+                                ? portal_escape((string) (int) $receiptResult['score']) . '/100'
+                                : 'Not graded' ?>
+                        </p>
+                        <div class="admin-table-actions">
+                            <a class="admin-btn admin-btn--secondary admin-btn--sm"
+                               href="course.php?course=<?= portal_escape((string) ($receiptResult['course_slug'] ?? '')) ?>">Open course</a>
+                            <a class="admin-btn admin-btn--primary admin-btn--sm"
+                               href="download.php?sub=<?= (int) ($receiptResult['id'] ?? 0) ?>">Download file</a>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+                </article>
 
                 <div class="admin-dashboard-grid">
                     <article class="admin-card">
@@ -1212,6 +1362,136 @@ ob_start();
                             </tbody>
                         </table>
                     </div>
+                </article>
+            </section>
+
+            <!-- Activities -->
+            <section id="admin-section-activities" class="admin-section<?= $section === 'activities' ? ' is-active' : '' ?>">
+                <div class="admin-stat-grid">
+                    <article class="admin-stat-card admin-stat-card--priority">
+                        <p class="admin-stat-label">Activities</p>
+                        <strong class="admin-stat-value"><?= (int) ($stats['total_activities'] ?? 0) ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Enabled badges</p>
+                        <strong class="admin-stat-value"><?= (int) $badgeCount ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Templates</p>
+                        <strong class="admin-stat-value"><?= (int) $templateCount ?></strong>
+                    </article>
+                </div>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Site overview</p>
+                            <h3>Activities across courses</h3>
+                            <p class="admin-card-lead">Search and filter published or draft activities. Open the builder or results for a course you manage. Student attempt details remain course-scoped.</p>
+                        </div>
+                    </header>
+                    <form class="admin-filter-row" method="get" action="admin.php">
+                        <input type="hidden" name="section" value="activities">
+                        <label class="admin-field admin-field--inline admin-field--grow">
+                            <span>Search</span>
+                            <input type="search" name="act_q" value="<?= portal_escape($actSearch) ?>" placeholder="Title, course, or author">
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Mode</span>
+                            <select name="act_mode">
+                                <option value="">All modes</option>
+                                <?php foreach (portal_activity_modes() as $mode): ?>
+                                <option value="<?= portal_escape($mode) ?>"<?= $actFilterMode === $mode ? ' selected' : '' ?>><?= portal_escape(portal_activity_mode_label($mode)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>Status</span>
+                            <select name="act_status">
+                                <option value="">All statuses</option>
+                                <?php foreach (['draft', 'published', 'archived'] as $st): ?>
+                                <option value="<?= $st ?>"<?= $actFilterStatus === $st ? ' selected' : '' ?>><?= portal_escape(ucfirst($st)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <button type="submit" class="button button--sm">Filter</button>
+                    </form>
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Activity</th>
+                                    <th>Course</th>
+                                    <th>Mode</th>
+                                    <th>Status</th>
+                                    <th>Author</th>
+                                    <th>Updated</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($adminActivities as $row): ?>
+                                <tr>
+                                    <td><?= portal_escape((string) $row['title']) ?></td>
+                                    <td><?= portal_escape((string) ($row['course_code'] ?: $row['course_title'])) ?></td>
+                                    <td><span class="activity-mode-pill activity-mode-pill--<?= portal_escape((string) $row['mode']) ?>"><?= portal_escape(portal_activity_mode_label((string) $row['mode'])) ?></span></td>
+                                    <td><?= portal_escape(ucfirst((string) $row['status'])) ?></td>
+                                    <td><?= portal_escape((string) ($row['author_name'] ?: '—')) ?></td>
+                                    <td><?= portal_escape((string) $row['updated_at']) ?></td>
+                                    <td class="admin-table-actions">
+                                        <a class="inline-action" href="activity-builder.php?id=<?= (int) $row['id'] ?>">Builder</a>
+                                        <a class="inline-action" href="activity-results.php?id=<?= (int) $row['id'] ?>">Results</a>
+                                        <a class="inline-action" href="course.php?course=<?= urlencode((string) $row['course_slug']) ?>">Course</a>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($adminActivities === []): ?>
+                                <tr><td colspan="7" class="admin-table-empty">No activities match your filters.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Audit</p>
+                            <h3>Recent activity changes</h3>
+                            <p class="admin-card-lead">Staff create, publish, and marking actions. Attempt tokens and full student answers are not stored here.</p>
+                        </div>
+                    </header>
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>When</th>
+                                    <th>Actor</th>
+                                    <th>Action</th>
+                                    <th>Activity</th>
+                                    <th>Course</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($activityAuditRows as $row): ?>
+                                <tr>
+                                    <td><?= portal_escape((string) $row['created_at']) ?></td>
+                                    <td><?= portal_escape((string) ($row['actor_name'] ?: '—')) ?></td>
+                                    <td><?= portal_escape((string) $row['action']) ?></td>
+                                    <td><?= portal_escape((string) ($row['activity_title'] ?: ('#' . (int) $row['activity_id']))) ?></td>
+                                    <td><?= portal_escape((string) ($row['course_title'] ?: '—')) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($activityAuditRows === []): ?>
+                                <tr><td colspan="5" class="admin-table-empty">No activity audit events yet.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="admin-card-lead" style="margin-top:1rem;">
+                        Site-wide question bank: <a href="question-bank.php">Open question bank</a>.
+                        External web originality remains optional and shows as not configured until a provider is set.
+                    </p>
                 </article>
             </section>
 

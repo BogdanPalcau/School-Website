@@ -284,31 +284,34 @@ function security_count(PDO $db, string $kind, string $value): int
     throw new InvalidArgumentException('Unknown count kind: ' . $kind);
 }
 
-try {
-    if ($command === 'setup') {
-        echo json_encode(security_setup($db), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT) . PHP_EOL;
-        exit(0);
-    }
+// Only run CLI when this file is the entry script (safe to require from other fixtures).
+if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === realpath(__FILE__)) {
+    try {
+        if ($command === 'setup') {
+            echo json_encode(security_setup($db), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT) . PHP_EOL;
+            exit(0);
+        }
 
-    if ($command === 'cleanup') {
-        security_cleanup($db);
-        echo "cleaned\n";
-        exit(0);
-    }
+        if ($command === 'cleanup') {
+            security_cleanup($db);
+            echo "cleaned\n";
+            exit(0);
+        }
 
-    if ($command === 'reset-login') {
-        $db->exec("DELETE FROM login_attempts WHERE ip IN ('127.0.0.1', '::1', 'unknown')");
-        echo "reset\n";
-        exit(0);
-    }
+        if ($command === 'reset-login') {
+            $db->exec("DELETE FROM login_attempts WHERE ip IN ('127.0.0.1', '::1', 'unknown')");
+            echo "reset\n";
+            exit(0);
+        }
 
-    if ($command === 'count') {
-        echo security_count($db, (string) ($argv[2] ?? ''), (string) ($argv[3] ?? '')) . PHP_EOL;
-        exit(0);
-    }
+        if ($command === 'count') {
+            echo security_count($db, (string) ($argv[2] ?? ''), (string) ($argv[3] ?? '')) . PHP_EOL;
+            exit(0);
+        }
 
-    throw new InvalidArgumentException('Unknown command: ' . $command);
-} catch (Throwable $e) {
-    fwrite(STDERR, $e->getMessage() . PHP_EOL);
-    exit(1);
+        throw new InvalidArgumentException('Unknown command: ' . $command);
+    } catch (Throwable $e) {
+        fwrite(STDERR, $e->getMessage() . PHP_EOL);
+        exit(1);
+    }
 }

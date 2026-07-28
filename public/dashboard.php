@@ -956,7 +956,7 @@ ob_start();
             </article>
 
             <?php if (!empty($continueWatching)): ?>
-            <article class="card-shell dash-work">
+            <article class="card-shell dash-work" id="dashboard-continue-watching">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Lessons</p>
@@ -1037,7 +1037,7 @@ ob_start();
             </article>
 
             <?php if ($isStaff || $isAdmin): ?>
-            <article class="card-shell">
+            <article class="card-shell" id="dashboard-quick-access">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Shortcuts</p>
@@ -1095,7 +1095,7 @@ ob_start();
                 </p>
             </article>
             <?php else: ?>
-            <article class="card-shell">
+            <article class="card-shell" id="dashboard-quick-access">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Your modules</p>
@@ -1150,7 +1150,7 @@ ob_start();
             <?php endif; ?>
 
             <?php if (!$isStaff && !$isAdmin): ?>
-            <article class="card-shell">
+            <article class="card-shell" id="dashboard-bulletin">
                 <div class="section-head">
                     <div>
                         <p class="eyebrow">Bulletin</p>

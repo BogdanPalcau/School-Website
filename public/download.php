@@ -212,8 +212,10 @@ if (isset($_GET['sub'])) {
         exit('Access denied.');
     }
 
+    // Allow inline only when explicitly requested for in-app viewers (view.php / img).
+    // Direct downloads stay as attachment so browsers do not execute active content.
     $abs  = portal_uploads_base() . DIRECTORY_SEPARATOR . $sub['filepath'];
-    portal_send_file($abs, $sub['filename'], $inlineView);
+    portal_send_file($abs, (string) $sub['filename'], $inlineView);
 }
 
 http_response_code(400);

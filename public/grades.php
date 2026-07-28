@@ -95,6 +95,28 @@ if ($isStaff) {
             $staffMarked[] = $row;
             $markedByCourse[(int) $row['course_id']][] = $row;
         }
+
+        // Merge activity gradebook scores into staff averages (visible once marked,
+        // matching the "always show computed score" grades.php now uses for students)
+        foreach ($assignedIds as $cid) {
+            $cid = (int) $cid;
+            $actStmt = $db->prepare(
+                "SELECT a.course_id, t.percentage AS score, t.updated_at AS marked_at, a.grade_weight AS submission_weight
+                 FROM course_activities a
+                 JOIN activity_attempts t ON t.activity_id = a.id
+                 WHERE a.course_id = ?
+                   AND a.include_in_gradebook = 1
+                   AND a.status = 'published'
+                   AND t.status IN ('marked','released')
+                   AND t.percentage IS NOT NULL"
+            );
+            $actStmt->execute([$cid]);
+            foreach ($actStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $staffMarked[] = $row;
+                $markedByCourse[$cid][] = $row;
+            }
+        }
+
         foreach ($moduleStats as &$module) {
             $courseId = (int) $module['id'];
             $module['average'] = !empty($markedByCourse[$courseId])
@@ -118,7 +140,8 @@ if ($isStaff) {
         $stmt = $db->prepare(
             "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at,
                     cfi.title AS slot_title, cfi.submission_weight,
-                    c.slug, c.title AS course_title, c.code, c.accent
+                    c.slug, c.title AS course_title, c.code, c.accent,
+                    c.id AS course_id, 'submission' AS grade_source
              FROM course_submissions cs
              JOIN course_folder_items cfi ON cfi.id = cs.item_id
              JOIN courses c ON c.id = cs.course_id
@@ -128,6 +151,48 @@ if ($isStaff) {
         );
         $stmt->execute(array_merge([$uid], $courseIds));
         $studentGrades = $stmt->fetchAll();
+
+        $courseMetaStmt = $db->prepare(
+            "SELECT id, slug, title, code, accent FROM courses WHERE id IN ($placeholders)"
+        );
+        $courseMetaStmt->execute($courseIds);
+        $courseMeta = [];
+        foreach ($courseMetaStmt->fetchAll(PDO::FETCH_ASSOC) as $c) {
+            $courseMeta[(int) $c['id']] = $c;
+        }
+
+        foreach ($courseIds as $cid) {
+            $cid = (int) $cid;
+            $activityRows = portal_activity_gradebook_rows($cid, $uid);
+            $meta = $courseMeta[$cid] ?? null;
+            if ($meta === null) {
+                continue;
+            }
+            foreach ($activityRows as $ar) {
+                $score = $ar['score'];
+                $markedAt = (string) ($ar['marked_at'] ?? '');
+                if ($score !== null && $markedAt === '') {
+                    $markedAt = (string) ($ar['submitted_at'] ?? portal_activity_now());
+                }
+                $studentGrades[] = [
+                    'id' => (int) ($ar['attempt_id'] ?? 0),
+                    'score' => $score,
+                    'marked_at' => $markedAt,
+                    'submitted_at' => (string) ($ar['submitted_at'] ?? ''),
+                    'slot_title' => (string) ($ar['title'] ?? 'Activity'),
+                    'submission_weight' => $ar['submission_weight'] ?? $ar['weight'] ?? 100,
+                    'slug' => (string) $meta['slug'],
+                    'course_title' => (string) $meta['title'],
+                    'code' => (string) $meta['code'],
+                    'accent' => (string) $meta['accent'],
+                    'course_id' => $cid,
+                    'grade_source' => 'activity',
+                    'activity_id' => (int) ($ar['activity_id'] ?? 0),
+                    'activity_mode' => (string) ($ar['mode'] ?? 'quiz'),
+                    'activity_status' => (string) ($ar['status'] ?? ''),
+                ];
+            }
+        }
     }
 
     foreach ($studentGrades as $grade) {
@@ -385,18 +450,29 @@ ob_start();
                             <?php
                                 $isMarked = $row['score'] !== null && trim((string) ($row['marked_at'] ?? '')) !== '';
                                 $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? ''));
+                                $isActivityGrade = (($row['grade_source'] ?? '') === 'activity');
+                                $awaitingTeacher = $isActivityGrade && (($row['activity_status'] ?? '') === 'awaiting_manual_marking');
+                                $rowHref = $isActivityGrade
+                                    ? 'activity.php?id=' . (int) ($row['activity_id'] ?? 0)
+                                    : 'course.php?course=' . urlencode($module['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
+                                $statusNote = $isMarked && $markedTs
+                                    ? 'Marked ' . date('j M Y', $markedTs)
+                                    : ($awaitingTeacher ? 'Needs teacher marking' : 'Awaiting mark');
                             ?>
                             <a class="grades-simple-row<?= $isMarked ? ' is-marked' : ' is-pending' ?>"
                                role="row"
-                               href="course.php?course=<?= urlencode($module['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">
+                               href="<?= portal_escape($rowHref) ?>">
                                 <span class="grades-simple-work" role="cell">
-                                    <strong><?= portal_escape((string) $row['slot_title']) ?></strong>
-                                    <small><?= $isMarked && $markedTs
-                                        ? 'Marked ' . portal_escape(date('j M Y', $markedTs))
-                                        : 'Awaiting mark' ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
+                                    <strong>
+                                        <?= portal_escape((string) $row['slot_title']) ?>
+                                        <?php if ($isActivityGrade): ?>
+                                            <span class="grades-item-tag grades-item-tag--<?= portal_escape((string) ($row['activity_mode'] ?? 'quiz')) ?>"><?= portal_escape(portal_activity_mode_label((string) ($row['activity_mode'] ?? 'quiz'))) ?></span>
+                                        <?php endif; ?>
+                                    </strong>
+                                    <small><?= portal_escape($statusNote) ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
                                 </span>
-                                <span class="grades-simple-score<?= $isMarked ? ' is-marked' : '' ?>" role="cell">
-                                    <?= $isMarked ? (int) $row['score'] . '%' : '—' ?>
+                                <span class="grades-simple-score<?= $isMarked ? ' is-marked' : '' ?><?= $awaitingTeacher ? ' is-awaiting' : '' ?>" role="cell">
+                                    <?= $isMarked ? (int) $row['score'] . '%' : ($awaitingTeacher ? 'Pending' : '—') ?>
                                 </span>
                             </a>
                         <?php endforeach; ?>

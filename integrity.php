@@ -682,12 +682,7 @@ if (!function_exists('portal_integrity_level')) {
     }
 }
 
-if (!function_exists('portal_integrity_receipt_number')) {
-    function portal_integrity_receipt_number(int $courseId, int $itemId, int $userId): string
-    {
-        return 'RIEO-' . date('Ymd-His') . '-' . $courseId . '-' . $itemId . '-' . $userId . '-' . strtoupper(bin2hex(random_bytes(3)));
-    }
-}
+// portal_integrity_receipt_number() is defined in submission_security.php (RIEO- + 32 hex).
 
 if (!function_exists('portal_integrity_pair_score')) {
     /**
@@ -4026,7 +4021,9 @@ if (!function_exists('portal_render_submission_review')) {
         $score       = $submission['score'] ?? null;
         $feedback    = (string) ($submission['feedback'] ?? '');
 
-        // Preview strategy (browser-side loaders in course.php mirror public/view.php)
+        // Preview strategy (browser-side loaders in course.php). DOCX/TXT render
+        // in-page so teachers can select text and leave annotations. PDF/legacy
+        // office use an iframe plus an extracted-text layer for comments.
         if ($isImage) {
             $previewMode = 'image';
             $annKind     = 'image';
@@ -4077,6 +4074,19 @@ if (!function_exists('portal_render_submission_review')) {
             <div class="rvw-main">
                 <div class="rvw-main-toolbar">
                     <span class="rvw-file"><?= portal_icon('file', 'icon-xs') ?><?= portal_escape($filename) ?></span>
+                    <div class="rvw-pagenav" data-rvw-pagenav hidden>
+                        <button type="button" class="rvw-page-btn" data-rvw-page-prev title="Previous page (←)" aria-label="Previous page">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                        </button>
+                        <span class="rvw-pageinput">
+                            <input type="text" inputmode="numeric" value="1" data-rvw-page-input aria-label="Page number">
+                            <span class="rvw-page-sep">/</span>
+                            <span data-rvw-page-total>1</span>
+                        </span>
+                        <button type="button" class="rvw-page-btn" data-rvw-page-next title="Next page (→)" aria-label="Next page">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+                        </button>
+                    </div>
                     <a href="download.php?sub=<?= $subId ?>" class="rvw-download" target="_blank" rel="noopener">Download</a>
                 </div>
                 <div class="rvw-doc">
@@ -4091,7 +4101,7 @@ if (!function_exists('portal_render_submission_review')) {
                                 title="<?= portal_escape($filename) ?>"></iframe>
                     <?php elseif ($previewMode === 'docx'): ?>
                         <div class="rvw-docx-scroll">
-                            <div class="rvw-docx-paper docx-content" data-preview-mount>
+                            <div class="rvw-docx-pages" data-preview-mount>
                                 <p class="rvw-doc-loading">Loading document…</p>
                             </div>
                         </div>

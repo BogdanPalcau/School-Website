@@ -126,16 +126,19 @@ $_pdo->exec("
         folder_id   INTEGER NOT NULL REFERENCES course_folders(id) ON DELETE CASCADE,
         course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         type        TEXT    NOT NULL DEFAULT 'document'
-                            CHECK(type IN ('document','link','submission')),
+                            CHECK(type IN ('document','link','submission','video','activity')),
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         url         TEXT    NOT NULL DEFAULT '',
         file_path   TEXT    NOT NULL DEFAULT '',
         file_name   TEXT    NOT NULL DEFAULT '',
+        allow_download INTEGER NOT NULL DEFAULT 0,
+        locked      INTEGER NOT NULL DEFAULT 0,
         submission_deadline TEXT NOT NULL DEFAULT '',
         submission_ai_detection INTEGER NOT NULL DEFAULT 0,
         submission_max_attempts INTEGER NOT NULL DEFAULT 0,
         submission_weight REAL NOT NULL DEFAULT 100,
+        lesson_notes TEXT NOT NULL DEFAULT '',
         sort_order  INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     )
@@ -181,9 +184,20 @@ $_pdo->exec("
         process_paste_events INTEGER NOT NULL DEFAULT 0,
         process_pasted_chars INTEGER NOT NULL DEFAULT 0,
         eula_accepted_at TEXT NOT NULL DEFAULT '',
+        declared_file_type TEXT,
         UNIQUE(item_id, user_id)
     )
 ");
+$_pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_receipt_unique ON course_submissions(receipt_number)');
+$_pdo->exec("
+    CREATE TABLE IF NOT EXISTS receipt_lookup_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        ip TEXT NOT NULL DEFAULT '',
+        attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+");
+$_pdo->exec('CREATE INDEX IF NOT EXISTS idx_receipt_lookup_attempts ON receipt_lookup_attempts(user_id, ip, attempted_at)');
 
 $_pdo->exec("
     CREATE TABLE IF NOT EXISTS course_submission_versions (

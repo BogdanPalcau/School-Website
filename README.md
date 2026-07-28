@@ -26,13 +26,16 @@ Student portal
 - Keep track of deadlines and submission status
 - Join course discussions
 - Catch up on announcements and course updates
+- Complete interactive Activities (practice, quizzes, challenges, assessments, surveys)
 
 Teacher and supervisor tools
 - Manage assigned courses
 - Create assignments and submission slots
+- Build and publish Activities with versioning, media, and question banks
 - Review student submissions
 - Add feedback and grades
 - View originality and integrity information
+- Review assessment integrity signals for formal assessments
 - Annotate and comment directly on submitted work
 - Manage course discussions and announcements
 
@@ -47,6 +50,30 @@ Admin and owner tools
 Academic integrity and review
 The system includes an academic review workflow built to support teacher judgement, not replace it. It can generate submission receipts, extract document text, calculate similarity-style indicators, surface writing/process signals, and optionally plug into external AI-detection services when configured.
 
+Activities (interactive learning)
+Teachers can place Activities inside course folders. Students open them from the course content list. Modes:
+
+- Practice — formative practice with immediate feedback options and repeatable attempts
+- Quiz — short checks for understanding
+- Challenge — harder formative tasks, often with scoring and XP
+- Assessment — formal assessed work with attempt limits, integrity signals, and delayed result release
+- Survey — opinion / feedback collection (typically unscored)
+
+Teacher builder (`activity-builder.php`) lets staff author sections and questions, configure timing and attempt limits, attach media, import CSV question banks, publish a version, and review results. Students use the player (`activity.php`) to start or resume attempts, autosave answers, and submit. Correct answers, teacher notes, and explanations are not exposed while an assessment attempt is in progress.
+
+Question types include single choice, multiple choice, true/false, short text, numeric (with tolerance), fill-in-the-blank, ordering, matching, long response (manual marking), and rating scale.
+
+Media support covers images (png/jpg/jpeg/webp/gif), audio (mp3/m4a/wav/ogg), and video (mp4/webm). SVG and empty uploads are rejected; stored paths are constrained under `uploads/activities/` with traversal checks.
+
+Assessment integrity signals (limitations)
+For Assessment mode with integrity enabled, the player can record browser-side signals such as focus loss, paste/copy attempts, visibility changes, and similar events. These are signals for teacher review, not proof of misconduct. Labels stay neutral (for example “A few signals” / “Review recommended”). Clipboard text is never stored — only classifications and counts. A browser cannot reliably identify the exact website a paste came from. There is no webcam or screen recording. External originality checking needs a separately configured provider and is optional.
+
+Gamification
+Activities can award XP and badges on the server using unique reward keys so client-side forging or double-claiming is not possible. Practice repeats may grant reduced XP once per attempt where configured.
+
+Gradebook integration
+Activities can set `include_in_gradebook` and a grade weight so completed assessments contribute to course grade views.
+
 Security
 - Role-based access control
 - Course-level access checks
@@ -56,7 +83,8 @@ Security
 - Protected database and upload folders
 - Rich-text sanitisation for discussions and announcements
 - Blocks unsafe HTML, JavaScript links, and dangerous embedded content
-- Playwright-based security tests
+- Activity answer-key isolation for in-progress assessments
+- Playwright-based security tests and PHP activity system checks
 
 ---
 
@@ -66,8 +94,56 @@ Backend: PHP 8+
 Database: SQLite via PDO
 Frontend: HTML, CSS, JavaScript
 Local dev: XAMPP / Apache
-Testing: Playwright
+Testing: Playwright + PHP CLI checks
 Document previews (optional): LibreOffice
+
+Required PHP extensions
+- pdo_sqlite
+- fileinfo
+- dom
+- json
+- mbstring
+
+---
+
+DATABASE / MIGRATION NOTES
+
+Activity tables are created and upgraded through `portal_activity_run_migrations()` in `activity.php`, which runs as part of normal bootstrap/migration flow. New installs and existing SQLite databases pick up:
+
+- `course_activities`, `activity_versions`, `activity_sections`, `activity_questions`, `activity_question_options`
+- `activity_attempts`, `activity_answers`, `activity_integrity_events`
+- `activity_media`, `activity_audit_events`, `question_bank_items`
+- `gamification_events`, `gamification_badges`, `user_gamification_badges`
+
+`course_folder_items.type` is extended to allow `activity`. Publishing freezes a version; later edits go to a new draft, and existing attempts stay bound to the version they started on.
+
+---
+
+TESTING
+
+PHP activity system checks (permissions, scoring, answer leakage, attempts, integrity, XP, media path safety, CSV, versioning):
+
+```
+npm run test:activity
+```
+
+or:
+
+```
+C:\xampp\php\php.exe tests/activity_system_check.php
+```
+
+Playwright security / activity access tests (requires Chromium via `npm run playwright:install` and a reachable PHP built-in server — Playwright starts one on `127.0.0.1:8011` by default):
+
+```
+npm run test:security
+```
+
+Run both:
+
+```
+npm run test:all
+```
 
 ---
 
@@ -79,22 +155,40 @@ School-Website/
 │   ├── login.php
 │   ├── courses.php
 │   ├── course.php
+│   ├── activity.php            Student activity player
+│   ├── activity-builder.php    Teacher activity builder
+│   ├── activity-results.php    Results / analytics
+│   ├── activity-media.php      Activity media serving
+│   ├── question-bank.php
 │   ├── admin.php
 │   ├── download.php
 │   ├── preview.php
-│   └── view.php
+│   ├── view.php
+│   └── assets/
+│       ├── activity-builder.js
+│       ├── activity-player.js
+│       └── activity-results.js
 │
 ├── database/                Local SQLite database storage
 │   └── portal.db            Generated locally, don't commit this
 │
-├── uploads/                  Uploaded course files and submissions
+├── uploads/                  Uploaded course files, submissions, activity media
 │
 ├── tests/
-│   └── security/             Playwright security tests
+│   ├── activity_system_check.php
+│   ├── fixtures/
+│   │   ├── security-fixtures.php
+│   │   └── activity-fixtures.php
+│   └── security/             Playwright security + activity tests
+│       ├── helpers.js
+│       ├── security.spec.js
+│       └── activity.spec.js
 │
 ├── bootstrap.php             Core helpers, auth, database, security utilities
+├── activity.php              Activities domain helpers (scoring, attempts, integrity, media)
 ├── db_init.php               Database setup and seed data
 ├── course_catalog.php        Course data/helpers
 ├── integrity.php             Academic integrity and review helpers
+├── submission_security.php   Submission upload validation helpers
 ├── package.json               Test scripts and Playwright dependency
 └── README.md

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/customization.php';
 
 /**
  * Expected page variables:
@@ -62,20 +63,62 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260721p';
+$asset_version = '20260728i';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
-$style_src = '../style.css?v=' . $asset_version;
+$customizationPrefs = portal_is_logged_in()
+    ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))
+    : portal_customization_defaults();
+
+// style.css lives one directory above public/. A plain relative "../style.css"
+// only resolves correctly when the browser's address bar itself shows "/public/"
+// in the path. Because of the root .htaccess rewrite, most pages are reached
+// through URLs that *omit* "/public/" (e.g. "/course.php" instead of
+// "/public/course.php"), so the browser resolves "../" against the wrong
+// directory and the stylesheet 404s — silently breaking every layout rule that
+// depends on it. SCRIPT_NAME always reflects the real, rewritten path to the
+// script inside public/ regardless of what the browser shows, so use that to
+// build a stable, absolute link back to style.css.
+$scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+$publicPos = strrpos($scriptName, '/public/');
+if ($publicPos !== false) {
+    $appBase = substr($scriptName, 0, $publicPos);
+    $style_src = $appBase . '/style.css?v=' . $asset_version;
+    $customization_src = $appBase . '/public/assets/portal-customization.css?v=' . $asset_version;
+} else {
+    // public/ is itself the web root (e.g. the standalone dev server setup) —
+    // the old relative reference is already correct there.
+    $style_src = '../style.css?v=' . $asset_version;
+    $customization_src = 'assets/portal-customization.css?v=' . $asset_version;
+}
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"
+      data-theme="<?= portal_escape((string) $customizationPrefs['theme']) ?>"
+      data-accent="<?= portal_escape((string) $customizationPrefs['accent']) ?>"
+      data-text-size="<?= portal_escape((string) $customizationPrefs['text_size']) ?>"
+      data-density="<?= portal_escape((string) $customizationPrefs['density']) ?>"
+      data-font-style="<?= portal_escape((string) $customizationPrefs['font_style']) ?>"
+      data-line-spacing="<?= portal_escape((string) $customizationPrefs['line_spacing']) ?>"
+      data-corner-style="<?= portal_escape((string) $customizationPrefs['corner_style']) ?>"
+      data-background-style="<?= portal_escape((string) $customizationPrefs['background_style']) ?>"
+      data-page-width="<?= portal_escape((string) $customizationPrefs['page_width']) ?>"
+      data-sidebar-style="<?= portal_escape((string) $customizationPrefs['sidebar_style']) ?>"
+      data-course-view="<?= portal_escape((string) $customizationPrefs['course_view']) ?>"
+      data-dashboard-focus="<?= portal_escape((string) $customizationPrefs['dashboard_focus']) ?>"
+      data-motion="<?= !empty($customizationPrefs['reduced_motion']) ? 'reduced' : 'normal' ?>"
+      data-contrast="<?= !empty($customizationPrefs['high_contrast']) ? 'high' : 'standard' ?>"
+      data-show-continue="<?= !empty($customizationPrefs['show_continue']) ? '1' : '0' ?>"
+      data-show-quick-access="<?= !empty($customizationPrefs['show_quick_access']) ? '1' : '0' ?>"
+      data-show-bulletin="<?= !empty($customizationPrefs['show_bulletin']) ? '1' : '0' ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= portal_escape($page_title) ?></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&family=Nunito+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="<?= portal_escape($style_src) ?>">
+    <link rel="stylesheet" href="<?= portal_escape($customization_src) ?>">
 </head>
 <body<?= $layout_variant === 'auth' ? ' class="login-body"' : '' ?>>
     <?php if ($layout_variant !== 'auth'): ?>

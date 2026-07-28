@@ -7,39 +7,89 @@ $db  = portal_db();
 $me  = portal_current_user();
 
 $itemId = (int) ($_GET['item'] ?? 0);
-if (!$itemId) { http_response_code(400); exit('Bad request.'); }
+$subId  = (int) ($_GET['sub'] ?? 0);
+$viewSource = 'item'; // item | submission
 
-$stmt = $db->prepare(
-    "SELECT cfi.*, cf.locked AS folder_locked, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
-     FROM course_folder_items cfi
-     JOIN course_folders cf ON cf.id = cfi.folder_id
-     JOIN courses c ON c.id = cf.course_id
-     WHERE cfi.id = ? AND cfi.file_path != ''"
-);
-$stmt->execute([$itemId]);
-$item = $stmt->fetch();
-
-if (!$item) { http_response_code(404); exit('File not found.'); }
-
-$courseId  = (int) $item['course_id'];
-$canManage = portal_is_admin() || portal_can_manage_course($courseId);
-
-$canAccess = $canManage;
-if (!$canAccess) {
-    $enr = $db->prepare("SELECT id FROM enrollments WHERE user_id = ? AND course_id = ?");
-    $enr->execute([(int) $me['id'], $courseId]);
-    $canAccess = (bool) $enr->fetch();
-}
-if (!$canAccess) { http_response_code(403); exit('Access denied.'); }
-
-if (!$canManage && portal_folder_item_content_locked($item)) {
-    portal_log_security_event(
-        'forbidden_download',
-        'medium',
-        'Blocked view of locked course material item ' . $itemId
+if ($subId > 0) {
+    $viewSource = 'submission';
+    $stmt = $db->prepare(
+        "SELECT cs.*, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
+         FROM course_submissions cs
+         JOIN courses c ON c.id = cs.course_id
+         WHERE cs.id = ? AND cs.filepath != ''"
     );
-    http_response_code(403);
-    exit('This material is locked.');
+    $stmt->execute([$subId]);
+    $subRow = $stmt->fetch();
+    if (!$subRow) {
+        http_response_code(404);
+        exit('File not found.');
+    }
+
+    $courseId  = (int) $subRow['course_id'];
+    $canManage = portal_is_admin() || portal_can_manage_course($courseId);
+    $canAccess = $canManage || (int) $subRow['user_id'] === (int) $me['id'];
+    if (!$canAccess) {
+        portal_log_security_event('forbidden_download', 'medium', 'Blocked view of submission ' . $subId);
+        http_response_code(403);
+        exit('Access denied.');
+    }
+
+    // Normalize to the same shape course materials use below.
+    $item = [
+        'id' => 0,
+        'course_id' => $courseId,
+        'course_slug' => $subRow['course_slug'],
+        'course_title' => $subRow['course_title'],
+        'file_path' => $subRow['filepath'],
+        'file_name' => $subRow['filename'],
+        'allow_download' => 1,
+        'locked' => 0,
+        'folder_locked' => 0,
+        'title' => $subRow['filename'],
+    ];
+    $itemId = 0;
+} elseif ($itemId > 0) {
+    $stmt = $db->prepare(
+        "SELECT cfi.*, cf.locked AS folder_locked, c.id AS course_id, c.slug AS course_slug, c.full_title AS course_title
+         FROM course_folder_items cfi
+         JOIN course_folders cf ON cf.id = cfi.folder_id
+         JOIN courses c ON c.id = cf.course_id
+         WHERE cfi.id = ? AND cfi.file_path != ''"
+    );
+    $stmt->execute([$itemId]);
+    $item = $stmt->fetch();
+
+    if (!$item) {
+        http_response_code(404);
+        exit('File not found.');
+    }
+
+    $courseId  = (int) $item['course_id'];
+    $canManage = portal_is_admin() || portal_can_manage_course($courseId);
+
+    $canAccess = $canManage;
+    if (!$canAccess) {
+        $enr = $db->prepare("SELECT id FROM enrollments WHERE user_id = ? AND course_id = ?");
+        $enr->execute([(int) $me['id'], $courseId]);
+        $canAccess = (bool) $enr->fetch();
+    }
+    if (!$canAccess) {
+        http_response_code(403);
+        exit('Access denied.');
+    }
+
+    if (!$canManage && portal_folder_item_content_locked($item)) {
+        portal_log_security_event(
+            'forbidden_download',
+            'medium',
+            'Blocked view of locked course material item ' . $itemId
+        );
+        http_response_code(403);
+        exit('This material is locked.');
+    }
+} else {
+    http_response_code(400);
+    exit('Bad request.');
 }
 
 if (!function_exists('portal_view_presentation_converter')) {
@@ -217,16 +267,23 @@ if (!function_exists('portal_view_send_pdf')) {
 
 // Use empty() — PDO/SQLite often returns "0" as a string, and (bool)"0" is true in PHP.
 $allowDownload = !empty($item['allow_download']);
-$canDownload   = $canManage || $allowDownload;
+$canDownload   = $canManage || $allowDownload || $viewSource === 'submission';
 $displayName   = $item['file_name'] !== '' ? $item['file_name'] : basename($item['file_path']);
 $ext           = strtolower(pathinfo($displayName, PATHINFO_EXTENSION));
 $absPath       = portal_uploads_base() . DIRECTORY_SEPARATOR . $item['file_path'];
 $isPresentation = portal_is_presentation_file($displayName);
-$fileUrl       = 'download.php?item=' . $itemId . '&view=1';
-$downloadUrl   = 'download.php?item=' . $itemId;
-$backUrl       = 'course.php?course=' . urlencode((string) $item['course_slug']) . '&section=content';
+if ($viewSource === 'submission') {
+    $fileUrl     = 'download.php?sub=' . $subId . '&view=1';
+    $downloadUrl = 'download.php?sub=' . $subId;
+    $backUrl     = 'course.php?course=' . urlencode((string) $item['course_slug']) . '&section=content';
+    $presentationPdfUrl = 'view.php?sub=' . $subId . '&presentation_pdf=1';
+} else {
+    $fileUrl     = 'download.php?item=' . $itemId . '&view=1';
+    $downloadUrl = 'download.php?item=' . $itemId;
+    $backUrl     = 'course.php?course=' . urlencode((string) $item['course_slug']) . '&section=content';
+    $presentationPdfUrl = 'view.php?item=' . $itemId . '&presentation_pdf=1';
+}
 $canConvertPresentation = $isPresentation && portal_view_presentation_converter() !== null;
-$presentationPdfUrl = 'view.php?item=' . $itemId . '&presentation_pdf=1';
 
 if ($isPresentation && isset($_GET['presentation_pdf'])) {
     [$pdfPath, $error] = portal_view_presentation_pdf($absPath);
@@ -452,12 +509,17 @@ button { font-family: inherit; }
 /* PDF continuous scroll viewport */
 .pdf-viewport { flex: 1; overflow: auto; background: var(--canvas); padding: 24px 0 28px; position: relative; }
 .pdf-zoom-host {
+    /* Center the HOST when it fits; never center the scaled wrap inside it. */
     margin: 0 auto;
     overflow: hidden;
     /* width/height set in JS to match the visual (scaled) size */
 }
-.pdf-zoom-wrap { transform-origin: top left; width: max-content; margin: 0 auto; }
-.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 22px; }
+.pdf-zoom-wrap {
+    transform-origin: top left;
+    width: max-content;
+    margin: 0; /* must stay left-aligned — margin:auto + scale() clips the page */
+}
+.pdf-pages { display: flex; flex-direction: column; align-items: flex-start; gap: 22px; }
 .pdf-page { position: relative; background: #fff; box-shadow: var(--shadow-page); border-radius: 3px; overflow: hidden; }
 .pdf-page.is-placeholder { background: linear-gradient(180deg, #fff 0%, var(--surface-alt) 100%); }
 .pdf-page.is-placeholder::after {
@@ -490,7 +552,58 @@ button { font-family: inherit; }
     margin: 0 auto;
     overflow: hidden;
 }
-.vc-zoom-wrap { transform-origin: top left; width: max-content; margin: 0 auto; transition: transform .15s ease; }
+.vc-zoom-wrap {
+    transform-origin: top left;
+    width: max-content;
+    margin: 0; /* must stay left-aligned — margin:auto + scale() clips the page */
+    transition: transform .12s ease;
+}
+/* When the scaled page is wider than the pane, pin host to the left so
+   scrollLeft can reach both edges (auto margins block sideways scroll). */
+.vc-scroll.is-zoom-wide .vc-zoom-host,
+.pdf-viewport.is-zoom-wide .pdf-zoom-host,
+.pptx-viewport.is-zoom-wide .vc-zoom-host {
+    margin-left: 0;
+    margin-right: 0;
+}
+.vc-scroll.is-zoom-wide,
+.pdf-viewport.is-zoom-wide,
+.pptx-viewport.is-zoom-wide {
+    overflow-x: auto;
+}
+/* Hand tool / Space / middle-mouse only — not always-on drag. */
+body.is-hand-pan .vc-scroll,
+body.is-hand-pan .pdf-viewport,
+body.is-hand-pan .pptx-viewport,
+body.is-space-pan .vc-scroll,
+body.is-space-pan .pdf-viewport,
+body.is-space-pan .pptx-viewport {
+    cursor: grab;
+}
+.vc-scroll.is-panning,
+.pdf-viewport.is-panning,
+.pptx-viewport.is-panning,
+body.is-space-pan.is-panning .vc-scroll,
+body.is-space-pan.is-panning .pdf-viewport,
+body.is-space-pan.is-panning .pptx-viewport,
+body.is-hand-pan.is-panning .vc-scroll,
+body.is-hand-pan.is-panning .pdf-viewport,
+body.is-hand-pan.is-panning .pptx-viewport {
+    cursor: grabbing !important;
+    user-select: none !important;
+}
+body.is-space-pan .vc-scroll *,
+body.is-space-pan .pdf-viewport *,
+body.is-space-pan .pptx-viewport *,
+body.is-hand-pan .vc-scroll *,
+body.is-hand-pan .pdf-viewport *,
+body.is-hand-pan .pptx-viewport * {
+    cursor: inherit !important;
+}
+body.is-panning .vc-zoom-wrap,
+body.is-panning .pdf-zoom-wrap {
+    transition: none !important;
+}
 
 /* ── DOCX pages ───────────────────────────────────────────────────────────
    Real pagination (text/table/list splitting across pages) is handled by the
@@ -500,10 +613,10 @@ button { font-family: inherit; }
 .vc-zoom-wrap .pagedjs_pages {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     gap: 24px;
     width: max-content;
-    margin: 0 auto;
+    margin: 0;
 }
 .vc-zoom-wrap .pagedjs_page {
     background: #fff !important;
@@ -514,11 +627,15 @@ button { font-family: inherit; }
 .vc-zoom-wrap .pagedjs_page mark.doc-hl { background: rgba(253, 224, 71, 0.65); border-radius: 2px; }
 .vc-zoom-wrap .pagedjs_page mark.doc-hl--active { background: rgba(253, 176, 45, 0.9); }
 
-/* Fallback: single continuous page, used only if Paged.js fails to load. */
+/* Fallback Letter sheets (used if Paged.js fails to load). */
 .docx-page {
-    width: 816px; max-width: 100%; box-sizing: border-box;
-    background: #fff; margin: 0 auto;
-    padding: 72px 88px; min-height: 1000px;
+    position: relative;
+    width: 816px; max-width: none; box-sizing: border-box;
+    background: #fff; margin: 0;
+    padding: 72px 88px 56px;
+    height: 1056px;
+    min-height: 1056px;
+    overflow: hidden;
     box-shadow: var(--shadow-page);
     border-radius: 3px;
     font-family: "Calibri", "Georgia", serif; font-size: 12pt; line-height: 1.65; color: #1a1a1a;
@@ -534,7 +651,27 @@ button { font-family: inherit; }
 .docx-page mark.doc-hl { background: rgba(253, 224, 71, 0.65); border-radius: 2px; }
 .docx-page mark.doc-hl--active { background: rgba(253, 176, 45, 0.9); }
 
-/* Phone reading mode: fluid column — zoom grows text, still wraps to screen width. */
+.docx-pages-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 24px;
+    width: max-content;
+    margin: 0;
+}
+.docx-page-num {
+    position: absolute;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    font-family: "Manrope", system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    color: #9a9a96;
+    pointer-events: none;
+}
+
+/* Legacy continuous column (unused for DOCX viewer; kept for compatibility). */
 .docx-page--fluid {
     width: 100% !important;
     max-width: 100%;
@@ -606,6 +743,10 @@ body.is-reading .vc-scroll {
     flex: 1; overflow: auto; background: var(--canvas);
     display: flex; align-items: center; justify-content: center; padding: 28px 24px;
     position: relative; min-height: 0;
+}
+.pptx-viewport.is-zoom-wide {
+    justify-content: flex-start;
+    align-items: flex-start;
 }
 .pptx-stage {
     flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column;
@@ -793,9 +934,20 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         padding: 8px 0 12px;
         overflow-x: hidden;
     }
-    body.is-embedded .pdf-viewport {
+    body.is-embedded .pdf-viewport,
+    body.is-embedded .pptx-viewport {
         padding: 8px 0 12px;
         overflow-x: hidden;
+    }
+    /* Zoomed-in pages need horizontal pan; otherwise sides are clipped. */
+    body.is-embedded.is-zoom-wide .vc-scroll,
+    body.is-embedded.is-zoom-wide .pdf-viewport,
+    body.is-embedded.is-zoom-wide .pptx-viewport,
+    body.is-embedded .vc-scroll.is-zoom-wide,
+    body.is-embedded .pdf-viewport.is-zoom-wide,
+    body.is-embedded .pptx-viewport.is-zoom-wide {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
     }
     body.is-embedded .vc-zoom-wrap .pagedjs_pages {
         gap: 14px;
@@ -867,8 +1019,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             <button type="button" data-zoom="1.25">125%</button>
             <button type="button" data-zoom="1.5">150%</button>
             <button type="button" data-zoom="2">200%</button>
+            <button type="button" data-zoom="2.5">250%</button>
+            <button type="button" data-zoom="3">300%</button>
         </div>
     </div>
+
+    <button type="button" class="vt-icon-btn" id="vt-hand" title="Hand tool — drag to pan when zoomed (H)" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v8"/><path d="M10 10.5V8a2 2 0 0 0-4 0v8a6 6 0 0 0 12 0v-5a2 2 0 0 0-2-2h-2"/></svg>
+    </button>
 
     <?php if ($canDownload): ?>
     <button type="button" class="vt-icon-btn" id="vt-print" title="Print">
@@ -1029,7 +1187,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     const KIND       = <?= json_encode($engineKind) ?>;
     const BACK_URL   = <?= json_encode($backUrl) ?>;
     const EMBEDDED   = window.self !== window.top || document.body.classList.contains('is-embedded');
-    const IS_MOBILE  = () => window.matchMedia('(max-width: 860px)').matches;
+    const IS_MOBILE  = () => {
+        try {
+            const win = (window.top && window.top.matchMedia) ? window.top : window;
+            return win.matchMedia('(max-width: 860px)').matches;
+        } catch (_) {
+            return window.matchMedia('(max-width: 860px)').matches;
+        }
+    };
 
     // ── Embedded-mode back button becomes "Close" and messages the parent ──
     const backBtn = document.getElementById('vt-back');
@@ -1049,6 +1214,28 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     }
     function requestClose() {
         try { window.parent.postMessage({ type: 'portal-doc-viewer-close' }, window.location.origin); } catch (e) {}
+    }
+
+    // When opened inside the course overlay iframe, claim focus immediately so
+    // Hand (H), zoom (+/− / Ctrl+wheel), Space-pan, etc. work without a
+    // priming click on the document surface first.
+    function claimViewerFocus() {
+        if (!EMBEDDED) return;
+        const surface = document.getElementById('pdf-viewport')
+            || document.getElementById('vc-scroll')
+            || document.querySelector('.pptx-viewport')
+            || document.getElementById('vc')
+            || document.body;
+        if (!surface) return;
+        if (!surface.hasAttribute('tabindex')) surface.setAttribute('tabindex', '-1');
+        try { surface.focus({ preventScroll: true }); } catch (_) {
+            try { surface.focus(); } catch (__) {}
+        }
+        try { window.focus(); } catch (_) {}
+    }
+    if (EMBEDDED) {
+        claimViewerFocus();
+        window.addEventListener('load', claimViewerFocus, { once: true });
     }
 
     // ── Fullscreen ───────────────────────────────────────────────────────────
@@ -1151,10 +1338,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
     // +/- buttons and Ctrl+scroll are wired once here and simply call whichever
     // zoomIn/zoomOut the active renderer (below) has registered.
+    // Handlers may accept an optional { x, y } client-point for scroll-anchored zoom.
     document.getElementById('vz-in') ?.addEventListener('click', () => zoomIn());
     document.getElementById('vz-out')?.addEventListener('click', () => zoomOut());
     document.addEventListener('wheel', e => {
-        if (e.ctrlKey) { e.preventDefault(); e.deltaY < 0 ? zoomIn() : zoomOut(); }
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        const anchor = { x: e.clientX, y: e.clientY };
+        e.deltaY < 0 ? zoomIn(anchor) : zoomOut(anchor);
     }, { passive: false });
     let pageNext = () => {}, pagePrev = () => {}, pageFirst = () => {}, pageLast = () => {};
     window.__docViewerSetPageHandlers = (n, p, f, l) => { pageNext = n; pagePrev = p; pageFirst = f; pageLast = l; };
@@ -1316,59 +1507,60 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         const zoomHost = document.getElementById('vc-zoom-host');
         const scrollEl = document.getElementById('vc-scroll');
         const pagesRoot = document.getElementById('vc-body');
-        // On phones, prefer a continuous reading column: zoom grows text size and
-        // reflows within the screen width, so reading stays vertical-only.
-        const readingMode = IS_MOBILE();
+        // Always paginate into numbered Letter sheets (same as Word print layout).
+        // Continuous "reading mode" made multi-page docs look like one paper.
+        const readingMode = false;
         let zoom = 1.0;
-        let fitMode = readingMode ? 'reading' : ((EMBEDDED && IS_MOBILE()) ? 'fit-width' : 'custom');
+        let fitMode = 'fit-width';
         let currentPage = 1;
         let pageCount = 1;
         let pageEls = [];
         let pageScrollObserver = null;
 
-        if (readingMode) {
-            document.body.classList.add('is-reading');
-            document.documentElement.classList.add('is-reading');
-        }
-
         function applyZoom() {
-            if (readingMode) {
-                zoomWrap.style.transform = 'none';
-                zoomHost.style.width = '100%';
-                zoomHost.style.height = 'auto';
-                zoomWrap.style.width = '100%';
-                document.documentElement.style.setProperty('--docx-zoom', String(zoom));
-                syncZoomLabel(zoom);
-                return;
-            }
             syncScaledHost(zoomWrap, zoomHost, zoom);
             syncZoomLabel(zoom);
         }
-        function setZoom(z) {
-            zoom = Math.max(readingMode ? 0.85 : 0.35, Math.min(readingMode ? 2.2 : 3, z));
-            if (!readingMode) fitMode = 'custom';
-            applyZoom();
-        }
-        function fitWidth() {
-            if (readingMode) {
-                fitMode = 'reading';
-                setZoom(1);
+        function setZoom(z, anchor, opts) {
+            // +/- may go down to 50%; menu/fit can go a bit lower on small panes.
+            const floor = (opts && opts.allowBelowFit) ? 0.35 : 0.5;
+            const next = Math.max(floor, Math.min(3, z));
+            const prev = zoom;
+            if (!(opts && opts.keepFitMode)) fitMode = 'custom';
+            if (Math.abs(next - prev) < 0.001) {
+                zoom = next;
+                applyZoom();
                 return;
             }
+            withAnchoredZoom(scrollEl, prev, next, s => {
+                zoom = s;
+                applyZoom();
+            }, anchor);
+        }
+        function fitWidth() {
             fitMode = 'fit-width';
             officeFitWidth(zoomWrap, zoomHost, scrollEl, z => {
                 zoom = z;
                 applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
+            });
+        }
+        function fitPage() {
+            fitMode = 'fit-page';
+            officeFitPage(zoomWrap, zoomHost, scrollEl, z => {
+                zoom = z;
+                applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
             });
         }
         window.__docViewerSetZoomHandlers(
-            () => setZoom(zoom + (readingMode ? 0.15 : 0.1)),
-            () => setZoom(zoom - (readingMode ? 0.15 : 0.1))
+            (anchor) => setZoom(zoom + 0.1, anchor),
+            (anchor) => setZoom(zoom - 0.1, anchor)
         );
         wireZoomMenuGeneric(
-            z => setZoom(z),
+            z => setZoom(z, null, { allowBelowFit: true }),
             fitWidth,
-            fitWidth
+            fitPage
         );
 
         function setCurrentPage(n) {
@@ -1391,7 +1583,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
         function observePageScroll() {
             if (pageScrollObserver) pageScrollObserver.disconnect();
-            if (readingMode || !('IntersectionObserver' in window) || !scrollEl) return;
+            if (!('IntersectionObserver' in window) || !scrollEl) return;
             pageScrollObserver = new IntersectionObserver(entries => {
                 entries.forEach(entry => {
                     if (entry.isIntersecting && entry.intersectionRatio > 0.35) {
@@ -1430,21 +1622,21 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             const totalEl = document.getElementById('vp-total');
             if (totalEl) totalEl.textContent = String(pageCount);
             const nav = document.getElementById('vt-pagenav');
-            if (nav) nav.hidden = readingMode || pageCount <= 1;
+            if (nav) nav.hidden = pageCount <= 1;
             setCurrentPage(1);
             observePageScroll();
-            if (readingMode) {
-                applyZoom();
-            } else if (fitMode === 'fit-width') {
+            if (fitMode === 'fit-width') {
                 requestAnimationFrame(() => requestAnimationFrame(fitWidth));
+            } else if (fitMode === 'fit-page') {
+                requestAnimationFrame(() => requestAnimationFrame(fitPage));
             } else {
                 applyZoom();
             }
         }
 
         const refit = debounce(() => {
-            if (readingMode) applyZoom();
-            else if (fitMode === 'fit-width') fitWidth();
+            if (fitMode === 'fit-width') fitWidth();
+            else if (fitMode === 'fit-page') fitPage();
         }, 180);
         window.addEventListener('resize', refit);
         window.visualViewport?.addEventListener('resize', refit);
@@ -1456,9 +1648,85 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             return pageEls.length || 1;
         }
 
+        function makeLetterPage(pageNum) {
+            const page = document.createElement('div');
+            page.className = 'docx-page';
+            page.dataset.page = String(pageNum);
+            const footer = document.createElement('div');
+            footer.className = 'docx-page-num';
+            footer.textContent = String(pageNum);
+            page.appendChild(footer);
+            return page;
+        }
+
+        // Block-level fallback when Paged.js can't load: pack whole blocks onto
+        // successive Letter sheets so the viewer still shows numbered pages.
+        function paginateByBlocks(html) {
+            const PAGE_H = 1056;
+            pagesRoot.innerHTML = '';
+            const measure = document.createElement('div');
+            measure.className = 'docx-page';
+            measure.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important;';
+            measure.innerHTML = (html && String(html).trim())
+                ? html
+                : '<p style="color:#999"><em>This document appears to be empty.</em></p>';
+            document.body.appendChild(measure);
+            const nodes = Array.from(measure.childNodes);
+            let pageNum = 1;
+            let page = makeLetterPage(pageNum);
+            page.style.height = 'auto';
+            page.style.minHeight = '0';
+            page.style.overflow = 'visible';
+            pagesRoot.appendChild(page);
+
+            function finalizePage(el, num) {
+                el.style.height = '';
+                el.style.minHeight = '';
+                el.style.overflow = '';
+                const numEl = el.querySelector('.docx-page-num');
+                if (numEl) numEl.textContent = String(num);
+            }
+
+            nodes.forEach(node => {
+                const footer = page.querySelector('.docx-page-num');
+                page.insertBefore(node, footer);
+                if (page.scrollHeight > PAGE_H && page.childNodes.length > 2) {
+                    page.removeChild(node);
+                    finalizePage(page, pageNum);
+                    pageNum += 1;
+                    page = makeLetterPage(pageNum);
+                    page.style.height = 'auto';
+                    page.style.minHeight = '0';
+                    page.style.overflow = 'visible';
+                    pagesRoot.appendChild(page);
+                    page.insertBefore(node, page.querySelector('.docx-page-num'));
+                }
+            });
+            finalizePage(page, pageNum);
+            measure.remove();
+
+            const wrap = document.createElement('div');
+            wrap.className = 'docx-pages-stack';
+            Array.from(pagesRoot.children).forEach(el => wrap.appendChild(el));
+            pagesRoot.appendChild(wrap);
+            pageEls = Array.from(pagesRoot.querySelectorAll('.docx-page'));
+            return pageEls.length || 1;
+        }
+
         // Real, Word-like pagination (splitting text/tables/lists across page
         // boundaries, not just whole blocks) needs an actual layout engine —
         // Paged.js implements the CSS Paged Media spec for exactly this.
+        async function loadPagedPreviewer() {
+            try {
+                const mod = await import('./vendor/paged.esm.js');
+                if (mod && mod.Previewer) return mod.Previewer;
+            } catch (err) {
+                console.warn('Local Paged.js failed, trying CDN.', err);
+            }
+            const mod = await import('https://cdn.jsdelivr.net/npm/pagedjs@0.4.3/dist/paged.esm.js');
+            return mod.Previewer;
+        }
+
         async function paginateWithPagedJs(html) {
             const css = `
                 @page {
@@ -1492,7 +1760,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             `;
             const cssUrl = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
             try {
-                const { Previewer } = await import('https://cdn.jsdelivr.net/npm/pagedjs@0.4.3/dist/paged.esm.js');
+                const Previewer = await loadPagedPreviewer();
                 // Leave the loading spinner in place until pages are ready — the
                 // Previewer appends its own .pagedjs_pages node alongside it.
                 const flow = await new Previewer().preview(html, [cssUrl], pagesRoot);
@@ -1505,9 +1773,9 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         }
 
         // Fallback if the pagination engine can't load (offline/CDN blocked):
-        // a single continuous page, at least showing the full document.
+        // numbered Letter sheets packed by whole blocks.
         function paginateFallback(html) {
-            return renderReading(html);
+            return paginateByBlocks(html);
         }
 
         (async () => {
@@ -1519,15 +1787,14 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                     : '<p style="color:#999"><em>This document appears to be empty.</em></p>'
             ) || '<p style="color:#999"><em>This document appears to be empty.</em></p>';
             let count;
-            if (readingMode) {
-                count = renderReading(html);
-            } else {
-                try {
-                    count = await paginateWithPagedJs(html);
-                } catch (err) {
-                    console.error('Pagination engine failed, showing continuous view.', err);
-                    count = paginateFallback(html);
+            try {
+                count = await paginateWithPagedJs(html);
+                if (!count || count < 1 || !pagesRoot.querySelector('.pagedjs_page')) {
+                    throw new Error('Paged.js produced no pages');
                 }
+            } catch (err) {
+                console.error('Pagination engine failed, using block pages.', err);
+                count = paginateFallback(html);
             }
             finishPagination(count);
         })().catch(e => showErr(e.message));
@@ -1539,21 +1806,47 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         const zoomHost = document.getElementById('vc-zoom-host');
         const scrollEl = document.getElementById('vc-scroll');
         let zoom = 1.0;
-        let fitMode = 'custom';
+        let fitMode = 'fit-width';
         function applyZoom() { syncScaledHost(zoomWrap, zoomHost, zoom); syncZoomLabel(zoom); }
-        function setZoom(z) { zoom = Math.max(0.35, Math.min(3, z)); applyZoom(); }
+        function setZoom(z, anchor, opts) {
+            const floor = (opts && opts.allowBelowFit) ? 0.35 : 0.5;
+            const next = Math.max(floor, Math.min(3, z));
+            const prev = zoom;
+            if (!(opts && opts.keepFitMode)) fitMode = 'custom';
+            if (Math.abs(next - prev) < 0.001) {
+                zoom = next;
+                applyZoom();
+                return;
+            }
+            withAnchoredZoom(scrollEl, prev, next, s => {
+                zoom = s;
+                applyZoom();
+            }, anchor);
+        }
         function fitWidth() {
             fitMode = 'fit-width';
-            officeFitWidth(zoomWrap, zoomHost, scrollEl, setZoom);
+            officeFitWidth(zoomWrap, zoomHost, scrollEl, z => {
+                zoom = z;
+                applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
+            });
+        }
+        function fitPage() {
+            fitMode = 'fit-page';
+            officeFitPage(zoomWrap, zoomHost, scrollEl, z => {
+                zoom = z;
+                applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
+            });
         }
         window.__docViewerSetZoomHandlers(
-            () => { fitMode = 'custom'; setZoom(zoom + 0.1); },
-            () => { fitMode = 'custom'; setZoom(zoom - 0.1); }
+            (anchor) => setZoom(zoom + 0.1, anchor),
+            (anchor) => setZoom(zoom - 0.1, anchor)
         );
         wireZoomMenuGeneric(
-            z => { fitMode = 'custom'; setZoom(z); },
+            z => setZoom(z, null, { allowBelowFit: true }),
             fitWidth,
-            fitWidth
+            fitPage
         );
 
         docSearch = makeHtmlSearch(() => document.getElementById('vc-body'));
@@ -1584,8 +1877,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 `<div class="xlsx-tab${i === 0 ? ' active' : ''}" data-i="${i}">${esc(s.name)}</div>`
             ).join('');
             bodyEl.innerHTML = renderSheet(sheets[0]);
-            if (EMBEDDED && IS_MOBILE()) fitWidth();
-            else applyZoom();
+            requestAnimationFrame(() => requestAnimationFrame(fitWidth));
 
             tabsEl.addEventListener('click', e => {
                 const t = e.target.closest('.xlsx-tab[data-i]');
@@ -1594,6 +1886,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 t.classList.add('active');
                 bodyEl.innerHTML = renderSheet(sheets[+t.dataset.i]);
                 if (fitMode === 'fit-width') fitWidth();
+                else if (fitMode === 'fit-page') fitPage();
                 else applyZoom();
                 if (searchInput && searchInput.value) docSearch.run(searchInput.value);
             });
@@ -1607,21 +1900,47 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
         const zoomHost = document.getElementById('vc-zoom-host');
         const scrollEl = document.querySelector('.pptx-viewport') || document.getElementById('vc-scroll');
         let zoom = 1.0;
-        let fitMode = (EMBEDDED && IS_MOBILE()) ? 'fit-width' : 'custom';
+        let fitMode = 'fit-width';
         function applyZoom() { syncScaledHost(zoomWrap, zoomHost, zoom); syncZoomLabel(zoom); }
-        function setZoom(z) { zoom = Math.max(0.35, Math.min(3, z)); applyZoom(); }
+        function setZoom(z, anchor, opts) {
+            const floor = (opts && opts.allowBelowFit) ? 0.35 : 0.5;
+            const next = Math.max(floor, Math.min(3, z));
+            const prev = zoom;
+            if (!(opts && opts.keepFitMode)) fitMode = 'custom';
+            if (Math.abs(next - prev) < 0.001) {
+                zoom = next;
+                applyZoom();
+                return;
+            }
+            withAnchoredZoom(scrollEl, prev, next, s => {
+                zoom = s;
+                applyZoom();
+            }, anchor);
+        }
         function fitWidth() {
             fitMode = 'fit-width';
-            officeFitWidth(zoomWrap, zoomHost, scrollEl, setZoom);
+            officeFitWidth(zoomWrap, zoomHost, scrollEl, z => {
+                zoom = z;
+                applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
+            });
+        }
+        function fitPage() {
+            fitMode = 'fit-page';
+            officeFitPage(zoomWrap, zoomHost, scrollEl, z => {
+                zoom = z;
+                applyZoom();
+                if (scrollEl) scrollEl.scrollLeft = 0;
+            });
         }
         window.__docViewerSetZoomHandlers(
-            () => { fitMode = 'custom'; setZoom(zoom + 0.1); },
-            () => { fitMode = 'custom'; setZoom(zoom - 0.1); }
+            (anchor) => setZoom(zoom + 0.1, anchor),
+            (anchor) => setZoom(zoom - 0.1, anchor)
         );
         wireZoomMenuGeneric(
-            z => { fitMode = 'custom'; setZoom(z); },
+            z => setZoom(z, null, { allowBelowFit: true }),
             fitWidth,
-            fitWidth
+            fitPage
         );
 
         docSearch = makeHtmlSearch(() => document.getElementById('vc-body'), mark => {
@@ -1665,6 +1984,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 nextBtn.disabled = cur === slides.length - 1;
                 thumbsEl.querySelectorAll('.pptx-thumb')[cur]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
                 if (fitMode === 'fit-width') fitWidth();
+                else if (fitMode === 'fit-page') fitPage();
                 else applyZoom();
             }
 
@@ -1769,6 +2089,12 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
     function syncScaledHost(wrap, host, scale) {
         if (!wrap || !host) return;
         host._syncScale = scale;
+        // Wrap must be top-left of the host. Centering the wrap inside a host sized
+        // to scale×width makes scale() paint past the host; overflow:hidden then
+        // chops both sides and scroll/pan can never reveal the clipped text.
+        wrap.style.marginLeft = '0';
+        wrap.style.marginRight = '0';
+        wrap.style.transformOrigin = 'top left';
         wrap.style.transform = `scale(${scale})`;
         const apply = () => {
             const s = host._syncScale;
@@ -1776,6 +2102,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             // stays correct even if content reflows later (fonts/images/search).
             host.style.width = Math.max(1, Math.ceil(wrap.offsetWidth * s)) + 'px';
             host.style.height = Math.max(1, Math.ceil(wrap.offsetHeight * s)) + 'px';
+            syncZoomOverflow();
         };
         apply();
         // Keep the host size in sync as the (unscaled) content's real size changes,
@@ -1785,16 +2112,307 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             host._syncObserver.observe(wrap);
         }
     }
+    function syncZoomOverflow() {
+        // When zoomed past the pane, allow sideways pan; mark as pannable for drag.
+        const scrollEl = document.getElementById('vc-scroll')
+            || document.querySelector('.pptx-viewport')
+            || document.getElementById('pdf-viewport');
+        const host = document.getElementById('vc-zoom-host')
+            || document.getElementById('pdf-zoom-host');
+        if (!scrollEl || !host) return;
+        const wasWide = scrollEl.classList.contains('is-zoom-wide');
+        const wide = host.offsetWidth > scrollEl.clientWidth + 2;
+        const tall = host.offsetHeight > scrollEl.clientHeight + 2;
+        const pannable = wide || tall;
+        document.body.classList.toggle('is-zoom-wide', wide);
+        scrollEl.classList.toggle('is-zoom-wide', wide);
+        scrollEl.classList.toggle('is-pannable', pannable);
+        document.body.classList.toggle('is-pannable', pannable);
+        if (!wide) {
+            scrollEl.scrollLeft = 0;
+        } else if (!wasWide) {
+            // First moment content becomes wider than the pane: centre it.
+            scrollEl.scrollLeft = Math.max(0, (host.offsetWidth - scrollEl.clientWidth) / 2);
+        }
+    }
+
+    // Pan only when Hand tool is on, Space is held, middle-mouse, or drag on
+    // the grey canvas — never hijack normal left-drag on the page.
+    // On release, coast with friction (inertia) so a hard flick keeps moving.
+    (function enableViewerPan() {
+        let spaceDown = false;
+        let handOn = false;
+        let pan = null; // active drag
+        let coastRaf = 0;
+        let coast = null; // { el, vx, vy, last }
+        const handBtn = document.getElementById('vt-hand');
+
+        // Exponential friction per ms — higher = stops sooner.
+        const FRICTION = 0.0042;
+        const MIN_VELOCITY = 0.04; // px/ms — below this, stop
+        const MAX_VELOCITY = 5.5;  // px/ms — cap wild flicks
+        const SAMPLE_MS = 80;      // only recent motion counts for release velocity
+
+        function setHand(on) {
+            handOn = !!on;
+            document.body.classList.toggle('is-hand-pan', handOn);
+            if (handBtn) {
+                handBtn.classList.toggle('is-active', handOn);
+                handBtn.setAttribute('aria-pressed', handOn ? 'true' : 'false');
+            }
+        }
+
+        if (handBtn) {
+            handBtn.addEventListener('click', () => setHand(!handOn));
+        }
+        document.addEventListener('keydown', e => {
+            if (e.target.closest('input, textarea, [contenteditable="true"]')) return;
+            if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                setHand(!handOn);
+                e.preventDefault();
+                return;
+            }
+            if (e.code !== 'Space' || e.repeat) return;
+            spaceDown = true;
+            document.body.classList.add('is-space-pan');
+            e.preventDefault();
+        });
+        document.addEventListener('keyup', e => {
+            if (e.code !== 'Space') return;
+            spaceDown = false;
+            document.body.classList.remove('is-space-pan');
+        });
+        window.addEventListener('blur', () => {
+            spaceDown = false;
+            document.body.classList.remove('is-space-pan');
+            endPan(false);
+        });
+
+        function scrollTargets() {
+            return [
+                document.getElementById('vc-scroll'),
+                document.getElementById('pdf-viewport'),
+                document.querySelector('.pptx-viewport'),
+            ].filter(Boolean);
+        }
+
+        function isOverflowing(el) {
+            return el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 2;
+        }
+
+        function isInteractive(t) {
+            return !!t.closest('a, button, input, textarea, select, .vt, .vt-zoom-menu, .xlsx-tab, .pptx-thumb, .pdf-thumb, .slide-bar, .vc-sidebar');
+        }
+
+        function onPagePaper(t) {
+            return !!t.closest('.pagedjs_page, .docx-page, .pdf-page, .pptx-slide, .pptx-card, table.xlsx-tbl, .textLayer, mark');
+        }
+
+        function wantsPan(e, el) {
+            if (!el || !isOverflowing(el)) return false;
+            if (e.button === 1) return true; // middle mouse always pans
+            if (e.button !== 0) return false;
+            if (isInteractive(e.target)) return false;
+            if (handOn || spaceDown) return true;
+            // Grey canvas / margins only — leave page text selectable.
+            return !onPagePaper(e.target);
+        }
+
+        function stopCoast() {
+            if (coastRaf) {
+                cancelAnimationFrame(coastRaf);
+                coastRaf = 0;
+            }
+            coast = null;
+        }
+
+        function clampScroll(el, left, top) {
+            const maxL = Math.max(0, el.scrollWidth - el.clientWidth);
+            const maxT = Math.max(0, el.scrollHeight - el.clientHeight);
+            const nextL = Math.max(0, Math.min(maxL, left));
+            const nextT = Math.max(0, Math.min(maxT, top));
+            return {
+                left: nextL,
+                top: nextT,
+                hitX: nextL !== left,
+                hitY: nextT !== top,
+            };
+        }
+
+        function startCoast(el, vx, vy) {
+            stopCoast();
+            const speed = Math.hypot(vx, vy);
+            if (speed < MIN_VELOCITY) return;
+            const scale = Math.min(1, MAX_VELOCITY / speed);
+            coast = {
+                el,
+                vx: vx * scale,
+                vy: vy * scale,
+                last: performance.now(),
+            };
+            const step = (now) => {
+                if (!coast || coast.el !== el) return;
+                const dt = Math.min(32, Math.max(0, now - coast.last));
+                coast.last = now;
+                // Frame-rate independent friction: v *= e^(-k·dt)
+                const decay = Math.exp(-FRICTION * dt);
+                coast.vx *= decay;
+                coast.vy *= decay;
+                const moved = clampScroll(
+                    el,
+                    el.scrollLeft + coast.vx * dt,
+                    el.scrollTop + coast.vy * dt
+                );
+                el.scrollLeft = moved.left;
+                el.scrollTop = moved.top;
+                // Bounce-kill on edges so it doesn't grind against the stop.
+                if (moved.hitX) coast.vx = 0;
+                if (moved.hitY) coast.vy = 0;
+                if (Math.hypot(coast.vx, coast.vy) < MIN_VELOCITY) {
+                    stopCoast();
+                    return;
+                }
+                coastRaf = requestAnimationFrame(step);
+            };
+            coastRaf = requestAnimationFrame(step);
+        }
+
+        function releaseVelocity(p) {
+            const samples = p.samples;
+            if (!samples.length) return { vx: 0, vy: 0 };
+            const newest = samples[samples.length - 1];
+            let oldest = samples[0];
+            for (let i = samples.length - 2; i >= 0; i--) {
+                if (newest.t - samples[i].t <= SAMPLE_MS) oldest = samples[i];
+                else break;
+            }
+            const dt = newest.t - oldest.t;
+            if (dt < 8) return { vx: 0, vy: 0 };
+            // Finger moved down → content should keep going down (scrollTop ↑).
+            return {
+                vx: (oldest.x - newest.x) / dt,
+                vy: (oldest.y - newest.y) / dt,
+            };
+        }
+
+        function endPan(withInertia) {
+            if (!pan) return;
+            const p = pan;
+            p.el.classList.remove('is-panning');
+            document.body.classList.remove('is-panning');
+            try { p.el.releasePointerCapture(p.pointerId); } catch (_) {}
+            pan = null;
+            if (withInertia) {
+                const v = releaseVelocity(p);
+                startCoast(p.el, v.vx, v.vy);
+            } else {
+                stopCoast();
+            }
+        }
+
+        function bindPan(el) {
+            if (!el || el.dataset.panBound === '1') return;
+            el.dataset.panBound = '1';
+            el.addEventListener('pointerdown', e => {
+                if (!wantsPan(e, el)) return;
+                e.preventDefault();
+                stopCoast();
+                const now = performance.now();
+                pan = {
+                    el,
+                    pointerId: e.pointerId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    sl: el.scrollLeft,
+                    st: el.scrollTop,
+                    samples: [{ t: now, x: e.clientX, y: e.clientY }],
+                };
+                el.classList.add('is-panning');
+                document.body.classList.add('is-panning');
+                try { el.setPointerCapture(e.pointerId); } catch (_) {}
+            });
+            el.addEventListener('pointermove', e => {
+                if (!pan || pan.el !== el) return;
+                el.scrollLeft = pan.sl - (e.clientX - pan.x);
+                el.scrollTop = pan.st - (e.clientY - pan.y);
+                const now = performance.now();
+                pan.samples.push({ t: now, x: e.clientX, y: e.clientY });
+                // Keep a short trail for release velocity.
+                while (pan.samples.length > 2 && now - pan.samples[0].t > SAMPLE_MS + 20) {
+                    pan.samples.shift();
+                }
+            });
+            el.addEventListener('pointerup', () => endPan(true));
+            el.addEventListener('pointercancel', () => endPan(false));
+            el.addEventListener('wheel', () => stopCoast(), { passive: true });
+            el.addEventListener('auxclick', e => {
+                if (e.button === 1) e.preventDefault();
+            });
+        }
+
+        scrollTargets().forEach(bindPan);
+        setTimeout(() => scrollTargets().forEach(bindPan), 0);
+        setTimeout(() => scrollTargets().forEach(bindPan), 500);
+    })();
+
+    /**
+     * Apply a zoom change while keeping the point under the cursor (or the
+     * viewport centre) stable in the scroll container.
+     */
+    function withAnchoredZoom(scrollEl, oldScale, newScale, applyFn, anchorClient) {
+        if (!scrollEl || typeof applyFn !== 'function') {
+            applyFn(newScale);
+            return;
+        }
+        const prev = Math.max(oldScale || 0.001, 0.001);
+        const next = newScale;
+        const rect = scrollEl.getBoundingClientRect();
+        const ax = (anchorClient && Number.isFinite(anchorClient.x))
+            ? (anchorClient.x - rect.left)
+            : (scrollEl.clientWidth / 2);
+        const ay = (anchorClient && Number.isFinite(anchorClient.y))
+            ? (anchorClient.y - rect.top)
+            : (scrollEl.clientHeight / 2);
+        const contentX = scrollEl.scrollLeft + ax;
+        const contentY = scrollEl.scrollTop + ay;
+        const ratio = next / prev;
+        applyFn(next);
+        requestAnimationFrame(() => {
+            scrollEl.scrollLeft = Math.max(0, contentX * ratio - ax);
+            scrollEl.scrollTop = Math.max(0, contentY * ratio - ay);
+            syncZoomOverflow();
+        });
+    }
+    function measureOfficeFitWidth(wrap, scrollEl) {
+        if (!wrap || !scrollEl) return 1;
+        const page = wrap.querySelector('.pagedjs_page, .docx-page, .pptx-slide, table.xlsx-tbl, .pptx-card') || wrap;
+        const natural = Math.max(page.offsetWidth || 0, page.getBoundingClientRect().width || 0, 1);
+        const avail = Math.max(1, scrollEl.clientWidth - (IS_MOBILE() ? 8 : 40));
+        return Math.min(1, Math.max(0.35, avail / natural));
+    }
+    function measureOfficeFitPage(wrap, scrollEl) {
+        if (!wrap || !scrollEl) return 1;
+        const page = wrap.querySelector('.pagedjs_page, .docx-page, .pptx-slide, table.xlsx-tbl, .pptx-card') || wrap;
+        const natW = Math.max(page.offsetWidth || 0, 1);
+        const natH = Math.max(page.offsetHeight || 0, 1);
+        const availW = Math.max(1, scrollEl.clientWidth - (IS_MOBILE() ? 8 : 40));
+        const availH = Math.max(1, scrollEl.clientHeight - (IS_MOBILE() ? 8 : 40));
+        return Math.min(1, Math.max(0.35, Math.min(availW / natW, availH / natH)));
+    }
     function officeFitWidth(wrap, host, scrollEl, setZoom) {
         if (!wrap || !host || !scrollEl || typeof setZoom !== 'function') return;
-        // Measure the unscaled page width, then scale to the visible viewport.
+        // Measure unscaled, then fit. Never upscale past 100%.
         host.style.width = '';
         host.style.height = '';
         wrap.style.transform = 'none';
-        const page = wrap.querySelector('.pagedjs_page, .docx-page, .pptx-slide, table.xlsx-tbl, .pptx-card') || wrap;
-        const natural = Math.max(page.offsetWidth || 0, page.getBoundingClientRect().width || 0, 1);
-        const avail = Math.max(1, scrollEl.clientWidth - (IS_MOBILE() ? 4 : 32));
-        setZoom(Math.min(1.5, Math.max(0.35, avail / natural)));
+        setZoom(measureOfficeFitWidth(wrap, scrollEl));
+    }
+    function officeFitPage(wrap, host, scrollEl, setZoom) {
+        if (!wrap || !host || !scrollEl || typeof setZoom !== 'function') return;
+        host.style.width = '';
+        host.style.height = '';
+        wrap.style.transform = 'none';
+        setZoom(measureOfficeFitPage(wrap, scrollEl));
     }
     function wireZoomMenuGeneric(apply, fitWidthFn, fitPageFn) {
         document.querySelectorAll('#vt-zoom-menu button[data-zoom]').forEach(btn => {
@@ -1860,20 +2478,17 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             if (!pages[0]?.page || !viewportEl) return 1;
             const nat = naturalSize(pages[0].page);
             const availW = Math.max(1, viewportEl.clientWidth - fitGutter());
-            return Math.max(0.15, availW / Math.max(nat.w, 1));
+            return Math.min(1, Math.max(0.15, availW / Math.max(nat.w, 1)));
+        }
+        function fitPageScale() {
+            if (!pages[0]?.page || !viewportEl) return 1;
+            const nat = naturalSize(pages[0].page);
+            const availW = Math.max(1, viewportEl.clientWidth - fitGutter());
+            const availH = Math.max(1, viewportEl.clientHeight - fitGutter());
+            return Math.min(1, Math.max(0.15, Math.min(availW / nat.w, availH / nat.h)));
         }
         function syncZoomWideClass() {
-            // Only unlock horizontal pan when the slide is actually wider than the phone.
-            const wide = IS_PRESENTATION && viewScale > fitWidthScale() + 0.02;
-            document.body.classList.toggle('is-zoom-wide', wide);
-            if (wide && viewportEl && zoomHost) {
-                requestAnimationFrame(() => {
-                    const maxX = Math.max(0, zoomHost.offsetWidth - viewportEl.clientWidth);
-                    viewportEl.scrollLeft = maxX / 2;
-                });
-            } else if (viewportEl) {
-                viewportEl.scrollLeft = 0;
-            }
+            syncZoomOverflow();
         }
 
         window.__docViewerSetPageHandlers(
@@ -1883,8 +2498,8 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             () => scrollToPage(pageCount)
         );
         window.__docViewerSetZoomHandlers(
-            () => zoomBy(IS_MOBILE() && IS_PRESENTATION ? 0.2 : 0.1),
-            () => zoomBy(IS_MOBILE() && IS_PRESENTATION ? -0.2 : -0.1)
+            (anchor) => zoomBy(IS_MOBILE() && IS_PRESENTATION ? 0.2 : 0.1, anchor),
+            (anchor) => zoomBy(IS_MOBILE() && IS_PRESENTATION ? -0.2 : -0.1, anchor)
         );
         docSearch = { run: runSearch, next: () => goToMatch(searchIndex + 1), prev: () => goToMatch(searchIndex - 1), clear: clearSearchHighlights };
         document.querySelectorAll('#vt-zoom-menu button[data-zoom]').forEach(btn => {
@@ -1892,7 +2507,7 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                 const val = btn.dataset.zoom;
                 if (val === 'fit-width') { fitMode = 'fit-width'; applyFit(); }
                 else if (val === 'fit-page') { fitMode = 'fit-page'; applyFit(); }
-                else { fitMode = 'custom'; setViewScale(parseFloat(val)); }
+                else { fitMode = 'custom'; setViewScale(parseFloat(val), { allowBelowFit: true, skipAnchor: true }); }
             });
         });
 
@@ -2076,14 +2691,9 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
 
         function applyFit() {
             if (!pages.length || !pages[0].page) return;
-            const nat = naturalSize(pages[0].page);
-            const gutter = fitGutter();
-            const availW = Math.max(1, viewportEl.clientWidth - gutter);
-            const availH = Math.max(1, viewportEl.clientHeight - gutter);
-            let scale;
-            if (fitMode === 'fit-page') scale = Math.min(availW / nat.w, availH / nat.h);
-            else scale = availW / nat.w;
-            setViewScale(scale, true);
+            const scale = fitMode === 'fit-page' ? fitPageScale() : fitWidthScale();
+            setViewScale(scale, { skipAnchor: true });
+            if (viewportEl) viewportEl.scrollLeft = 0;
         }
 
         function invalidateRenderedPages() {
@@ -2120,13 +2730,23 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
             return true;
         }
 
-        function setViewScale(scale) {
+        function setViewScale(scale, opts) {
             const prev = viewScale;
-            viewScale = Math.max(0.15, Math.min(4, scale));
+            // Fit modes and menu % may go lower; +/- / wheel zoom-out bottoms at 50%.
+            const floor = (opts && (opts.allowBelowFit || opts.skipAnchor)) ? 0.15 : 0.5;
+            viewScale = Math.max(floor, Math.min(4, scale));
             const qualityChanged = ensureRenderQuality();
-            syncScaledHost(zoomWrap, zoomHost, viewScale / renderScale);
-            syncZoomLabel(viewScale);
-            syncZoomWideClass();
+            const apply = () => {
+                syncScaledHost(zoomWrap, zoomHost, viewScale / renderScale);
+                syncZoomLabel(viewScale);
+                syncZoomWideClass();
+            };
+
+            if (opts && opts.skipAnchor) {
+                apply();
+            } else {
+                withAnchoredZoom(viewportEl, prev, viewScale, () => apply(), opts && opts.anchor);
+            }
 
             if (qualityChanged) {
                 clearTimeout(rerenderTimer);
@@ -2134,18 +2754,11 @@ body:-webkit-full-screen .vt-icon-btn#vt-fullscreen svg { transform: scale(0.92)
                     ensureRenderedRange(currentPage, LAZY_BUFFER);
                 }, 80);
             }
-
-            // Keep vertical position stable when zooming; horizontal stays centred via syncZoomWideClass.
-            if (viewportEl && Number.isFinite(prev) && prev > 0 && Math.abs(viewScale - prev) > 0.001) {
-                const cy = viewportEl.scrollTop + viewportEl.clientHeight / 2;
-                const ratio = viewScale / prev;
-                viewportEl.scrollTop = Math.max(0, cy * ratio - viewportEl.clientHeight / 2);
-            }
         }
 
-        function zoomBy(delta) {
+        function zoomBy(delta, anchor) {
             fitMode = 'custom';
-            setViewScale(viewScale + delta);
+            setViewScale(viewScale + delta, { anchor });
         }
 
         async function scrollToPage(n) {

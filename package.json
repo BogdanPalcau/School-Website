@@ -4,9 +4,11 @@
   "description": "A full-stack Learning Management System (LMS) designed for Rangoon International Education. The platform provides a complete digital learning environment where teachers can manage courses and students can access learning materials, schedules, events, and assignments in one place.",
   "main": "index.js",
   "scripts": {
-    "test": "npm run test:security",
+    "test": "npm run test:all",
+    "test:activity": "C:\\xampp\\php\\php.exe tests/activity_system_check.php",
     "test:security": "playwright test",
     "test:security:headed": "playwright test --headed",
+    "test:all": "npm run test:activity && npm run test:security",
     "playwright:install": "playwright install chromium"
   },
   "repository": {
