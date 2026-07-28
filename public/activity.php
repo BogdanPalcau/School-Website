@@ -631,7 +631,11 @@ ob_start();
 </section>
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
+<<<<<<< HEAD
 <script src="assets/activity-player.js?v=20260802i"></script>
+=======
+<script src="assets/activity-player.js?v=20260728f"></script>
+>>>>>>> 8f40c04 (Fix saved activity answer restoration)
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

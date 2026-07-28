@@ -307,6 +307,34 @@ test('student assessment player payload does not leak answer keys while in progr
   expect(savedAnswers.some((entry) => Number(entry?.answer?.option_id) > 0)).toBeTruthy();
 });
 
+test('saved activity answers remain selected after resume', async ({ page }) => {
+  await signIn(page, fixtures.users.student, fixtures.password);
+  await page.goto(`/activity.php?id=${fixtures.publishedActivityId}`);
+
+  const resume = page.locator('[data-ap-action="resume"]');
+  if (await resume.isVisible()) {
+    await resume.click();
+  } else {
+    await page.locator('[data-ap-integrity-ack]').check();
+    await page.locator('[data-ap-action="start"]').click();
+  }
+
+  await expect(page.getByText('What is 2+2?')).toBeVisible();
+  const savedChoice = page.locator('.ap-option')
+    .filter({ has: page.getByText('4', { exact: true }) })
+    .locator('input[type="radio"]');
+  await savedChoice.check();
+  await expect(page.locator('[data-ap-save-state]')).toHaveText('Saved');
+
+  await page.goto(`/activity.php?id=${fixtures.publishedActivityId}&resume=1`);
+  await expect(page.getByText('What is 2+2?')).toBeVisible();
+  await expect(
+    page.locator('.ap-option')
+      .filter({ has: page.getByText('4', { exact: true }) })
+      .locator('input[type="radio"]')
+  ).toBeChecked();
+});
+
 test('builder POST without CSRF token fails', async ({ page }) => {
   await signIn(page, fixtures.users.teacher, fixtures.password);
 
