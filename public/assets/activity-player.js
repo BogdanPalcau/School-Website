@@ -103,6 +103,8 @@
 
   function answerValueForQuestion(q, answer) {
     if (answer == null || typeof answer !== 'object') return answer;
+    // Preserve the scalar-array shape accepted by the backend for legacy answers.
+    if (Array.isArray(answer)) return answer;
 
     switch (q.question_type) {
       case 'single_choice':
