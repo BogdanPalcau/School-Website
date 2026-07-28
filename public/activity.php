@@ -502,7 +502,7 @@ ob_start();
 </section>
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
-<script src="assets/activity-player.js?v=20260728e"></script>
+<script src="assets/activity-player.js?v=20260728f"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

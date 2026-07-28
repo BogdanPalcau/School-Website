@@ -3375,12 +3375,6 @@ if (!function_exists('portal_activity_start_attempt')) {
             return $can;
         }
 
-        if (($activity['mode'] ?? '') === 'assessment' && !empty($activity['integrity_enabled'])) {
-            if (trim($integrityAck) === '') {
-                return ['ok' => false, 'error' => 'Please acknowledge the integrity notice before starting.'];
-            }
-        }
-
         $db = portal_db();
         $resume = $db->prepare(
             "SELECT * FROM activity_attempts
@@ -3401,6 +3395,12 @@ if (!function_exists('portal_activity_start_attempt')) {
                 $payload['token'] = $token;
                 $payload['resumed'] = true;
                 return $payload;
+            }
+        }
+
+        if (($activity['mode'] ?? '') === 'assessment' && !empty($activity['integrity_enabled'])) {
+            if (trim($integrityAck) === '') {
+                return ['ok' => false, 'error' => 'Please acknowledge the integrity notice before starting.'];
             }
         }
 
