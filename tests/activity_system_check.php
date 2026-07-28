@@ -278,6 +278,13 @@ try {
     $token = (string) ($start['token'] ?? '');
     $questionId = (int) ($start['questions'][0]['id'] ?? 0);
 
+    $resume = portal_activity_start_attempt($assessId, $studentUser['id']);
+    expect_true(
+        !empty($resume['ok']) && !empty($resume['resumed']),
+        'resume does not require a second integrity acknowledgement'
+    );
+    $token = (string) ($resume['token'] ?? '');
+
     $player = portal_activity_get_attempt_for_player($attemptId, $studentUser['id']);
     expect_true(!empty($player['ok']), 'get_attempt_for_player ok');
     $playerJson = portal_activity_json_encode($player);
