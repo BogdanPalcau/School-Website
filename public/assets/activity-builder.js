@@ -26,6 +26,8 @@
     validation: boot.validation || { errors: [], warnings: [] },
     debounceTimer: null,
     periodicTimer: null,
+    changeVersion: 0,
+    savePromise: null,
   };
 
   const csrf = root.dataset.csrf || '';
@@ -61,7 +63,9 @@
 
   function markDirty() {
     state.dirty = true;
+    state.changeVersion += 1;
     setSaveState('Unsaved changes…');
+    renderSetupSummary();
     scheduleAutosave();
     try {
       localStorage.setItem(recoveryKey, JSON.stringify({
@@ -148,28 +152,53 @@
   }
 
   async function saveSettings() {
-    if (state.saving) return;
+    if (state.saving) return state.savePromise || false;
+    const savingVersion = state.changeVersion;
     state.saving = true;
     setSaveState('Saving…');
-    try {
-      await api('save_settings', { fields: collectSettings(), revision: state.revision });
-      state.dirty = false;
-      setSaveState('Saved');
-      const titleEl = root.querySelector('[data-ab-title]');
-      const titleInput = root.querySelector('[data-ab-setting="title"]');
-      if (titleEl && titleInput) titleEl.textContent = titleInput.value || 'Untitled activity';
-      try { localStorage.removeItem(recoveryKey); } catch (_) { /* ignore */ }
-    } catch (err) {
-      setSaveState(err.message || 'Save failed', true);
-    } finally {
-      state.saving = false;
-    }
+    state.savePromise = (async () => {
+      try {
+        await api('save_settings', { fields: collectSettings(), revision: state.revision });
+        state.dirty = state.changeVersion !== savingVersion;
+        setSaveState(state.dirty ? 'More changes to save…' : 'Saved');
+        const titleEl = root.querySelector('[data-ab-title]');
+        const titleInput = root.querySelector('[data-ab-setting="title"]');
+        if (titleEl && titleInput) titleEl.textContent = titleInput.value || 'Untitled activity';
+        if (!state.dirty) {
+          try { localStorage.removeItem(recoveryKey); } catch (_) { /* ignore */ }
+        } else {
+          scheduleAutosave();
+        }
+        renderSetupSummary();
+        return true;
+      } catch (err) {
+        setSaveState(err.message || 'Save failed', true);
+        renderSetupSummary();
+        return false;
+      } finally {
+        state.saving = false;
+        state.savePromise = null;
+      }
+    })();
+    return state.savePromise;
+  }
+
+  async function ensureSettingsSaved() {
+    clearTimeout(state.debounceTimer);
+    let saved = await saveSettings();
+    if (saved && state.dirty) saved = await saveSettings();
+    return !!saved && !state.dirty;
   }
 
   function stripHtml(html) {
     const d = document.createElement('div');
     d.innerHTML = html || '';
     return (d.textContent || '').trim();
+  }
+
+  function fmtPoints(value) {
+    const number = Number(value || 0);
+    return Number.isInteger(number) ? String(number) : String(Math.round(number * 100) / 100);
   }
 
   function renderValidation() {
@@ -180,6 +209,7 @@
     if (!errors.length && !warnings.length) {
       els.validation.className = 'ab-validation ab-validation--ok';
       els.validation.textContent = 'Ready to publish';
+      renderSetupSummary();
       return;
     }
     els.validation.className = 'ab-validation ' + (errors.length ? 'ab-validation--error' : 'ab-validation--warn');
@@ -194,6 +224,56 @@
       p.textContent = 'Warning: ' + msg;
       els.validation.appendChild(p);
     });
+    renderSetupSummary();
+  }
+
+  function renderSetupSummary() {
+    const questions = state.tree.questions || [];
+    const points = questions.reduce((sum, q) => sum + Number(q.points || 0), 0);
+    const questionMetric = root.querySelector('[data-ab-metric="questions"]');
+    const pointsMetric = root.querySelector('[data-ab-metric="points"]');
+    if (questionMetric) questionMetric.textContent = String(questions.length);
+    if (pointsMetric) pointsMetric.textContent = fmtPoints(points);
+
+    const settings = collectSettings();
+    const xpEnabled = !!Number(settings.xp_enabled || 0);
+    const xpAmount = Math.max(0, Number(settings.xp_amount || 0));
+    const rewardSummary = root.querySelector('[data-ab-reward-summary]');
+    if (rewardSummary) {
+      rewardSummary.textContent = xpEnabled && xpAmount > 0 ? ('+' + fmtPoints(xpAmount) + ' XP reward') : 'No XP reward';
+      rewardSummary.classList.toggle('is-active', xpEnabled && xpAmount > 0);
+    }
+
+    const note = root.querySelector('[data-ab-assessment-reward-note]');
+    if (note) note.hidden = settings.mode !== 'assessment';
+    const integritySettings = root.querySelector('[data-ab-integrity-settings]');
+    if (integritySettings) integritySettings.classList.toggle('is-relevant', settings.mode === 'assessment');
+
+    const rewardPreview = root.querySelector('[data-ab-reward-preview]');
+    if (rewardPreview) {
+      rewardPreview.classList.toggle('is-active', xpEnabled && xpAmount > 0);
+      const strong = rewardPreview.querySelector('strong');
+      const copy = rewardPreview.querySelector('span:last-child');
+      if (strong) strong.textContent = xpEnabled && xpAmount > 0 ? ('+' + fmtPoints(xpAmount) + ' XP on completion') : 'Motivate completion';
+      if (copy) copy.textContent = settings.mode === 'assessment' && xpEnabled
+        ? 'Awarded after the teacher releases the result.'
+        : (xpEnabled ? 'Students see this reward before they begin.' : 'Turn on XP to add a visible completion reward.');
+    }
+
+    const strip = root.querySelector('[data-ab-setup-strip]');
+    const message = root.querySelector('[data-ab-setup-message]');
+    const errors = state.validation?.errors || [];
+    const warnings = state.validation?.warnings || [];
+    strip?.classList.toggle('has-errors', errors.length > 0);
+    strip?.classList.toggle('has-warnings', errors.length === 0 && warnings.length > 0);
+    strip?.classList.toggle('is-ready', !state.dirty && questions.length > 0 && errors.length === 0);
+    if (message) {
+      if (state.dirty) message.textContent = 'Saving changes before the next readiness check.';
+      else if (errors.length) message.textContent = errors.length + (errors.length === 1 ? ' issue blocks' : ' issues block') + ' publishing.';
+      else if (warnings.length) message.textContent = warnings.length + (warnings.length === 1 ? ' setting deserves' : ' settings deserve') + ' a quick review.';
+      else if (!questions.length) message.textContent = 'Add your first question to begin.';
+      else message.textContent = 'Ready to preview and publish.';
+    }
   }
 
   function renderStructure() {
@@ -792,6 +872,7 @@
   function renderAll() {
     renderStructure();
     renderValidation();
+    renderSetupSummary();
     if (state.selectedQuestionId) renderEditor();
   }
 
@@ -799,6 +880,22 @@
   root.querySelectorAll('[data-ab-setting],[data-ab-setting-bool],[data-ab-setting-minutes]').forEach(el => {
     el.addEventListener('change', markDirty);
     el.addEventListener('input', markDirty);
+  });
+
+  const xpToggle = root.querySelector('[data-ab-setting-bool="xp_enabled"]');
+  const leaderboardToggle = root.querySelector('[data-ab-setting-bool="leaderboard_enabled"]');
+  const xpAmountInput = root.querySelector('[data-ab-setting="xp_amount"]');
+  leaderboardToggle?.addEventListener('change', () => {
+    if (leaderboardToggle.checked && xpToggle && !xpToggle.checked) {
+      xpToggle.checked = true;
+      if (xpAmountInput && Number(xpAmountInput.value || 0) <= 0) xpAmountInput.value = '25';
+    }
+    renderSetupSummary();
+  });
+  xpToggle?.addEventListener('change', () => {
+    if (!xpToggle.checked && leaderboardToggle) leaderboardToggle.checked = false;
+    if (xpToggle.checked && xpAmountInput && Number(xpAmountInput.value || 0) <= 0) xpAmountInput.value = '25';
+    renderSetupSummary();
   });
 
   // Actions
@@ -814,12 +911,13 @@
         await api('add_section', { title });
         renderAll();
       } else if (action === 'validate') {
+        if (!await ensureSettingsSaved()) throw new Error('Save failed. Fix the highlighted settings before checking readiness.');
         const data = await api('validate', {});
         state.validation = data.validation || state.validation;
         renderValidation();
         setSaveState('Validation updated');
       } else if (action === 'publish') {
-        await saveSettings();
+        if (!await ensureSettingsSaved()) throw new Error('Your latest settings could not be saved, so publishing was stopped.');
         const data = await api('publish', {});
         if (data.validation?.errors?.length) {
           state.validation = data.validation;
@@ -833,6 +931,7 @@
         await api('unpublish', {});
         location.reload();
       } else if (action === 'preview') {
+        if (!await ensureSettingsSaved()) throw new Error('Save the latest settings before opening the preview.');
         const data = await api('preview_payload', {});
         openPreview(data);
       } else if (action === 'export-json') {

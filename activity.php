@@ -340,6 +340,13 @@ if (!function_exists('portal_activity_run_migrations')) {
                 integrity_summary_json TEXT NOT NULL DEFAULT '{}',
                 overall_feedback_html TEXT NOT NULL DEFAULT '',
                 integrity_ack TEXT NOT NULL DEFAULT '',
+                end_reason TEXT NOT NULL DEFAULT '',
+                resume_allowed INTEGER NOT NULL DEFAULT 0,
+                reopened_at TEXT NOT NULL DEFAULT '',
+                reopened_by INTEGER,
+                reopen_count INTEGER NOT NULL DEFAULT 0,
+                reopen_note TEXT NOT NULL DEFAULT '',
+                grade_seen_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(activity_id, user_id, attempt_number)
@@ -530,9 +537,43 @@ if (!function_exists('portal_activity_run_migrations')) {
             $db->exec($sql);
         }
 
+        portal_activity_migrate_attempt_lifecycle_columns($db);
         portal_activity_migrate_folder_item_type($db);
         portal_activity_seed_badges($db);
         portal_activity_seed_templates($db);
+    }
+}
+
+if (!function_exists('portal_activity_migrate_attempt_lifecycle_columns')) {
+    function portal_activity_migrate_attempt_lifecycle_columns(PDO $db): void
+    {
+        $columns = array_column(
+            $db->query('PRAGMA table_info(activity_attempts)')->fetchAll(PDO::FETCH_ASSOC),
+            'name'
+        );
+        $additions = [
+            'end_reason' => "TEXT NOT NULL DEFAULT ''",
+            'resume_allowed' => 'INTEGER NOT NULL DEFAULT 0',
+            'reopened_at' => "TEXT NOT NULL DEFAULT ''",
+            'reopened_by' => 'INTEGER',
+            'reopen_count' => 'INTEGER NOT NULL DEFAULT 0',
+            'reopen_note' => "TEXT NOT NULL DEFAULT ''",
+            'grade_seen_at' => "TEXT NOT NULL DEFAULT ''",
+        ];
+        foreach ($additions as $name => $definition) {
+            if (!in_array($name, $columns, true)) {
+                $db->exec('ALTER TABLE activity_attempts ADD COLUMN ' . $name . ' ' . $definition);
+                if ($name === 'grade_seen_at') {
+                    // Existing released grades predate unread tracking and
+                    // should not suddenly appear as a large unread backlog.
+                    $db->exec(
+                        "UPDATE activity_attempts
+                         SET grade_seen_at = COALESCE(NULLIF(updated_at, ''), datetime('now'))
+                         WHERE status = 'released'"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1195,6 +1236,25 @@ if (!function_exists('portal_activity_save_settings')) {
             if (in_array($key, ['pass_mark', 'grade_weight'], true)) {
                 $value = $value === null || $value === '' ? null : (float) $value;
             }
+            if (in_array($key, ['estimated_minutes', 'time_limit_seconds', 'max_attempts', 'questions_per_attempt', 'xp_amount'], true) && $value < 0) {
+                return ['ok' => false, 'error' => ucfirst(str_replace('_', ' ', $key)) . ' cannot be negative.', 'revision' => $current];
+            }
+            if ($key === 'xp_amount' && $value > 1000) {
+                return ['ok' => false, 'error' => 'XP reward cannot exceed 1000.', 'revision' => $current];
+            }
+            if (in_array($key, ['pass_mark', 'grade_weight'], true) && $value !== null && ($value < 0 || $value > 100)) {
+                return ['ok' => false, 'error' => ucfirst(str_replace('_', ' ', $key)) . ' must be between 0 and 100.', 'revision' => $current];
+            }
+            $allowedValues = [
+                'feedback_policy' => ['after_each', 'after_submission', 'after_close', 'when_released', 'never'],
+                'navigation_policy' => ['free', 'sequential', 'no_return'],
+                'paste_policy' => ['allow', 'allow_log', 'block_log'],
+                'copy_policy' => ['allow', 'log', 'block_log'],
+                'fullscreen_policy' => ['off', 'optional', 'required'],
+            ];
+            if (isset($allowedValues[$key]) && !in_array($value, $allowedValues[$key], true)) {
+                return ['ok' => false, 'error' => 'Invalid ' . str_replace('_', ' ', $key) . '.', 'revision' => $current];
+            }
             $updates[] = "$key = ?";
             $params[] = $value;
         }
@@ -1342,6 +1402,30 @@ if (!function_exists('portal_activity_validate_for_publish')) {
 
         if ($activity['mode'] === 'assessment' && (int) ($activity['max_attempts'] ?? 0) === 0) {
             $warnings[] = 'Assessment has unlimited attempts.';
+        }
+
+        if ($activity['mode'] === 'assessment' && empty($activity['integrity_enabled'])) {
+            $warnings[] = 'Integrity monitoring is off for this assessment.';
+        }
+
+        $opensAt = portal_db_timestamp((string) ($activity['opens_at'] ?? ''));
+        $closesAt = portal_db_timestamp((string) ($activity['closes_at'] ?? ''));
+        $dueAt = portal_db_timestamp((string) ($activity['due_at'] ?? ''));
+        if ($opensAt && $closesAt && $closesAt <= $opensAt) {
+            $errors[] = 'The closing time must be after the opening time.';
+        }
+        if ($opensAt && $dueAt && $dueAt < $opensAt) {
+            $errors[] = 'The due time cannot be before the activity opens.';
+        }
+        if ($closesAt && $dueAt && $dueAt > $closesAt) {
+            $warnings[] = 'The due time is after the activity closes.';
+        }
+
+        if (!empty($activity['xp_enabled']) && (int) ($activity['xp_amount'] ?? 0) <= 0) {
+            $warnings[] = 'XP rewards are enabled but the reward amount is zero.';
+        }
+        if (!empty($activity['leaderboard_enabled']) && empty($activity['xp_enabled'])) {
+            $warnings[] = 'The leaderboard is enabled, but this activity does not award XP.';
         }
 
         return ['errors' => array_values(array_unique($errors)), 'warnings' => array_values(array_unique($warnings))];
@@ -3332,6 +3416,40 @@ if (!function_exists('portal_activity_verify_attempt_token')) {
     }
 }
 
+if (!function_exists('portal_activity_attempt_end_reason_meta')) {
+    /** @return array{label:string,description:string,class:string} */
+    function portal_activity_attempt_end_reason_meta(string $reason): array
+    {
+        return match ($reason) {
+            'submitted' => [
+                'label' => 'Submitted normally',
+                'description' => 'The student used the submit action.',
+                'class' => 'normal',
+            ],
+            'time_expired' => [
+                'label' => 'Time limit expired',
+                'description' => 'The assessment was submitted when its timer reached zero.',
+                'class' => 'timer',
+            ],
+            'connection_lost' => [
+                'label' => 'Connection grace period expired',
+                'description' => 'The student stayed offline beyond the recovery window.',
+                'class' => 'connection',
+            ],
+            'page_left' => [
+                'label' => 'Assessment page was left',
+                'description' => 'The student navigated away, refreshed, or closed the assessment.',
+                'class' => 'left',
+            ],
+            default => [
+                'label' => $reason !== '' ? ucfirst(str_replace('_', ' ', $reason)) : 'Not recorded',
+                'description' => $reason !== '' ? 'The attempt ended automatically.' : 'This older attempt has no recorded end reason.',
+                'class' => 'unknown',
+            ],
+        };
+    }
+}
+
 if (!function_exists('portal_activity_expire_if_needed')) {
     function portal_activity_expire_if_needed(array $attempt): array
     {
@@ -3350,7 +3468,8 @@ if (!function_exists('portal_activity_expire_if_needed')) {
         $db = portal_db();
         $db->prepare(
             "UPDATE activity_attempts
-             SET status = 'auto_submitted', submitted_at = datetime('now'), updated_at = datetime('now')
+             SET status = 'auto_submitted', submitted_at = datetime('now'),
+                 end_reason = 'time_expired', resume_allowed = 0, updated_at = datetime('now')
              WHERE id = ? AND status = 'in_progress'"
         )->execute([(int) $attempt['id']]);
 
@@ -3359,6 +3478,56 @@ if (!function_exists('portal_activity_expire_if_needed')) {
         $stmt = $db->prepare('SELECT * FROM activity_attempts WHERE id = ?');
         $stmt->execute([(int) $attempt['id']]);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: $attempt;
+    }
+}
+
+if (!function_exists('portal_activity_end_assessment_attempt')) {
+    /** End a formal assessment when its one-sitting player is left. */
+    function portal_activity_end_assessment_attempt(int $attemptId, int $userId, string $reason = 'page_left'): array
+    {
+        $db = portal_db();
+        $stmt = $db->prepare('SELECT * FROM activity_attempts WHERE id = ? AND user_id = ?');
+        $stmt->execute([$attemptId, $userId]);
+        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$attempt) {
+            return ['ok' => false, 'error' => 'Attempt not found.'];
+        }
+
+        $activity = portal_activity_find((int) $attempt['activity_id']);
+        if ($activity === null || ($activity['mode'] ?? '') !== 'assessment') {
+            return ['ok' => false, 'error' => 'Only assessments end when the page is left.'];
+        }
+        if (($attempt['status'] ?? '') !== 'in_progress') {
+            return ['ok' => true, 'attempt' => $attempt, 'already_ended' => true];
+        }
+
+        $allowedReasons = ['page_left', 'connection_lost'];
+        $reason = in_array($reason, $allowedReasons, true) ? $reason : 'page_left';
+        $db->prepare(
+            "UPDATE activity_attempts
+             SET status = 'auto_submitted', submitted_at = datetime('now'),
+                 end_reason = ?, resume_allowed = 0, updated_at = datetime('now')
+             WHERE id = ? AND user_id = ? AND status = 'in_progress'"
+        )->execute([$reason, $attemptId, $userId]);
+
+        portal_activity_record_integrity_event(
+            $attemptId,
+            $userId,
+            'assessment_left',
+            'assessment-left-' . $attemptId,
+            null,
+            'source_not_available',
+            ['reason' => $reason]
+        );
+        portal_activity_score_attempt($attemptId);
+
+        $fresh = $db->prepare('SELECT * FROM activity_attempts WHERE id = ?');
+        $fresh->execute([$attemptId]);
+        return [
+            'ok' => true,
+            'attempt' => $fresh->fetch(PDO::FETCH_ASSOC) ?: $attempt,
+            'ended_on_leave' => true,
+        ];
     }
 }
 
@@ -3375,12 +3544,6 @@ if (!function_exists('portal_activity_start_attempt')) {
             return $can;
         }
 
-        if (($activity['mode'] ?? '') === 'assessment' && !empty($activity['integrity_enabled'])) {
-            if (trim($integrityAck) === '') {
-                return ['ok' => false, 'error' => 'Please acknowledge the integrity notice before starting.'];
-            }
-        }
-
         $db = portal_db();
         $resume = $db->prepare(
             "SELECT * FROM activity_attempts
@@ -3392,6 +3555,19 @@ if (!function_exists('portal_activity_start_attempt')) {
         if ($existing) {
             $existing = portal_activity_expire_if_needed($existing);
             if (($existing['status'] ?? '') === 'in_progress') {
+                if (($activity['mode'] ?? '') === 'assessment') {
+                    if (empty($existing['resume_allowed'])) {
+                        portal_activity_end_assessment_attempt((int) $existing['id'], $userId, 'page_left');
+                        return [
+                            'ok' => false,
+                            'ended' => true,
+                            'error' => 'This assessment ended when you left it. Return to the activity page to view the result or begin another attempt.',
+                        ];
+                    }
+                    $db->prepare(
+                        "UPDATE activity_attempts SET resume_allowed = 0, updated_at = datetime('now') WHERE id = ?"
+                    )->execute([(int) $existing['id']]);
+                }
                 // Issue a fresh token for resume (hash updated).
                 $token = bin2hex(random_bytes(32));
                 $db->prepare(
@@ -3401,6 +3577,14 @@ if (!function_exists('portal_activity_start_attempt')) {
                 $payload['token'] = $token;
                 $payload['resumed'] = true;
                 return $payload;
+            }
+        }
+
+        // The notice is acknowledged once, before a new monitored attempt.
+        // Resuming an existing attempt must not ask the student again.
+        if (($activity['mode'] ?? '') === 'assessment' && !empty($activity['integrity_enabled'])) {
+            if (trim($integrityAck) === '') {
+                return ['ok' => false, 'error' => 'Please acknowledge the integrity notice before starting.'];
             }
         }
 
@@ -3856,16 +4040,21 @@ if (!function_exists('portal_activity_submit_attempt')) {
 
         $db->prepare(
             "UPDATE activity_attempts
-             SET status = 'submitted', submitted_at = datetime('now'), updated_at = datetime('now')
+             SET status = 'submitted', submitted_at = datetime('now'),
+                 end_reason = 'submitted', resume_allowed = 0, updated_at = datetime('now')
              WHERE id = ? AND status = 'in_progress'"
         )->execute([$attemptId]);
 
         portal_activity_score_attempt($attemptId);
 
         $activity = portal_activity_find((int) $attempt['activity_id']);
-        $gamification = ['xp' => 0, 'badges' => []];
-        if ($activity) {
+        $gamification = ['xp' => 0, 'badges' => [], 'pending_review' => false];
+        if ($activity && ($activity['mode'] ?? '') !== 'assessment') {
             $gamification = portal_activity_award_badges_after_attempt($userId, $activity, $attemptId);
+        } elseif ($activity && ($activity['mode'] ?? '') === 'assessment' && !empty($activity['xp_enabled'])) {
+            // Formal-assessment rewards are deferred until staff release the result.
+            // This prevents an integrity-flagged or invalidated attempt from granting XP.
+            $gamification['pending_review'] = true;
         }
 
         $fresh = $db->prepare('SELECT * FROM activity_attempts WHERE id = ?');
@@ -3926,6 +4115,78 @@ if (!function_exists('portal_activity_integrity_summary_label')) {
     }
 }
 
+if (!function_exists('portal_activity_integrity_event_severity')) {
+    /**
+     * Classify a recorded event for teacher triage. This is deliberately
+     * evidence-neutral: a signal requests review; it does not prove misconduct.
+     *
+     * @param array<string, mixed>|string $event
+     */
+    function portal_activity_integrity_event_severity(array|string $event): string
+    {
+        $type = is_array($event) ? (string) ($event['event_type'] ?? '') : $event;
+        $source = is_array($event) ? (string) ($event['source_classification'] ?? '') : '';
+
+        if (in_array($type, ['window_focus', 'connection_restored', 'assessment_left', 'attempt_reopened'], true)) {
+            return 'info';
+        }
+        if (in_array($type, ['paste_attempt', 'paste_allowed'], true) && $source === 'likely_internal_portal') {
+            return 'info';
+        }
+        if (in_array($type, [
+            'paste_attempt', 'paste_allowed', 'paste_blocked', 'copy_attempt', 'cut_attempt',
+            'fullscreen_exit', 'multiple_tab_detected', 'unusual_answer_burst',
+        ], true)) {
+            return 'high';
+        }
+        return 'review';
+    }
+}
+
+if (!function_exists('portal_activity_integrity_review_state')) {
+    /**
+     * @param list<array<string, mixed>> $events
+     * @return array{level:string,label:string,total_count:int,flagged_count:int,high_count:int,message:string}
+     */
+    function portal_activity_integrity_review_state(array $events): array
+    {
+        $flagged = 0;
+        $high = 0;
+        foreach ($events as $event) {
+            $severity = portal_activity_integrity_event_severity($event);
+            if ($severity === 'info') {
+                continue;
+            }
+            $flagged++;
+            if ($severity === 'high') {
+                $high++;
+            }
+        }
+
+        if ($flagged === 0) {
+            return [
+                'level' => 'clear',
+                'label' => 'No integrity concerns recorded',
+                'total_count' => count($events),
+                'flagged_count' => 0,
+                'high_count' => 0,
+                'message' => 'No review-level signals were recorded for this attempt.',
+            ];
+        }
+
+        $level = $high > 0 ? 'high' : 'review';
+        return [
+            'level' => $level,
+            'label' => $level === 'high' ? 'Integrity checks flagged this attempt' : 'Integrity review needed',
+            'total_count' => count($events),
+            'flagged_count' => $flagged,
+            'high_count' => $high,
+            'message' => $flagged . ' review-level signal' . ($flagged === 1 ? '' : 's')
+                . ' recorded. Review the timeline before releasing this result.',
+        ];
+    }
+}
+
 if (!function_exists('portal_activity_integrity_event_label')) {
     /** Neutral wording for a single integrity event type. */
     function portal_activity_integrity_event_label(string $eventType): string
@@ -3944,6 +4205,8 @@ if (!function_exists('portal_activity_integrity_event_label')) {
             'connection_restored' => 'Connection was restored',
             'unusual_answer_burst' => 'Unusual answer timing was noted',
             'assessment_resumed' => 'Assessment was resumed after interruption',
+            'assessment_left' => 'Assessment ended after the page was left',
+            'attempt_reopened' => 'Teacher reopened the assessment attempt',
             default => 'Integrity signal recorded',
         };
     }
@@ -4217,6 +4480,38 @@ if (!function_exists('portal_activity_award_badges_after_attempt')) {
 
         $result['badges'] = $newBadges;
         return $result;
+    }
+}
+
+if (!function_exists('portal_activity_course_leaderboard')) {
+    /**
+     * Privacy-friendly course XP leaderboard. Staff accounts are excluded.
+     *
+     * @return list<array{id:int,name:string,initials:string,xp:int}>
+     */
+    function portal_activity_course_leaderboard(int $courseId, int $limit = 8): array
+    {
+        $limit = max(1, min(25, $limit));
+        $stmt = portal_db()->prepare(
+            "SELECT u.id, u.name, u.initials, COALESCE(SUM(g.xp_amount), 0) AS xp
+             FROM users u
+             JOIN gamification_events g ON g.user_id = u.id AND g.course_id = ?
+             WHERE u.role = 'student'
+             GROUP BY u.id, u.name, u.initials
+             HAVING SUM(g.xp_amount) > 0
+             ORDER BY xp DESC, u.name ASC
+             LIMIT ?"
+        );
+        $stmt->bindValue(1, $courseId, PDO::PARAM_INT);
+        $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return array_map(static fn(array $row): array => [
+            'id' => (int) $row['id'],
+            'name' => (string) $row['name'],
+            'initials' => (string) $row['initials'],
+            'xp' => (int) $row['xp'],
+        ], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     }
 }
 
@@ -4504,7 +4799,16 @@ if (!function_exists('portal_activity_results_summary')) {
                     AVG(percentage) AS avg_percentage,
                     MAX(percentage) AS max_percentage,
                     MIN(percentage) AS min_percentage,
-                    SUM(CASE WHEN status IN ('awaiting_manual_marking') THEN 1 ELSE 0 END) AS awaiting_marking
+                    SUM(CASE WHEN status IN ('awaiting_manual_marking') THEN 1 ELSE 0 END) AS awaiting_marking,
+                    SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM activity_integrity_events e
+                        WHERE e.attempt_id = activity_attempts.id
+                          AND e.event_type NOT IN ('window_focus','connection_restored')
+                          AND NOT (
+                              e.event_type IN ('paste_attempt','paste_allowed')
+                              AND e.source_classification = 'likely_internal_portal'
+                          )
+                    ) THEN 1 ELSE 0 END) AS integrity_flagged
              FROM activity_attempts
              WHERE activity_id = ?
                AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')"
@@ -4519,6 +4823,7 @@ if (!function_exists('portal_activity_results_summary')) {
             'max_percentage' => $row['max_percentage'] !== null ? round((float) $row['max_percentage'], 2) : null,
             'min_percentage' => $row['min_percentage'] !== null ? round((float) $row['min_percentage'], 2) : null,
             'awaiting_marking' => (int) ($row['awaiting_marking'] ?? 0),
+            'integrity_flagged' => (int) ($row['integrity_flagged'] ?? 0),
         ];
     }
 }
@@ -4574,10 +4879,10 @@ if (!function_exists('portal_activity_gradebook_rows')) {
              FROM course_activities a
              JOIN activity_attempts t ON t.activity_id = a.id AND t.user_id = ?
              WHERE a.course_id = ?
-               AND a.include_in_gradebook = 1
+               AND (a.include_in_gradebook = 1 OR t.status = 'released')
                AND a.status = 'published'
                AND a.feedback_policy != 'never'
-               AND t.status IN ('marked','released','awaiting_manual_marking')
+               AND t.status = 'released'
              ORDER BY t.submitted_at DESC, t.id DESC"
         );
         $stmt->execute([$userId, $courseId]);

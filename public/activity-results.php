@@ -139,6 +139,7 @@ function portal_ar_load_attempt_detail(int $attemptId, int $activityId): ?array
             }
         }
         $ev['label'] = $label;
+        $ev['severity'] = portal_activity_integrity_event_severity($ev);
         unset($ev['event_metadata_json']);
     }
     unset($ev);
@@ -229,6 +230,13 @@ function portal_ar_load_attempt_detail(int $attemptId, int $activityId): ?array
         $rubrics[(int) $q['id']] = $rubric;
     }
 
+    $endReason = (string) ($attempt['end_reason'] ?? '');
+    $endReasonMeta = portal_activity_attempt_end_reason_meta($endReason);
+    $canReopen = ($activity['mode'] ?? '') === 'assessment'
+        && in_array($endReason, ['page_left', 'connection_lost'], true)
+        && empty($activity['results_released'])
+        && in_array((string) ($attempt['status'] ?? ''), ['submitted', 'auto_submitted', 'awaiting_manual_marking', 'marked'], true);
+
     return [
         'attempt' => [
             'id' => (int) $attempt['id'],
@@ -243,6 +251,14 @@ function portal_ar_load_attempt_detail(int $attemptId, int $activityId): ?array
             'maximum_score' => $attempt['maximum_score'],
             'percentage' => $attempt['percentage'],
             'overall_feedback_html' => $attempt['overall_feedback_html'],
+            'end_reason' => $endReason,
+            'end_reason_label' => $endReasonMeta['label'],
+            'end_reason_description' => $endReasonMeta['description'],
+            'end_reason_class' => $endReasonMeta['class'],
+            'reopened_at' => (string) ($attempt['reopened_at'] ?? ''),
+            'reopen_count' => (int) ($attempt['reopen_count'] ?? 0),
+            'reopen_note' => (string) ($attempt['reopen_note'] ?? ''),
+            'can_reopen' => $canReopen,
         ],
         'activity' => [
             'id' => $activityId,
@@ -259,6 +275,7 @@ function portal_ar_load_attempt_detail(int $attemptId, int $activityId): ?array
         ],
         'integrity_events' => $events,
         'integrity_summary' => portal_activity_integrity_summary_label($events),
+        'integrity_review' => portal_activity_integrity_review_state($events),
         'rubrics' => $rubrics,
         'accommodation' => portal_activity_get_accommodation($activityId, (int) $attempt['user_id']),
     ];
@@ -417,8 +434,9 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
 
             $db->prepare(
                 "UPDATE activity_attempts
-                 SET status = 'marked', overall_feedback_html = ?, updated_at = datetime('now')
-                 WHERE id = ? AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked')"
+                 SET status = CASE WHEN status = 'released' THEN 'released' ELSE 'marked' END,
+                     overall_feedback_html = ?, updated_at = datetime('now')
+                 WHERE id = ? AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')"
             )->execute([$overall, $attemptId]);
 
             portal_activity_audit($activityId, 'marking_completed', ['attempt_id' => $attemptId]);
@@ -450,10 +468,25 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                 )->execute([$activityId]);
                 $db->prepare(
                     "UPDATE activity_attempts
-                     SET status = 'released', updated_at = datetime('now')
+                     SET status = 'released', grade_seen_at = '', updated_at = datetime('now')
                      WHERE activity_id = ?
                        AND status IN ('submitted','auto_submitted','marked')"
                 )->execute([$activityId]);
+                $activityForRewards = portal_activity_find($activityId);
+                if ($activityForRewards && ($activityForRewards['mode'] ?? '') === 'assessment') {
+                    $releasedStmt = $db->prepare(
+                        "SELECT id, user_id FROM activity_attempts
+                         WHERE activity_id = ? AND status = 'released'"
+                    );
+                    $releasedStmt->execute([$activityId]);
+                    foreach ($releasedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $releasedAttempt) {
+                        portal_activity_award_badges_after_attempt(
+                            (int) $releasedAttempt['user_id'],
+                            $activityForRewards,
+                            (int) $releasedAttempt['id']
+                        );
+                    }
+                }
                 portal_activity_audit($activityId, 'results_released_all');
             } else {
                 $chk = $db->prepare('SELECT id, status FROM activity_attempts WHERE id = ? AND activity_id = ?');
@@ -469,8 +502,18 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                     );
                 }
                 $db->prepare(
-                    "UPDATE activity_attempts SET status = 'released', updated_at = datetime('now') WHERE id = ?"
+                    "UPDATE activity_attempts SET status = 'released', grade_seen_at = '', updated_at = datetime('now') WHERE id = ?"
                 )->execute([$attemptId]);
+                $activityForRewards = portal_activity_find($activityId);
+                if ($activityForRewards && ($activityForRewards['mode'] ?? '') === 'assessment') {
+                    $rewardUser = $db->prepare('SELECT user_id FROM activity_attempts WHERE id = ?');
+                    $rewardUser->execute([$attemptId]);
+                    portal_activity_award_badges_after_attempt(
+                        (int) $rewardUser->fetchColumn(),
+                        $activityForRewards,
+                        $attemptId
+                    );
+                }
                 portal_activity_audit($activityId, 'results_released', ['attempt_id' => $attemptId]);
             }
 
@@ -494,9 +537,91 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                  SET status = 'invalidated', overall_feedback_html = ?, updated_at = datetime('now')
                  WHERE id = ?"
             )->execute([$reason !== '' ? portal_escape($reason) : 'Attempt invalidated by staff.', $attemptId]);
+            $db->prepare('DELETE FROM gamification_events WHERE attempt_id = ?')->execute([$attemptId]);
             portal_activity_audit($activityId, 'attempt_invalidated', [
                 'attempt_id' => $attemptId,
                 'reason' => $reason,
+            ]);
+            portal_activity_json_ok(['detail' => portal_ar_load_attempt_detail($attemptId, $activityId)]);
+        }
+
+        case 'reopen_attempt': {
+            $attemptId = (int) ($payload['attempt_id'] ?? 0);
+            $note = substr(trim((string) ($payload['note'] ?? '')), 0, 500);
+            $chk = $db->prepare(
+                'SELECT id, user_id, attempt_number, status, end_reason
+                 FROM activity_attempts WHERE id = ? AND activity_id = ?'
+            );
+            $chk->execute([$attemptId, $activityId]);
+            $row = $chk->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                portal_activity_json_error('Attempt not found.', 404);
+            }
+            if (($activity['mode'] ?? '') !== 'assessment'
+                || !in_array((string) ($row['end_reason'] ?? ''), ['page_left', 'connection_lost'], true)
+                || !in_array((string) ($row['status'] ?? ''), ['submitted', 'auto_submitted', 'awaiting_manual_marking', 'marked'], true)) {
+                portal_activity_json_error('Only an assessment ended by leaving or connection loss can be reopened.');
+            }
+            if (!empty($activity['results_released'])) {
+                portal_activity_json_error('This attempt cannot be reopened after results have been released.');
+            }
+
+            $newer = $db->prepare(
+                'SELECT COUNT(*) FROM activity_attempts
+                 WHERE activity_id = ? AND user_id = ? AND attempt_number > ?'
+            );
+            $newer->execute([$activityId, (int) $row['user_id'], (int) $row['attempt_number']]);
+            if ((int) $newer->fetchColumn() > 0) {
+                portal_activity_json_error('This attempt cannot be reopened because the student has already started a newer attempt.');
+            }
+            $active = $db->prepare(
+                "SELECT COUNT(*) FROM activity_attempts
+                 WHERE activity_id = ? AND user_id = ? AND id <> ? AND status = 'in_progress'"
+            );
+            $active->execute([$activityId, (int) $row['user_id'], $attemptId]);
+            if ((int) $active->fetchColumn() > 0) {
+                portal_activity_json_error('This attempt cannot be reopened while the student has another active attempt.');
+            }
+
+            $db->beginTransaction();
+            try {
+                $db->prepare(
+                    "UPDATE activity_attempts
+                     SET status = 'in_progress', submitted_at = '', score = NULL,
+                         maximum_score = NULL, percentage = NULL, end_reason = '',
+                         resume_allowed = 1, session_token_hash = '', reopened_at = datetime('now'),
+                         reopened_by = ?, reopen_count = reopen_count + 1, reopen_note = ?,
+                         overall_feedback_html = '', updated_at = datetime('now')
+                     WHERE id = ?"
+                )->execute([$uid ?: null, $note, $attemptId]);
+                $db->prepare(
+                    "UPDATE activity_answers
+                     SET auto_score = NULL, manual_score = NULL, final_score = NULL,
+                         feedback_html = '', marked_by = NULL, marked_at = '', updated_at = datetime('now')
+                     WHERE attempt_id = ?"
+                )->execute([$attemptId]);
+                $db->prepare('DELETE FROM gamification_events WHERE attempt_id = ?')->execute([$attemptId]);
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                portal_activity_json_error('Could not reopen this attempt.');
+            }
+
+            portal_activity_record_integrity_event(
+                $attemptId,
+                (int) $row['user_id'],
+                'attempt_reopened',
+                'attempt-reopened-' . $attemptId . '-' . bin2hex(random_bytes(6)),
+                null,
+                'source_not_available',
+                ['reopened_by' => $uid]
+            );
+            portal_activity_audit($activityId, 'attempt_reopened', [
+                'attempt_id' => $attemptId,
+                'student_id' => (int) $row['user_id'],
+                'note' => $note,
             ]);
             portal_activity_json_ok(['detail' => portal_ar_load_attempt_detail($attemptId, $activityId)]);
         }
@@ -536,7 +661,14 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
         case 'export_csv': {
             $stmt = $db->prepare(
                 "SELECT u.name, u.email, t.attempt_number, t.status, t.score, t.maximum_score,
-                        t.percentage, t.started_at, t.submitted_at
+                        t.percentage, t.started_at, t.submitted_at,
+                        (SELECT COUNT(*) FROM activity_integrity_events ie
+                         WHERE ie.attempt_id = t.id
+                           AND ie.event_type NOT IN ('window_focus','connection_restored')
+                           AND NOT (
+                               ie.event_type IN ('paste_attempt','paste_allowed')
+                               AND ie.source_classification = 'likely_internal_portal'
+                           )) AS integrity_flags
                  FROM activity_attempts t
                  JOIN users u ON u.id = t.user_id
                  WHERE t.activity_id = ?
@@ -552,7 +684,7 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
             if ($out === false) {
                 portal_activity_json_error('Could not export.');
             }
-            fputcsv($out, ['Name', 'Email', 'Attempt', 'Status', 'Score', 'Maximum', 'Percentage', 'Started', 'Submitted']);
+            fputcsv($out, ['Name', 'Email', 'Attempt', 'Status', 'Score', 'Maximum', 'Percentage', 'Integrity flags', 'Started', 'Submitted']);
             foreach ($rows as $r) {
                 fputcsv($out, [
                     portal_activity_csv_safe((string) $r['name']),
@@ -562,6 +694,7 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                     $r['score'] ?? '',
                     $r['maximum_score'] ?? '',
                     $r['percentage'] ?? '',
+                    (int) ($r['integrity_flags'] ?? 0),
                     (string) $r['started_at'],
                     (string) $r['submitted_at'],
                 ]);
@@ -592,13 +725,32 @@ $statusFilter = (string) ($_GET['status'] ?? '');
 $q = trim((string) ($_GET['q'] ?? ''));
 
 $sql = "SELECT t.id, t.user_id, t.attempt_number, t.status, t.percentage, t.score,
-               t.maximum_score, t.started_at, t.submitted_at, t.updated_at,
+               t.maximum_score, t.started_at, t.submitted_at, t.updated_at, t.end_reason,
+               (SELECT COUNT(*) FROM activity_integrity_events ie
+                WHERE ie.attempt_id = t.id) AS integrity_event_count,
+               (SELECT COUNT(*) FROM activity_integrity_events ie
+                WHERE ie.attempt_id = t.id
+                  AND ie.event_type NOT IN ('window_focus','connection_restored')
+                  AND NOT (
+                      ie.event_type IN ('paste_attempt','paste_allowed')
+                      AND ie.source_classification = 'likely_internal_portal'
+                  )) AS integrity_flag_count,
                u.name AS student_name, u.initials AS student_initials
         FROM activity_attempts t
         JOIN users u ON u.id = t.user_id
         WHERE t.activity_id = ?";
 $params = [$activityId];
-if ($statusFilter !== '' && in_array($statusFilter, [
+if ($statusFilter === 'integrity_flagged') {
+    $sql .= " AND EXISTS (
+        SELECT 1 FROM activity_integrity_events ie
+        WHERE ie.attempt_id = t.id
+          AND ie.event_type NOT IN ('window_focus','connection_restored')
+          AND NOT (
+              ie.event_type IN ('paste_attempt','paste_allowed')
+              AND ie.source_classification = 'likely_internal_portal'
+          )
+    )";
+} elseif ($statusFilter !== '' && in_array($statusFilter, [
     'in_progress', 'submitted', 'auto_submitted', 'awaiting_manual_marking', 'marked', 'released', 'invalidated',
 ], true)) {
     $sql .= ' AND t.status = ?';
@@ -666,6 +818,9 @@ ob_start();
         <div class="activity-results-stat"><strong><?= (int) $summary['students'] ?></strong><span>Students</span></div>
         <div class="activity-results-stat"><strong><?= $summary['avg_percentage'] !== null ? portal_escape((string) $summary['avg_percentage']) . '%' : '—' ?></strong><span>Average</span></div>
         <div class="activity-results-stat"><strong><?= (int) $summary['awaiting_marking'] ?></strong><span>Awaiting marking</span></div>
+        <div class="activity-results-stat activity-results-stat--integrity<?= (int) ($summary['integrity_flagged'] ?? 0) > 0 ? ' has-flags' : '' ?>">
+            <strong><?= (int) ($summary['integrity_flagged'] ?? 0) ?></strong><span>Integrity flagged</span>
+        </div>
     </div>
 
     <div class="ar-layout">
@@ -682,6 +837,7 @@ ob_start();
                         <span class="visually-hidden">Status</span>
                         <select name="status">
                             <option value="">All statuses</option>
+                            <option value="integrity_flagged"<?= $statusFilter === 'integrity_flagged' ? ' selected' : '' ?>>Integrity flagged</option>
                             <?php foreach (['submitted','awaiting_manual_marking','marked','released','in_progress','invalidated','auto_submitted'] as $st): ?>
                                 <option value="<?= $st ?>"<?= $statusFilter === $st ? ' selected' : '' ?>><?= portal_escape(portal_ar_status_meta($st)['label']) ?></option>
                             <?php endforeach; ?>
@@ -718,6 +874,7 @@ ob_start();
                     <?php foreach ($attempts as $row):
                         $statusMeta = portal_ar_status_meta((string) $row['status']);
                         $initials = portal_ar_initials((string) $row['student_name']);
+                        $endReasonMeta = portal_activity_attempt_end_reason_meta((string) ($row['end_reason'] ?? ''));
                     ?>
                         <div class="ar-attempt-row<?= (int) $row['id'] === $selectedAttemptId ? ' is-selected' : '' ?>"
                              data-ar-attempt-row="<?= (int) $row['id'] ?>"
@@ -731,13 +888,27 @@ ob_start();
                                     data-ar-attempt="<?= (int) $row['id'] ?>">
                                 <span class="ar-attempt-avatar" aria-hidden="true"><?= portal_escape($initials) ?></span>
                                 <span class="ar-attempt-info">
-                                    <strong><?= portal_escape((string) $row['student_name']) ?></strong>
+                                    <span class="ar-attempt-title-row">
+                                        <strong><?= portal_escape((string) $row['student_name']) ?></strong>
+                                        <span class="ar-attempt-score"><?= $row['percentage'] !== null ? portal_escape((string) round((float) $row['percentage'], 1)) . '%' : '—' ?></span>
+                                    </span>
                                     <span class="ar-attempt-meta">
                                         <span class="ar-attempt-pill ar-attempt-pill--<?= $statusMeta['class'] ?>"><?= portal_escape($statusMeta['label']) ?></span>
                                         <span class="ar-attempt-num">Attempt <?= (int) $row['attempt_number'] ?></span>
                                     </span>
+                                    <?php if ((int) ($row['integrity_flag_count'] ?? 0) > 0): ?>
+                                        <span class="ar-attempt-integrity">
+                                            <span class="ar-attempt-pill ar-attempt-pill--integrity" title="Review integrity signals before releasing this result">
+                                                Integrity flagged · <?= (int) $row['integrity_flag_count'] ?>
+                                            </span>
+                                        </span>
+                                    <?php endif; ?>
+                                    <?php if (in_array((string) ($row['end_reason'] ?? ''), ['page_left', 'connection_lost', 'time_expired'], true)): ?>
+                                        <span class="ar-attempt-end ar-attempt-end--<?= portal_escape((string) $endReasonMeta['class']) ?>">
+                                            <?= portal_escape((string) $endReasonMeta['label']) ?>
+                                        </span>
+                                    <?php endif; ?>
                                 </span>
-                                <span class="ar-attempt-score"><?= $row['percentage'] !== null ? portal_escape((string) round((float) $row['percentage'], 1)) . '%' : '—' ?></span>
                             </button>
                             <button type="button"
                                     class="ar-attempt-delete"
@@ -791,10 +962,32 @@ ob_start();
             </div>
         <?php endif; ?>
     </section>
+
+    <div class="ap-confirm ar-official-prompt" data-ar-reopen-prompt hidden role="presentation">
+        <div class="ap-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="ar-reopen-title" aria-describedby="ar-reopen-body">
+            <div class="ap-confirm-brand" aria-label="Rangoon International Education Online">
+                <img src="assets/rieo-crest.svg" alt="">
+                <span><strong>RIEO</strong><small>Assessment administration</small></span>
+            </div>
+            <div class="ap-confirm-icon" aria-hidden="true"><?= portal_icon('history', 'icon-sm') ?></div>
+            <h2 id="ar-reopen-title" class="ap-confirm-title">Reopen assessment attempt?</h2>
+            <p id="ar-reopen-body" class="ap-confirm-body">
+                The student will be permitted to return once and continue with their saved answers. This action is recorded in the assessment audit trail.
+            </p>
+            <label class="ar-prompt-field">
+                <span>Administrative note <small>Optional</small></span>
+                <textarea rows="3" maxlength="500" data-ar-reopen-note placeholder="For example: connection issue confirmed by teacher"></textarea>
+            </label>
+            <div class="ap-confirm-actions">
+                <button type="button" class="button button-secondary" data-ar-reopen-cancel>Keep attempt closed</button>
+                <button type="button" class="button" data-ar-reopen-confirm>Authorise reopening</button>
+            </div>
+        </div>
+    </div>
 </section>
 
 <script type="application/json" id="ar-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
-<script src="assets/activity-results.js?v=20260728i"></script>
+<script src="assets/activity-results.js?v=20260802h"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

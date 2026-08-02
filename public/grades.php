@@ -11,6 +11,13 @@ $me  = portal_current_user();
 $uid = (int) $me['id'];
 $isStaff = portal_is_course_staff() || portal_is_admin();
 
+// Opening Grades acknowledges newly released activity results for this user.
+$db->prepare(
+    "UPDATE activity_attempts
+     SET grade_seen_at = datetime('now')
+     WHERE user_id = ? AND status = 'released' AND grade_seen_at = ''"
+)->execute([$uid]);
+
 $toMark = [];
 $gradedByMe = [];
 $moduleStats = [];
@@ -44,6 +51,27 @@ if ($isStaff) {
         $stmt->execute($assignedIds);
         $toMark = $stmt->fetchAll();
 
+        $activityQueueStmt = $db->prepare(
+            "SELECT t.id, t.percentage AS score, t.updated_at AS marked_at, t.submitted_at, t.user_id,
+                    a.title AS slot_title, a.grade_weight AS submission_weight, a.id AS activity_id,
+                    c.slug, c.title AS course_title, c.code, c.accent,
+                    u.name AS student_name, u.initials AS student_initials,
+                    'activity' AS grade_source
+             FROM activity_attempts t
+             JOIN course_activities a ON a.id = t.activity_id
+             JOIN courses c ON c.id = t.course_id
+             JOIN users u ON u.id = t.user_id
+             WHERE t.course_id IN ($placeholders)
+               AND a.include_in_gradebook = 1
+               AND t.status = 'awaiting_manual_marking'
+             ORDER BY t.submitted_at ASC"
+        );
+        $activityQueueStmt->execute($assignedIds);
+        $toMark = array_merge($toMark, $activityQueueStmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+        usort($toMark, static fn(array $left, array $right): int =>
+            strcmp((string) ($left['submitted_at'] ?? ''), (string) ($right['submitted_at'] ?? ''))
+        );
+
         $stmt = $db->prepare(
             "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.user_id,
                     cfi.title AS slot_title, cfi.submission_weight,
@@ -61,6 +89,29 @@ if ($isStaff) {
         );
         $stmt->execute($assignedIds);
         $gradedByMe = $stmt->fetchAll();
+
+        $activityReturnedStmt = $db->prepare(
+            "SELECT t.id, t.percentage AS score, t.updated_at AS marked_at, t.submitted_at, t.user_id,
+                    a.title AS slot_title, a.grade_weight AS submission_weight, a.id AS activity_id,
+                    c.slug, c.title AS course_title, c.code, c.accent,
+                    u.name AS student_name, u.initials AS student_initials,
+                    'activity' AS grade_source
+             FROM activity_attempts t
+             JOIN course_activities a ON a.id = t.activity_id
+             JOIN courses c ON c.id = t.course_id
+             JOIN users u ON u.id = t.user_id
+             WHERE t.course_id IN ($placeholders)
+               AND t.status = 'released'
+               AND t.percentage IS NOT NULL
+             ORDER BY t.updated_at DESC
+             LIMIT 40"
+        );
+        $activityReturnedStmt->execute($assignedIds);
+        $gradedByMe = array_merge($gradedByMe, $activityReturnedStmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+        usort($gradedByMe, static fn(array $left, array $right): int =>
+            strcmp((string) ($right['marked_at'] ?? ''), (string) ($left['marked_at'] ?? ''))
+        );
+        $gradedByMe = array_slice($gradedByMe, 0, 40);
 
         $stmt = $db->prepare(
             "SELECT c.id, c.slug, c.title, c.code, c.accent,
@@ -80,6 +131,33 @@ if ($isStaff) {
         );
         $stmt->execute($assignedIds);
         $moduleStats = $stmt->fetchAll();
+
+        $activityStatsStmt = $db->prepare(
+            "SELECT t.course_id,
+                    COUNT(*) AS total_submissions,
+                    SUM(CASE WHEN t.status = 'awaiting_manual_marking' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN t.status = 'released' THEN 1 ELSE 0 END) AS marked_count
+             FROM activity_attempts t
+             JOIN course_activities a ON a.id = t.activity_id
+             WHERE t.course_id IN ($placeholders)
+               AND (a.include_in_gradebook = 1 OR t.status = 'released')
+               AND t.status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')
+             GROUP BY t.course_id"
+        );
+        $activityStatsStmt->execute($assignedIds);
+        $activityStats = [];
+        foreach ($activityStatsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $activityStat) {
+            $activityStats[(int) $activityStat['course_id']] = $activityStat;
+        }
+        foreach ($moduleStats as &$module) {
+            $activityStat = $activityStats[(int) $module['id']] ?? null;
+            if ($activityStat !== null) {
+                $module['total_submissions'] = (int) $module['total_submissions'] + (int) $activityStat['total_submissions'];
+                $module['pending_count'] = (int) $module['pending_count'] + (int) $activityStat['pending_count'];
+                $module['marked_count'] = (int) $module['marked_count'] + (int) $activityStat['marked_count'];
+            }
+        }
+        unset($module);
 
         $stmt = $db->prepare(
             "SELECT cs.course_id, cs.score, cs.marked_at, cfi.submission_weight
@@ -105,7 +183,7 @@ if ($isStaff) {
                  FROM course_activities a
                  JOIN activity_attempts t ON t.activity_id = a.id
                  WHERE a.course_id = ?
-                   AND a.include_in_gradebook = 1
+                   AND (a.include_in_gradebook = 1 OR t.status = 'released')
                    AND a.status = 'published'
                    AND t.status IN ('marked','released')
                    AND t.percentage IS NOT NULL"
@@ -277,8 +355,13 @@ ob_start();
                     <span role="columnheader">Waiting</span>
                 </div>
                 <?php foreach ($toMark as $row): ?>
+                    <?php
+                        $queueHref = (($row['grade_source'] ?? '') === 'activity')
+                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
+                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
+                    ?>
                     <a class="grades-work-row is-pending"
-                       href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">
+                       href="<?= portal_escape($queueHref) ?>">
                         <span class="grades-person">
                             <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
                             <span>
@@ -361,9 +444,14 @@ ob_start();
                     <span role="columnheader">Mark</span>
                 </div>
                 <?php foreach ($gradedByMe as $row): ?>
-                    <?php $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? '')); ?>
+                    <?php
+                        $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? ''));
+                        $returnedHref = (($row['grade_source'] ?? '') === 'activity')
+                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
+                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
+                    ?>
                     <a class="grades-work-row is-marked"
-                       href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=content&open_review=rvw-<?= (int) $row['id'] ?>">
+                       href="<?= portal_escape($returnedHref) ?>">
                         <span class="grades-person">
                             <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
                             <span>

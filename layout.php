@@ -52,6 +52,7 @@ if (portal_is_admin()) {
 }
 
 $navUnreadNotifCount = 0;
+$navUnreadGradeCount = 0;
 if (portal_is_logged_in()) {
     $navUid = (int) (portal_current_user()['id'] ?? 0);
     if ($navUid > 0) {
@@ -60,10 +61,16 @@ if (portal_is_logged_in()) {
         );
         $navNotifStmt->execute([$navUid]);
         $navUnreadNotifCount = (int) $navNotifStmt->fetchColumn();
+        $navGradeStmt = portal_db()->prepare(
+            "SELECT COUNT(*) FROM activity_attempts
+             WHERE user_id = ? AND status = 'released' AND grade_seen_at = ''"
+        );
+        $navGradeStmt->execute([$navUid]);
+        $navUnreadGradeCount = (int) $navGradeStmt->fetchColumn();
     }
 }
 
-$asset_version = '20260728i';
+$asset_version = '20260802j';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $customizationPrefs = portal_is_logged_in()
     ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))
@@ -85,9 +92,9 @@ if ($publicPos !== false) {
     $style_src = $appBase . '/style.css?v=' . $asset_version;
     $customization_src = $appBase . '/public/assets/portal-customization.css?v=' . $asset_version;
 } else {
-    // public/ is itself the web root (e.g. the standalone dev server setup) —
-    // the old relative reference is already correct there.
-    $style_src = '../style.css?v=' . $asset_version;
+    // When public/ itself is the web root the parent stylesheet cannot be
+    // requested directly, so a fixed-path endpoint serves that same file.
+    $style_src = 'style.php?v=' . $asset_version;
     $customization_src = 'assets/portal-customization.css?v=' . $asset_version;
 }
 ?>
@@ -160,12 +167,15 @@ if ($publicPos !== false) {
                             $isActive = $item['key'] === $active_page;
                             $navExtra = ($item['key'] === 'logout') ? ' nav-link--logout' : '';
                             $showNotifBadge = $item['key'] === 'notifications' && $navUnreadNotifCount > 0;
+                            $showGradeBadge = $item['key'] === 'grades' && $navUnreadGradeCount > 0;
                         ?>
-                        <a class="nav-link<?= $isActive ? ' active' : '' ?><?= $navExtra ?><?= $showNotifBadge ? ' has-unread' : '' ?>" href="<?= portal_escape($item['href']) ?>">
+                        <a class="nav-link<?= $isActive ? ' active' : '' ?><?= $navExtra ?><?= ($showNotifBadge || $showGradeBadge) ? ' has-unread' : '' ?>" href="<?= portal_escape($item['href']) ?>">
                             <?= portal_icon($item['icon'], 'nav-icon') ?>
                             <span><?= portal_escape($item['label']) ?></span>
                             <?php if ($showNotifBadge): ?>
                                 <span class="nav-count"><?= $navUnreadNotifCount > 99 ? '99+' : (int) $navUnreadNotifCount ?></span>
+                            <?php elseif ($showGradeBadge): ?>
+                                <span class="nav-count" aria-label="<?= (int) $navUnreadGradeCount ?> unread grade<?= $navUnreadGradeCount === 1 ? '' : 's' ?>"><?= $navUnreadGradeCount > 99 ? '99+' : (int) $navUnreadGradeCount ?></span>
                             <?php endif; ?>
                         </a>
                     <?php endforeach; ?>

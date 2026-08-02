@@ -22,12 +22,17 @@
   const state = {
     detail: boot.detail || null,
     attempts: boot.attempts || [],
+    summary: boot.summary || {},
   };
 
   const els = {
     list: root.querySelector('[data-ar-attempt-list]'),
     body: root.querySelector('[data-ar-detail-body]'),
     empty: root.querySelector('[data-ar-detail-empty]'),
+    reopenPrompt: root.querySelector('[data-ar-reopen-prompt]'),
+    reopenNote: root.querySelector('[data-ar-reopen-note]'),
+    reopenConfirm: root.querySelector('[data-ar-reopen-confirm]'),
+    reopenCancel: root.querySelector('[data-ar-reopen-cancel]'),
   };
 
   async function api(action, body, asForm) {
@@ -334,6 +339,9 @@
     const marking = d.marking || {};
     const pending = Number(marking.needs_marking || 0);
     const suggestions = Number(marking.suggestions_ready || 0);
+    const isInProgress = String(a.status || '') === 'in_progress';
+    const isMarked = ['marked', 'released'].includes(String(a.status || ''));
+    const isReleased = String(a.status || '') === 'released';
 
     let html = '';
     html += '<header class="ar-detail-head">';
@@ -350,7 +358,40 @@
       (a.maximum_score != null ? fmtPoints(a.maximum_score) : '—') + '</span>';
     html += '</div></header>';
 
-    if (pending > 0) {
+    if (a.end_reason && a.end_reason !== 'submitted') {
+      const endReasonIcon = a.end_reason === 'time_expired'
+        ? '⏱'
+        : (a.end_reason === 'page_left' ? '↗' : '!');
+      html += '<section class="ar-end-reason ar-end-reason--' + escapeAttr(a.end_reason_class || 'neutral') + '" role="status">';
+      html += '<span class="ar-end-reason-icon" aria-hidden="true">' + endReasonIcon + '</span><div>';
+      html += '<strong>' + escapeHtml(a.end_reason_label || 'Attempt ended') + '</strong>';
+      html += '<p>' + escapeHtml(a.end_reason_description || 'This attempt has ended.') + '</p></div>';
+      if (a.can_reopen) {
+        html += '<button type="button" class="ar-btn ar-btn--primary" data-ar-action="reopen-attempt">Reopen attempt</button>';
+      }
+      html += '</section>';
+    } else if (isInProgress && Number(a.reopen_count || 0) > 0) {
+      html += '<section class="ar-reopened-banner" role="status"><span aria-hidden="true">↻</span><div>';
+      html += '<strong>Attempt reopened</strong><p>The student can return once and continue this assessment.';
+      if (a.reopen_note) html += ' Note: ' + escapeHtml(a.reopen_note);
+      html += '</p></div></section>';
+    }
+
+    const integrity = d.integrity_review || { level: 'clear', flagged_count: 0 };
+    if (Number(integrity.flagged_count || 0) > 0) {
+      html += '<section class="ar-integrity-alert ar-integrity-alert--' + escapeAttr(integrity.level || 'review') + '" role="alert">';
+      html += '<span class="ar-integrity-alert-icon" aria-hidden="true">!</span>';
+      html += '<div><strong>' + escapeHtml(integrity.label || 'Integrity review needed') + '</strong>';
+      html += '<p>' + escapeHtml(integrity.message || 'Review the recorded signals before releasing this result.') + '</p></div>';
+      html += '<button type="button" class="ar-btn ar-btn--integrity" data-ar-action="show-integrity">Review signals</button>';
+      html += '</section>';
+    }
+
+    if (isInProgress) {
+      html += '<div class="ar-mark-banner ar-mark-banner--reopened">';
+      html += '<div class="ar-mark-banner-text"><strong>Waiting for the student</strong>';
+      html += '<span>Marking and result release become available after they submit or the attempt ends again.</span></div></div>';
+    } else if (pending > 0) {
       html += '<div class="ar-mark-banner ar-mark-banner--pending">';
       html += '<div class="ar-mark-banner-text">';
       html += '<strong>' + pending + (pending === 1 ? ' answer needs' : ' answers need') + ' your mark</strong>';
@@ -362,6 +403,16 @@
       }
       html += '<button type="button" class="ar-btn" data-ar-action="next-unmarked">Go to next</button>';
       html += '</div></div>';
+    } else if (isMarked) {
+      html += '<div class="ar-mark-banner ar-mark-banner--done">';
+      html += '<div class="ar-mark-banner-text"><strong>' + (isReleased ? 'Result released' : 'Marking complete') + '</strong>';
+      html += '<span>' + (isReleased
+        ? 'The student can now see this result in Grades.'
+        : 'The grade is finalised. Release it when you are ready for the student to see it.') + '</span></div>';
+      if (!isReleased) {
+        html += '<div class="ar-mark-banner-actions"><button type="button" class="ar-btn ar-btn--primary" data-ar-action="release-one">Release to student</button></div>';
+      }
+      html += '</div>';
     } else {
       html += '<div class="ar-mark-banner ar-mark-banner--done">';
       html += '<div class="ar-mark-banner-text"><strong>All answers marked</strong>';
@@ -379,19 +430,27 @@
     });
     html += '</section>';
 
-    html += '<section class="ar-panel ar-overall"><h3>Overall feedback</h3>';
-    html += '<textarea rows="3" data-ar-overall placeholder="Feedback on the whole attempt…">' +
-      escapeHtml(a.overall_feedback_html || '') + '</textarea>';
-    html += '<div class="ar-panel-actions">';
-    html += '<button type="button" class="ar-btn ar-btn--primary" data-ar-action="complete-marking">Complete marking</button>';
-    html += '<button type="button" class="ar-btn" data-ar-action="release-one">Release to student</button>';
-    html += '<button type="button" class="ar-btn ar-btn--danger" data-ar-action="invalidate">Invalidate attempt</button>';
-    html += '<button type="button" class="ar-btn ar-btn--danger" data-ar-action="delete-attempt">Delete attempt</button>';
-    html += '</div></section>';
+    if (!isInProgress) {
+      html += '<section class="ar-panel ar-overall"><h3>Overall feedback</h3>';
+      html += '<textarea rows="3" data-ar-overall placeholder="Feedback on the whole attempt…">' +
+        escapeHtml(a.overall_feedback_html || '') + '</textarea>';
+      html += '<div class="ar-panel-actions">';
+      if (isMarked) {
+        html += '<button type="button" class="ar-btn ar-btn--primary" data-ar-action="save-feedback">Save feedback</button>';
+      } else {
+        html += '<button type="button" class="ar-btn ar-btn--primary" data-ar-action="complete-marking">Complete marking</button>';
+      }
+      if (!isReleased) html += '<button type="button" class="ar-btn" data-ar-action="release-one">Release to student</button>';
+      html += '<button type="button" class="ar-btn ar-btn--danger" data-ar-action="invalidate">Invalidate attempt</button>';
+      html += '<button type="button" class="ar-btn ar-btn--danger" data-ar-action="delete-attempt">Delete attempt</button>';
+      html += '</div></section>';
+    }
 
     const events = d.integrity_events || [];
-    html += '<details class="ar-panel ar-integrity"><summary>Integrity signals · ' +
-      escapeHtml(d.integrity_summary || 'none') + '</summary>';
+    html += '<details class="ar-panel ar-integrity" data-ar-integrity-panel' +
+      (Number(integrity.flagged_count || 0) > 0 ? ' open' : '') + '><summary>';
+    html += '<span>Integrity checks</span><span class="ar-integrity-summary ar-integrity-summary--' +
+      escapeAttr(integrity.level || 'clear') + '">' + escapeHtml(integrity.label || d.integrity_summary || 'No signals') + '</span></summary>';
     html += '<p class="ar-integrity-note">Signals are informational only and do not prove misconduct.</p>';
     if (events.length) {
       html += '<ol class="ar-integrity-list">';
@@ -403,7 +462,10 @@
         if (ev.source_classification && ev.source_classification !== 'source_not_available') {
           bits.push(String(ev.source_classification).replace(/_/g, ' '));
         }
-        html += '<li><strong>' + escapeHtml(ev.label || String(ev.event_type || '').replace(/_/g, ' ')) + '</strong>';
+        html += '<li class="ar-integrity-event ar-integrity-event--' + escapeAttr(ev.severity || 'review') + '">';
+        html += '<span class="ar-integrity-event-level">' +
+          escapeHtml(ev.severity === 'high' ? 'Review now' : (ev.severity === 'info' ? 'Info' : 'Review')) + '</span>';
+        html += '<strong>' + escapeHtml(ev.label || String(ev.event_type || '').replace(/_/g, ' ')) + '</strong>';
         html += '<time>' + escapeHtml(ev.occurred_at || ev.received_at || '') + '</time>';
         if (bits.length) html += '<span>' + escapeHtml(bits.join(', ')) + '</span>';
         html += '</li>';
@@ -602,6 +664,7 @@
 
   function updateSummary(summary) {
     if (!summary) return;
+    state.summary = summary;
     const stats = root.querySelectorAll('[data-ar-summary] .activity-results-stat strong');
     if (stats[0]) stats[0].textContent = String(summary.attempts ?? 0);
     if (stats[1]) stats[1].textContent = String(summary.students ?? 0);
@@ -609,6 +672,51 @@
       stats[2].textContent = summary.avg_percentage != null ? (summary.avg_percentage + '%') : '—';
     }
     if (stats[3]) stats[3].textContent = String(summary.awaiting_marking ?? 0);
+    if (stats[4]) stats[4].textContent = String(summary.integrity_flagged ?? 0);
+    const integrityStat = root.querySelector('.activity-results-stat--integrity');
+    if (integrityStat) integrityStat.classList.toggle('has-flags', Number(summary.integrity_flagged || 0) > 0);
+  }
+
+  function askToReopenAttempt() {
+    return new Promise((resolve) => {
+      const overlay = els.reopenPrompt;
+      if (!overlay || !els.reopenConfirm || !els.reopenCancel || !els.reopenNote) {
+        resolve(null);
+        return;
+      }
+
+      const previouslyFocused = document.activeElement;
+      els.reopenNote.value = '';
+      overlay.hidden = false;
+      requestAnimationFrame(() => {
+        overlay.classList.add('ap-confirm--in');
+        els.reopenNote.focus();
+      });
+
+      const finish = (approved) => {
+        overlay.classList.remove('ap-confirm--in');
+        els.reopenConfirm.removeEventListener('click', approve);
+        els.reopenCancel.removeEventListener('click', cancel);
+        overlay.removeEventListener('click', backdrop);
+        document.removeEventListener('keydown', keydown);
+        window.setTimeout(() => { overlay.hidden = true; }, 170);
+        if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+        resolve(approved ? els.reopenNote.value.trim() : null);
+      };
+      const approve = () => finish(true);
+      const cancel = () => finish(false);
+      const backdrop = (event) => {
+        if (event.target === overlay) cancel();
+      };
+      const keydown = (event) => {
+        if (event.key === 'Escape') cancel();
+      };
+
+      els.reopenConfirm.addEventListener('click', approve);
+      els.reopenCancel.addEventListener('click', cancel);
+      overlay.addEventListener('click', backdrop);
+      document.addEventListener('keydown', keydown);
+    });
   }
 
   async function deleteAttempts(ids) {
@@ -709,14 +817,36 @@
       if (action === 'export-csv') {
         await api('export_csv');
       } else if (action === 'release-all') {
-        if (!confirm('Release results for all submitted attempts?')) return;
+        const flagged = Number(state.summary?.integrity_flagged || 0);
+        const releaseMessage = flagged > 0
+          ? ('Release all results? ' + flagged + ' attempt' + (flagged === 1 ? ' has' : 's have') +
+            ' integrity flags. Review those attempts before continuing.')
+          : 'Release results for all submitted attempts?';
+        if (!confirm(releaseMessage)) return;
         await api('release_results', { all: true });
         location.reload();
+      } else if (action === 'show-integrity') {
+        const panel = root.querySelector('[data-ar-integrity-panel]');
+        if (panel) {
+          panel.open = true;
+          panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       } else if (action === 'delete-selected') {
         await deleteAttempts(selectedAttemptIds());
       } else if (action === 'delete-attempt') {
         if (!state.detail?.attempt?.id) return;
         await deleteAttempts([state.detail.attempt.id]);
+      } else if (action === 'reopen-attempt') {
+        if (!state.detail?.attempt?.id) return;
+        const note = await askToReopenAttempt();
+        if (note === null) return;
+        const data = await api('reopen_attempt', {
+          attempt_id: state.detail.attempt.id,
+          note,
+        });
+        state.detail = data.detail;
+        renderDetail();
+        refreshAttemptCard();
       } else if (action === 'next-unmarked') {
         if (!goToNextUnmarked()) alert('Nothing left to mark on this attempt.');
       } else if (action === 'apply-suggestions') {
@@ -728,6 +858,8 @@
         refreshAttemptCard();
       } else if (action === 'release-one') {
         if (!state.detail?.attempt?.id) return;
+        const flags = Number(state.detail?.integrity_review?.flagged_count || 0);
+        if (flags > 0 && !confirm('This attempt has integrity flags. Release the result after reviewing the signal timeline?')) return;
         await api('release_results', { attempt_id: state.detail.attempt.id });
         const data = await api('load_attempt', { attempt_id: state.detail.attempt.id });
         state.detail = data.detail;
@@ -742,6 +874,20 @@
         });
         state.detail = data.detail;
         renderDetail();
+        refreshAttemptCard();
+      } else if (action === 'save-feedback') {
+        if (!state.detail?.attempt?.id) return;
+        const overall = els.body.querySelector('[data-ar-overall]')?.value || '';
+        const data = await api('complete_marking', {
+          attempt_id: state.detail.attempt.id,
+          overall_feedback_html: overall,
+        });
+        state.detail = data.detail;
+        const feedbackButton = els.body.querySelector('[data-ar-action="save-feedback"]');
+        if (feedbackButton) {
+          feedbackButton.textContent = 'Feedback saved';
+          feedbackButton.classList.add('is-saved');
+        }
         refreshAttemptCard();
       } else if (action === 'invalidate') {
         if (!state.detail?.attempt?.id) return;

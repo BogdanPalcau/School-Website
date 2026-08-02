@@ -1794,6 +1794,26 @@ if (portal_can_manage_course($courseId)) {
 }
 $submissionGradebook = $_gradeStmt->fetchAll();
 
+// Activities and quizzes share the course gradebook with uploaded assignments.
+// Students only receive rows after the teacher has explicitly released them.
+if (!portal_can_manage_course($courseId)) {
+    foreach (portal_activity_gradebook_rows($courseId, (int) $_me['id']) as $_activityGrade) {
+        $submissionGradebook[] = [
+            'id' => (int) ($_activityGrade['attempt_id'] ?? 0),
+            'item_id' => 0,
+            'score' => $_activityGrade['score'],
+            'marked_at' => (string) ($_activityGrade['marked_at'] ?? ''),
+            'submitted_at' => (string) ($_activityGrade['submitted_at'] ?? ''),
+            'slot_title' => (string) ($_activityGrade['title'] ?? 'Activity'),
+            'submission_deadline' => '',
+            'submission_weight' => $_activityGrade['submission_weight'] ?? 100,
+            'grade_source' => 'activity',
+            'activity_id' => (int) ($_activityGrade['activity_id'] ?? 0),
+            'attempt_id' => (int) ($_activityGrade['attempt_id'] ?? 0),
+        ];
+    }
+}
+
 $submissionVersions = [];
 if (portal_can_manage_course($courseId)) {
     $_versionStmt = $_db->prepare(
@@ -1932,6 +1952,16 @@ if ($sectionKey === 'announcements' && !empty($unreadAnnouncements)) {
 // When a student opens Grades (or a deep-linked returned review), clear those
 // marks from the dashboard "Returned grades" queue.
 if (!portal_can_manage_course($courseId)) {
+    $_activityGradeBadgeStmt = $_db->prepare(
+        "SELECT COUNT(*)
+         FROM activity_attempts
+         WHERE course_id = ? AND user_id = ?
+           AND status = 'released'
+           AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+    );
+    $_activityGradeBadgeStmt->execute([$courseId, (int) $_me['id']]);
+    $unreadCourseGradeCount = (int) $_activityGradeBadgeStmt->fetchColumn();
+
     $openReviewRaw = (string) ($_GET['open_review'] ?? '');
     if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
         $_db->prepare(
@@ -1951,6 +1981,14 @@ if (!portal_can_manage_course($courseId)) {
                AND score IS NOT NULL
                AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
         )->execute([$courseId, (int) $_me['id']]);
+        $_db->prepare(
+            "UPDATE activity_attempts
+             SET grade_seen_at = datetime('now')
+             WHERE course_id = ? AND user_id = ?
+               AND status = 'released'
+               AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+        )->execute([$courseId, (int) $_me['id']]);
+        $unreadCourseGradeCount = 0;
     }
 }
 
@@ -1958,7 +1996,8 @@ if (!portal_can_manage_course($courseId)) {
 foreach ($tabs as &$_tab) {
     if ($_tab['key'] === 'announcements') {
         $_tab['badge'] = count($unreadAnnouncements);
-        break;
+    } elseif ($_tab['key'] === 'gradebook' && !portal_can_manage_course($courseId)) {
+        $_tab['badge'] = (int) ($unreadCourseGradeCount ?? 0);
     }
 }
 unset($_tab);
@@ -2230,6 +2269,12 @@ ob_start();
                                                 $activitySummary = null;
                                                 if ($item['type'] === 'activity') {
                                                     $activityRow = portal_activity_find_by_item((int) $item['id']);
+                                                    // Draft, archived, and orphaned activity slots are staff-only.
+                                                    // Do not leak their title or even their existence to students.
+                                                    if (!portal_can_manage_course($courseId)
+                                                        && (!$activityRow || (string) ($activityRow['status'] ?? '') !== 'published')) {
+                                                        continue;
+                                                    }
                                                     if ($activityRow) {
                                                         $activitySummary = portal_activity_student_card_summary(
                                                             $activityRow,
@@ -3369,16 +3414,22 @@ ob_start();
                                             $submittedTs = portal_db_timestamp((string) $grade['submitted_at']);
                                             $reviewId = 'rvw-' . (int) $grade['id'];
                                             $weightLabel = portal_format_submission_weight($grade['submission_weight'] ?? 100);
+                                            $isActivityGrade = ($grade['grade_source'] ?? '') === 'activity';
+                                            $activityResultHref = 'activity-results.php?id=' . (int) ($grade['activity_id'] ?? 0)
+                                                . '&attempt=' . (int) ($grade['attempt_id'] ?? $grade['id']);
                                         ?>
-                                        <div class="sub-slot-card"
+                                        <<?= $isActivityGrade ? 'a' : 'div' ?> class="sub-slot-card"
+                                             <?php if ($isActivityGrade): ?>href="<?= portal_escape($activityResultHref) ?>"<?php endif; ?>
+                                             <?php if (!$isActivityGrade): ?>
                                              data-review-open="<?= portal_escape($reviewId) ?>"
                                              role="button"
                                              tabindex="0"
-                                             aria-label="Open review for <?= portal_escape((string) $grade['slot_title']) ?>">
+                                             <?php endif; ?>
+                                             aria-label="Open result for <?= portal_escape((string) $grade['slot_title']) ?>">
                                             <?= portal_render_submission_deadline((string) ($grade['submission_deadline'] ?? '')) ?>
                                             <div class="sub-slot-card-row">
                                                 <span class="sub-slot-file">
-                                                    <?= portal_icon('file', 'icon-xs') ?>
+                                                    <?= portal_icon($isActivityGrade ? 'award' : 'file', 'icon-xs') ?>
                                                     <span>
                                                         <strong><?= portal_escape((string) $grade['slot_title']) ?></strong>
                                                         <small><?= portal_escape($submittedTs ? 'Submitted ' . date('j M Y H:i', $submittedTs) . ' | ' : '') ?>Weight <?= portal_escape($weightLabel) ?></small>
@@ -3391,9 +3442,13 @@ ob_start();
                                                 <?php endif; ?>
                                             </div>
                                             <div class="sub-slot-card-row">
-                                                <button type="button" class="button button--sm" data-review-open="<?= portal_escape($reviewId) ?>">Open review</button>
+                                                <?php if ($isActivityGrade): ?>
+                                                    <span class="button button--sm">View result</span>
+                                                <?php else: ?>
+                                                    <button type="button" class="button button--sm" data-review-open="<?= portal_escape($reviewId) ?>">Open review</button>
+                                                <?php endif; ?>
                                             </div>
-                                        </div>
+                                        </<?= $isActivityGrade ? 'a' : 'div' ?>>
                                     <?php endforeach; ?>
                                 </div>
                                 <p class="gb-footnote">See marks from every module on <a href="grades.php">My grades</a>.</p>
@@ -3405,6 +3460,9 @@ ob_start();
                             ob_start();
                             $isTeacherReview = $gbIsStaff;
                             foreach ($submissionGradebook as $reviewSub):
+                                if (($reviewSub['grade_source'] ?? '') === 'activity') {
+                                    continue;
+                                }
                                 $reviewAnns = $submissionAnnotations[(int) $reviewSub['id']] ?? [];
                                 $reviewWho  = $isTeacherReview ? (string) ($reviewSub['student_name'] ?? '') : 'Your submission';
                                 $itemForReview = [

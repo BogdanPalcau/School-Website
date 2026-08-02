@@ -34,7 +34,17 @@
     integrityEnabled: !!(boot.activity?.integrity_enabled),
     mode: boot.activity?.mode || 'quiz',
     startedAtMs: Date.now(),
+    isFinishing: false,
+    leaveSent: false,
+    exitConfirmed: false,
+    connectionExpired: false,
+    offlineDeadline: 0,
+    offlineTimer: null,
+    historyGuardArmed: false,
+    flushPromise: null,
   };
+
+  const ASSESSMENT_NETWORK_GRACE_MS = 30000;
 
   const els = {
     landing: root.querySelector('[data-ap-landing]'),
@@ -50,7 +60,12 @@
     saveState: root.querySelector('[data-ap-save-state]'),
     feedback: root.querySelector('[data-ap-feedback]'),
     banner: root.querySelector('[data-ap-banner]'),
+    network: root.querySelector('[data-ap-network]'),
+    networkTitle: root.querySelector('[data-ap-network-title]'),
+    networkText: root.querySelector('[data-ap-network-text]'),
     ack: root.querySelector('[data-ap-integrity-ack]'),
+    ackError: root.querySelector('[data-ap-integrity-error]'),
+    integrityNotice: root.querySelector('[data-ap-integrity-notice]'),
     confirm: root.querySelector('[data-ap-confirm]'),
     confirmBody: root.querySelector('[data-ap-confirm-body]'),
     confirmOk: root.querySelector('[data-ap-confirm-ok]'),
@@ -105,6 +120,13 @@
   }
 
   function loadFromPayload(data) {
+    clearNetworkGrace();
+    state.isFinishing = false;
+    state.leaveSent = false;
+    state.exitConfirmed = false;
+    state.connectionExpired = false;
+    root.classList.remove('ap-assessment-paused');
+    if (els.network) els.network.hidden = true;
     state.token = data.token || state.token;
     state.attempt = data.attempt || null;
     state.activity = Object.assign({}, state.activity, data.activity || {});
@@ -115,6 +137,7 @@
     state.mode = state.activity.mode || state.mode;
     state.index = 0;
     showShell();
+    armAssessmentHistoryGuard();
     renderQuestion();
     startTimer();
     setupIntegrity();
@@ -125,6 +148,67 @@
     if (els.landing) els.landing.hidden = true;
     if (els.result) els.result.hidden = true;
     if (els.shell) els.shell.hidden = false;
+  }
+
+  function armAssessmentHistoryGuard() {
+    if (state.mode !== 'assessment' || state.historyGuardArmed) return;
+    window.history.pushState({ rieoAssessmentGuard: true }, '', window.location.href);
+    state.historyGuardArmed = true;
+  }
+
+  function assessmentIsActive() {
+    return state.mode === 'assessment'
+      && !state.isFinishing
+      && !!state.attempt?.id
+      && !!state.token
+      && (!els.shell || !els.shell.hidden);
+  }
+
+  function clearNetworkGrace() {
+    if (state.offlineTimer) window.clearInterval(state.offlineTimer);
+    state.offlineTimer = null;
+    state.offlineDeadline = 0;
+  }
+
+  function updateNetworkGrace() {
+    if (!els.network || !state.offlineDeadline) return;
+    const seconds = Math.max(0, Math.ceil((state.offlineDeadline - Date.now()) / 1000));
+    if (els.networkTitle) els.networkTitle.textContent = 'Connection lost — ' + seconds + 's to reconnect';
+    if (els.networkText) {
+      els.networkText.textContent = 'Your answers remain saved on this device. Reconnect before the countdown ends to continue.';
+    }
+    if (seconds > 0) return;
+    clearNetworkGrace();
+    state.connectionExpired = true;
+    root.classList.add('ap-assessment-paused');
+    if (els.networkTitle) els.networkTitle.textContent = 'Assessment ended: connection lost';
+    if (els.networkText) {
+      els.networkText.textContent = 'The 30-second recovery window expired. Reconnect so the attempt can be safely closed.';
+    }
+    setSaveState('Connection recovery window expired');
+  }
+
+  function startNetworkGrace() {
+    if (!assessmentIsActive() || state.connectionExpired) return;
+    state.offlineDeadline = Date.now() + ASSESSMENT_NETWORK_GRACE_MS;
+    if (els.network) els.network.hidden = false;
+    updateNetworkGrace();
+    state.offlineTimer = window.setInterval(updateNetworkGrace, 250);
+  }
+
+  async function closeExpiredConnectionAttempt() {
+    if (!state.connectionExpired || !assessmentIsActive()) return;
+    state.isFinishing = true;
+    if (els.networkTitle) els.networkTitle.textContent = 'Connection restored';
+    if (els.networkText) els.networkText.textContent = 'Closing the ended attempt and returning to the activity page…';
+    try {
+      await api('leave_assessment', { end_reason: 'connection_lost' });
+      window.location.reload();
+    } catch (err) {
+      state.isFinishing = false;
+      if (els.networkTitle) els.networkTitle.textContent = 'Could not close the attempt';
+      if (els.networkText) els.networkText.textContent = 'Your connection is back. Refresh the page to finish closing this attempt.';
+    }
   }
 
   function showLanding() {
@@ -435,33 +519,43 @@
 
   async function flushQueue() {
     if (!state.online || !state.token || !state.attempt) return;
-    while (state.saveQueue.length) {
-      const item = state.saveQueue[0];
-      try {
-        const data = await api('save_answer', item);
-        if (state.answers[item.question_id]) {
-          state.answers[item.question_id].revision = data.revision || item.revision;
-        }
-        state.saveQueue.shift();
-        setSaveState('Saved');
-        if (data.feedback && els.feedback) {
-          showImmediateFeedback(data.feedback);
-        } else {
-          funPulse();
-        }
-      } catch (err) {
-        if (err.data?.conflict) {
-          state.answers[item.question_id] = {
-            answer: item.answer,
-            revision: err.data.revision || item.revision,
-          };
+    if (state.flushPromise) return state.flushPromise;
+
+    state.flushPromise = (async () => {
+      while (state.saveQueue.length) {
+        const item = state.saveQueue[0];
+        try {
+          const data = await api('save_answer', item);
+          if (state.answers[item.question_id]) {
+            state.answers[item.question_id].revision = data.revision || item.revision;
+          }
           state.saveQueue.shift();
-          setSaveState('Synced');
-          continue;
+          setSaveState('Saved');
+          if (data.feedback && els.feedback) {
+            showImmediateFeedback(data.feedback);
+          } else {
+            funPulse();
+          }
+        } catch (err) {
+          if (err.data?.conflict) {
+            state.answers[item.question_id] = {
+              answer: item.answer,
+              revision: err.data.revision || item.revision,
+            };
+            state.saveQueue.shift();
+            setSaveState('Synced');
+            continue;
+          }
+          setSaveState(err.message || 'Save failed');
+          break;
         }
-        setSaveState(err.message || 'Save failed');
-        break;
       }
+    })();
+
+    try {
+      await state.flushPromise;
+    } finally {
+      state.flushPromise = null;
     }
   }
 
@@ -618,6 +712,7 @@
   }
 
   function showResult(data) {
+    state.isFinishing = true;
     clearInterval(state.timerInterval);
     if (els.shell) els.shell.hidden = true;
     if (els.landing) els.landing.hidden = true;
@@ -664,6 +759,11 @@
           + badgeIconSvg(b.icon) + '<span>' + escapeText(b.title) + '</span></span>';
       });
       html += '</div></div>';
+    } else if (gamification?.pending_review) {
+      html += '<div class="ap-rewards-panel ap-rewards-panel--pending">';
+      html += '<p class="ap-panel-title">XP pending teacher review</p>';
+      html += '<p>Your assessment reward is added after marking, integrity review, and result release.</p>';
+      html += '</div>';
     }
 
     if (player.questions && showScore) {
@@ -690,7 +790,10 @@
   async function startOrResume(isResume) {
     if (boot.needs_integrity_ack && !isResume) {
       if (!els.ack?.checked) {
-        alert('Please acknowledge the integrity notice before starting.');
+        if (els.ackError) els.ackError.hidden = false;
+        els.integrityNotice?.classList.add('ap-panel--needs-attention');
+        els.integrityNotice?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        els.ack?.focus();
         return;
       }
     }
@@ -702,6 +805,11 @@
       alert(err.message || 'Could not start');
     }
   }
+
+  els.ack?.addEventListener('change', () => {
+    if (els.ackError) els.ackError.hidden = true;
+    els.integrityNotice?.classList.remove('ap-panel--needs-attention');
+  });
 
   function askConfirm(message, options = {}) {
     return new Promise((resolve) => {
@@ -798,10 +906,14 @@
       });
       if (!ok) return;
       try {
+        const activeQuestion = currentQuestion();
+        if (activeQuestion) queueSave(activeQuestion);
         await flushQueue();
+        state.isFinishing = true;
         const data = await api('submit', {});
         showResult(data);
       } catch (err) {
+        state.isFinishing = false;
         alert(err.message || 'Submit failed');
       }
     } else if (action === 'view-result') {
@@ -816,12 +928,83 @@
 
   window.addEventListener('online', () => {
     state.online = true;
+    clearNetworkGrace();
+    if (state.connectionExpired) {
+      closeExpiredConnectionAttempt();
+      return;
+    }
+    if (els.network) els.network.hidden = true;
     setSaveState('Back online');
     flushQueue();
   });
   window.addEventListener('offline', () => {
     state.online = false;
+    startNetworkGrace();
     setSaveState('Offline — answers queued');
+  });
+
+  async function confirmAssessmentExit(destination) {
+    const ok = await askConfirm(
+      'Leaving this page will end and submit the assessment. You will not be able to return unless a teacher reopens the attempt.',
+      {
+        title: 'Leave and end assessment?',
+        warning: true,
+        confirmLabel: 'Leave and end attempt',
+        cancelLabel: 'Stay in assessment',
+      }
+    );
+    if (!ok) return false;
+    state.exitConfirmed = true;
+    if (destination) window.location.assign(destination);
+    return true;
+  }
+
+  // Explain the consequence before an in-page link leaves an assessment.
+  root.addEventListener('click', async (e) => {
+    const link = e.target.closest('a[href]');
+    if (!link || !assessmentIsActive()) return;
+    e.preventDefault();
+    await confirmAssessmentExit(link.href);
+  }, true);
+
+  // Browser Back uses the same branded panel. Browsers do not allow a custom
+  // interface for refresh or tab close, so those actions quietly end the
+  // one-sitting assessment via pagehide instead of showing Chrome's dialog.
+  window.addEventListener('popstate', async () => {
+    if (!assessmentIsActive() || state.exitConfirmed || !state.historyGuardArmed) return;
+    const leave = await confirmAssessmentExit('');
+    if (leave) {
+      window.history.back();
+      return;
+    }
+    window.history.pushState({ rieoAssessmentGuard: true }, '', window.location.href);
+  });
+
+  // Assessments are single-sitting. End the attempt when this document is
+  // actually left (navigation, refresh, or tab/window close). Visibility/focus
+  // changes remain integrity signals but do not themselves submit the work.
+  window.addEventListener('pagehide', () => {
+    if (state.mode !== 'assessment'
+      || state.isFinishing
+      || state.leaveSent
+      || !state.attempt?.id
+      || !state.token
+      || (els.shell && els.shell.hidden)) {
+      return;
+    }
+    state.leaveSent = true;
+    const payload = JSON.stringify({
+      action: 'leave_assessment',
+      _token: csrf,
+      id: activityId,
+      token: state.token,
+      attempt_id: state.attempt.id,
+      end_reason: state.connectionExpired ? 'connection_lost' : 'page_left',
+    });
+    navigator.sendBeacon(
+      'activity.php?id=' + activityId,
+      new Blob([payload], { type: 'application/json' })
+    );
   });
 
   // Keyboard

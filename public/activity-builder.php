@@ -646,6 +646,24 @@ ob_start();
         </div>
     </header>
 
+    <section class="ab-setup-strip" data-ab-setup-strip aria-label="Activity setup summary">
+        <div class="ab-setup-intro">
+            <span class="ab-setup-icon"><?= portal_icon('sparkles', 'icon-sm') ?></span>
+            <div>
+                <strong data-ab-setup-title>Build progress</strong>
+                <span data-ab-setup-message>Complete the essentials, check the student view, then publish.</span>
+            </div>
+        </div>
+        <div class="ab-setup-metrics">
+            <span><strong data-ab-metric="questions">0</strong> questions</span>
+            <span><strong data-ab-metric="points">0</strong> points</span>
+            <span data-ab-reward-summary>No XP reward</span>
+        </div>
+        <button type="button" class="ab-setup-check" data-ab-action="validate">
+            <?= portal_icon('check-circle', 'icon-sm') ?> Check readiness
+        </button>
+    </section>
+
     <div class="ab-drawer-backdrop" data-ab-drawer-backdrop hidden></div>
 
     <div class="ab-panels">
@@ -835,8 +853,34 @@ ob_start();
                     <span aria-hidden="true">→</span>
                 </a>
             </div>
-            <details class="ab-side-section ab-side-section--collapsible" data-ab-integrity-settings>
+            <details class="ab-side-section ab-side-section--collapsible ab-rewards-settings" data-ab-rewards-settings open>
+                <summary>Rewards &amp; competition <small>XP</small></summary>
+                <div class="ab-reward-preview" data-ab-reward-preview>
+                    <span class="ab-reward-preview-icon"><?= portal_icon('star', 'icon-sm') ?></span>
+                    <div>
+                        <strong>Motivate completion</strong>
+                        <span>Show students what they can earn before they begin.</span>
+                    </div>
+                </div>
+                <label class="ab-check ab-check--feature">
+                    <input type="checkbox" data-ab-setting-bool="xp_enabled" value="1"<?= !empty($activity['xp_enabled']) ? ' checked' : '' ?>>
+                    <span><strong>Award XP</strong><small>Granted once for completing this activity.</small></span>
+                </label>
+                <label class="ab-field"><span>XP reward</span>
+                    <input type="number" min="0" max="1000" step="5" data-ab-setting="xp_amount" value="<?= (int) ($activity['xp_amount'] ?? 0) ?>">
+                </label>
+                <label class="ab-check ab-check--feature">
+                    <input type="checkbox" data-ab-setting-bool="leaderboard_enabled" value="1"<?= !empty($activity['leaderboard_enabled']) ? ' checked' : '' ?>>
+                    <span><strong>Show course leaderboard</strong><small>Ranks student XP; staff accounts are excluded.</small></span>
+                </label>
+                <p class="ab-hint-line" data-ab-assessment-reward-note<?= ($activity['mode'] ?? '') === 'assessment' ? '' : ' hidden' ?>>Assessment XP is held until a teacher releases the result after marking and integrity review.</p>
+            </details>
+            <details class="ab-side-section ab-side-section--collapsible" data-ab-integrity-settings<?= ($activity['mode'] ?? '') === 'assessment' ? ' open' : '' ?>>
                 <summary>Integrity options <small>assessments</small></summary>
+                <div class="ab-integrity-callout">
+                    <?= portal_icon('shield', 'icon-sm') ?>
+                    <p><strong>Make review signals visible</strong><span>Flagged attempts are highlighted in Submissions before grades are released.</span></p>
+                </div>
                 <label class="ab-check"><input type="checkbox" data-ab-setting-bool="integrity_enabled" value="1"<?= !empty($activity['integrity_enabled']) ? ' checked' : '' ?>><span>Enable monitoring</span></label>
                 <label class="ab-check"><input type="checkbox" data-ab-setting-bool="focus_monitoring" value="1"<?= !empty($activity['focus_monitoring']) ? ' checked' : '' ?>><span>Focus monitoring</span></label>
                 <label class="ab-field"><span>Paste</span>
@@ -932,7 +976,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260727a"></script>
-<script src="assets/activity-builder.js?v=20260728g"></script>
+<script src="assets/activity-builder.js?v=20260802a"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

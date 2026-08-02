@@ -265,6 +265,9 @@ try {
         'integrity_enabled' => 1,
         'feedback_policy' => 'when_released',
         'results_released' => 0,
+        'xp_enabled' => 1,
+        'xp_amount' => 30,
+        'leaderboard_enabled' => 1,
     ], (int) ($actRow['version'] ?? 1));
 
     $published = portal_activity_publish($assessId);
@@ -304,6 +307,13 @@ try {
     // Submit first attempt so max_attempts=1 blocks a new start.
     $submit = portal_activity_submit_attempt($attemptId, $studentUser['id'], $token);
     expect_true(!empty($submit['ok']), 'submit first attempt');
+    $submittedReasonStmt = $db->prepare('SELECT end_reason FROM activity_attempts WHERE id = ?');
+    $submittedReasonStmt->execute([$attemptId]);
+    expect_eq((string) $submittedReasonStmt->fetchColumn(), 'submitted', 'normal submission records its end reason');
+    expect_true(!empty($submit['gamification']['pending_review']), 'assessment XP waits for teacher release');
+    $assessmentXp = $db->prepare('SELECT COUNT(*) FROM gamification_events WHERE attempt_id = ?');
+    $assessmentXp->execute([$attemptId]);
+    expect_eq((int) $assessmentXp->fetchColumn(), 0, 'assessment submit does not award XP before review');
 
     $second = portal_activity_start_attempt($assessId, $studentUser['id'], 'ack again');
     expect_true(empty($second['ok']), 'max_attempts=1 blocks second start');
@@ -334,6 +344,7 @@ try {
         'expire_if_needed auto-submits past expires_at (status=' . ($expired['status'] ?? '') . ')'
     );
     expect_true(trim((string) ($expired['submitted_at'] ?? '')) !== '', 'expired attempt has submitted_at set');
+    expect_eq((string) ($expired['end_reason'] ?? ''), 'time_expired', 'timer expiry records its end reason');
 
     // Revision conflict + forged question + bad token on a fresh practice activity.
     act_login_as($teacherUser);
@@ -352,7 +363,9 @@ try {
     $pStart = portal_activity_start_attempt($practiceId, $studentUser['id']);
     expect_true(!empty($pStart['ok']), 'start practice attempt');
     $pAttemptId = (int) ($pStart['attempt']['id'] ?? 0);
-    $pToken = (string) ($pStart['token'] ?? '');
+    $pResume = portal_activity_start_attempt($practiceId, $studentUser['id']);
+    expect_true(!empty($pResume['ok']) && !empty($pResume['resumed']), 'practice attempt can still resume');
+    $pToken = (string) ($pResume['token'] ?? '');
     $pQid = (int) ($pStart['questions'][0]['id'] ?? 0);
 
     $save1 = portal_activity_save_answer($pAttemptId, $studentUser['id'], $pQid, ['text' => 'green'], 1, $pToken);
@@ -422,6 +435,19 @@ try {
     expect_true(!empty($iStart['ok']), 'start integrity assessment');
     $iAttemptId = (int) ($iStart['attempt']['id'] ?? 0);
     $iQid = (int) ($iStart['questions'][0]['id'] ?? 0);
+    $iResume = portal_activity_start_attempt($intId, $studentUser['id']);
+    expect_true(
+        empty($iResume['ok']) && !empty($iResume['ended']),
+        'assessment cannot resume after it has been left'
+    );
+    $endedAssessmentStmt = $db->prepare('SELECT status, end_reason FROM activity_attempts WHERE id = ?');
+    $endedAssessmentStmt->execute([$iAttemptId]);
+    $endedAssessment = $endedAssessmentStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    expect_true(
+        (string) ($endedAssessment['status'] ?? '') !== 'in_progress',
+        'leaving an assessment ends the active attempt'
+    );
+    expect_eq((string) ($endedAssessment['end_reason'] ?? ''), 'page_left', 'page exit records a teacher-visible reason');
 
     $rec = portal_activity_record_integrity_event(
         $iAttemptId,
@@ -453,6 +479,15 @@ try {
     expect_eq(portal_activity_integrity_summary_label([1, 2]), 'A few signals', 'summary: few');
     expect_eq(portal_activity_integrity_summary_label(range(1, 5)), 'Review recommended', 'summary: review');
     expect_eq(portal_activity_integrity_summary_label(range(1, 12)), 'High number of signals', 'summary: high');
+    $clearReview = portal_activity_integrity_review_state([
+        ['event_type' => 'window_focus', 'source_classification' => 'source_not_available'],
+    ]);
+    expect_eq((string) $clearReview['level'], 'clear', 'focus return alone is not an integrity failure');
+    $flaggedReview = portal_activity_integrity_review_state([
+        ['event_type' => 'paste_attempt', 'source_classification' => 'external_or_unknown'],
+    ]);
+    expect_eq((string) $flaggedReview['level'], 'high', 'external paste clearly flags integrity review');
+    expect_eq((int) $flaggedReview['flagged_count'], 1, 'integrity review reports flagged count');
 
     $banned = ['Cheater', 'Cheating', 'Fraud', 'Guilty'];
     $eventTypes = [
@@ -659,6 +694,17 @@ try {
     $xpCount = $db->prepare('SELECT COUNT(*) FROM gamification_events WHERE unique_reward_key = ?');
     $xpCount->execute([$xpKey]);
     expect_eq((int) $xpCount->fetchColumn(), 1, 'unique_reward_key stored once');
+
+    $releasedRewards = portal_activity_award_badges_after_attempt($studentUser['id'], portal_activity_find($assessId) ?: [], $attemptId);
+    expect_eq((int) ($releasedRewards['xp'] ?? 0), 30, 'assessment XP awards when teacher releases result');
+    $leaderboard = portal_activity_course_leaderboard($courseId, 8);
+    $leaderboardHasStudent = false;
+    foreach ($leaderboard as $leader) {
+        if ((int) ($leader['id'] ?? 0) === (int) $studentUser['id'] && (int) ($leader['xp'] ?? 0) >= 30) {
+            $leaderboardHasStudent = true;
+        }
+    }
+    expect_true($leaderboardHasStudent, 'course leaderboard includes student XP and excludes dead setting behavior');
 
     // ── Media ────────────────────────────────────────────────────────────────
     echo "\n=== Media ===\n";

@@ -1770,8 +1770,12 @@ if (!function_exists('portal_integrity_process_review')) {
             if (($fileMeta['word_count_meta'] ?? null) !== null && $wordCount >= 100) {
                 $metaWords = max(0, (int) $fileMeta['word_count_meta']);
                 $wordDelta = abs($metaWords - $wordCount);
-                if ($wordDelta / $wordCount >= 0.35) {
-                    $score += 10;
+                $wordDeltaRatio = $wordDelta / $wordCount;
+                if ($wordDeltaRatio >= 0.35) {
+                    // Small differences are common between Office's cached count and
+                    // extracted text. An extreme mismatch is materially stronger
+                    // evidence and should be visible to the teacher for review.
+                    $score += $wordDeltaRatio >= 0.75 ? 18 : 10;
                     $riskSignals[] = 'Embedded file word count (' . $metaWords . ') differs significantly from extracted text (' . $wordCount . ' words).';
                 }
             }
@@ -1942,8 +1946,9 @@ if (!function_exists('portal_integrity_process_review_legacy')) {
             if ($fileMeta['word_count_meta'] !== null && $wordCount >= 100) {
                 $metaWords = max(0, (int) $fileMeta['word_count_meta']);
                 $wordDelta = abs($metaWords - $wordCount);
-                if ($wordDelta / $wordCount >= 0.35) {
-                    $score += 10;
+                $wordDeltaRatio = $wordDelta / $wordCount;
+                if ($wordDeltaRatio >= 0.35) {
+                    $score += $wordDeltaRatio >= 0.75 ? 18 : 10;
                     $signals[] = 'Embedded file word count (' . $metaWords . ') differs significantly from extracted text (' . $wordCount . ' words).';
                 }
             }

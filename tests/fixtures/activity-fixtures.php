@@ -67,19 +67,25 @@ function activity_fixtures_setup(PDO $db): array
     }
 
     $settings = portal_activity_save_settings($publishedId, [
-        'max_attempts' => 3,
+        'max_attempts' => 6,
         'integrity_enabled' => 1,
         'feedback_policy' => 'when_released',
         'results_released' => 0,
+        'xp_enabled' => 1,
+        'xp_amount' => 30,
+        'leaderboard_enabled' => 1,
     ], (int) (portal_activity_find($publishedId)['version'] ?? 1));
     if (empty($settings['ok'])) {
         // Revision may have bumped — retry once with fresh revision.
         $act = portal_activity_find($publishedId);
         $settings = portal_activity_save_settings($publishedId, [
-            'max_attempts' => 3,
+            'max_attempts' => 6,
             'integrity_enabled' => 1,
             'feedback_policy' => 'when_released',
             'results_released' => 0,
+            'xp_enabled' => 1,
+            'xp_amount' => 30,
+            'leaderboard_enabled' => 1,
         ], (int) ($act['version'] ?? 1));
     }
 
@@ -104,6 +110,69 @@ function activity_fixtures_setup(PDO $db): array
     }
     $draftId = (int) $draft['activity_id'];
 
+    $studentId = (int) $db->query("SELECT id FROM users WHERE username = 'sec_student'")->fetchColumn();
+    $_SESSION['portal_user'] = [
+        'id' => $studentId,
+        'username' => 'sec_student',
+        'email' => 'sec_student@example.test',
+        'name' => 'Security Student',
+        'year' => 'Year 11',
+        'programme' => 'Security Test',
+        'initials' => 'SS',
+        'role' => 'student',
+    ];
+    $flagged = portal_activity_start_attempt($publishedId, $studentId, 'I acknowledge the integrity notice.');
+    $flaggedAttemptId = (int) ($flagged['attempt']['id'] ?? 0);
+    $flaggedQuestionId = (int) ($flagged['questions'][0]['id'] ?? 0);
+    portal_activity_record_integrity_event(
+        $flaggedAttemptId,
+        $studentId,
+        'multiple_tab_detected',
+        'fixture-integrity-' . $flaggedAttemptId,
+        $flaggedQuestionId,
+        'source_not_available',
+        ['tab_count' => 2]
+    );
+    portal_activity_submit_attempt($flaggedAttemptId, $studentId, (string) ($flagged['token'] ?? ''));
+    $db->prepare("UPDATE activity_attempts SET end_reason = 'page_left' WHERE id = ?")
+        ->execute([$flaggedAttemptId]);
+    portal_activity_award_xp(
+        $studentId,
+        $openCourseId,
+        $publishedId,
+        $flaggedAttemptId,
+        'fixture_course_xp',
+        30,
+        'fixture-course-xp:' . $publishedId . ':' . $studentId
+    );
+
+    $released = portal_activity_start_attempt($publishedId, $studentId, 'I acknowledge the integrity notice.');
+    $releasedAttemptId = (int) ($released['attempt']['id'] ?? 0);
+    portal_activity_submit_attempt($releasedAttemptId, $studentId, (string) ($released['token'] ?? ''));
+    $db->prepare(
+        "UPDATE activity_attempts
+         SET status = 'released', grade_seen_at = '', updated_at = datetime('now')
+         WHERE id = ?"
+    )->execute([$releasedAttemptId]);
+
+    // Keep the integrity/reopen fixture as the newest attempt so reopening it
+    // is valid even with the separate released-grade fixture above.
+    $reopenable = portal_activity_start_attempt($publishedId, $studentId, 'I acknowledge the integrity notice.');
+    $flaggedAttemptId = (int) ($reopenable['attempt']['id'] ?? 0);
+    $flaggedQuestionId = (int) ($reopenable['questions'][0]['id'] ?? 0);
+    portal_activity_record_integrity_event(
+        $flaggedAttemptId,
+        $studentId,
+        'multiple_tab_detected',
+        'fixture-reopen-integrity-' . $flaggedAttemptId,
+        $flaggedQuestionId,
+        'source_not_available',
+        ['tab_count' => 2]
+    );
+    portal_activity_submit_attempt($flaggedAttemptId, $studentId, (string) ($reopenable['token'] ?? ''));
+    $db->prepare("UPDATE activity_attempts SET end_reason = 'page_left' WHERE id = ?")
+        ->execute([$flaggedAttemptId]);
+
     $publishedRow = portal_activity_find($publishedId);
     $draftRow = portal_activity_find($draftId);
 
@@ -112,6 +181,8 @@ function activity_fixtures_setup(PDO $db): array
         'draftActivityId' => $draftId,
         'publishedItemId' => (int) ($publishedRow['course_item_id'] ?? 0),
         'draftItemId' => (int) ($draftRow['course_item_id'] ?? 0),
+        'flaggedAttemptId' => $flaggedAttemptId,
+        'releasedAttemptId' => $releasedAttemptId,
         'titles' => [
             'published' => ACTIVITY_PUBLISHED_TITLE,
             'draft' => ACTIVITY_DRAFT_TITLE,

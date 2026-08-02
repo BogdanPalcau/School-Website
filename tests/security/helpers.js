@@ -5,9 +5,10 @@ const { expect } = require('@playwright/test');
 const rootDir = path.resolve(__dirname, '..', '..');
 const phpBinary = process.env.PHP_BINARY || 'C:\\xampp\\php\\php.exe';
 const fixtureScript = path.join(rootDir, 'tests', 'fixtures', 'security-fixtures.php');
+const phpSessionPath = path.join(rootDir, 'database');
 
 function runFixture(command, ...args) {
-  return execFileSync(phpBinary, [fixtureScript, command, ...args], {
+  return execFileSync(phpBinary, ['-d', `session.save_path=${phpSessionPath}`, fixtureScript, command, ...args], {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],

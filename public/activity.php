@@ -36,9 +36,10 @@ if (!portal_can_access_course($courseId)) {
     portal_redirect('login.php');
 }
 
-if (($activity['status'] ?? '') === 'draft' && !$canManage) {
-    http_response_code(403);
-    exit('This activity is not available yet.');
+if (($activity['status'] ?? '') !== 'published' && !$canManage) {
+    portal_log_security_event('unpublished_activity_access_denied', 'medium', 'activity_id=' . $activityId);
+    http_response_code(404);
+    exit('Activity not found.');
 }
 
 $courseStmt = $db->prepare('SELECT id, slug, full_title, title, code, accent FROM courses WHERE id = ?');
@@ -145,6 +146,21 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
             portal_activity_json_ok($result);
         }
 
+        case 'leave_assessment': {
+            $leaveAttemptStmt = $db->prepare('SELECT * FROM activity_attempts WHERE id = ? AND user_id = ?');
+            $leaveAttemptStmt->execute([$attemptId, $uid]);
+            $leaveAttempt = $leaveAttemptStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$leaveAttempt || !portal_activity_verify_attempt_token($leaveAttempt, $sessionToken)) {
+                portal_activity_json_error('Your assessment session is invalid.', 403);
+            }
+            $endReason = (string) ($payload['end_reason'] ?? 'page_left');
+            $result = portal_activity_end_assessment_attempt($attemptId, $uid, $endReason);
+            if (empty($result['ok'])) {
+                portal_activity_json_error((string) ($result['error'] ?? 'Could not end assessment.'), 400, $result);
+            }
+            portal_activity_json_ok($result);
+        }
+
         case 'integrity_event': {
             $meta = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
             unset($meta['clipboard'], $meta['text'], $meta['paste_text'], $meta['html'], $meta['content']);
@@ -223,6 +239,24 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
 }
 
 $csrfToken = portal_csrf_token();
+
+// Formal assessments are single-sitting activities. If a student returns via
+// reload, history navigation, or a fresh tab after the unload request was lost,
+// close the old attempt before rendering the lobby. Quizzes/practice still resume.
+if (($activity['mode'] ?? '') === 'assessment') {
+    $staleAttemptStmt = $db->prepare(
+        "SELECT id, resume_allowed FROM activity_attempts
+         WHERE activity_id = ? AND user_id = ? AND status = 'in_progress'
+         ORDER BY id DESC LIMIT 1"
+    );
+    $staleAttemptStmt->execute([$activityId, $uid]);
+    $staleAssessmentAttempt = $staleAttemptStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $staleAssessmentAttemptId = (int) ($staleAssessmentAttempt['id'] ?? 0);
+    if ($staleAssessmentAttemptId > 0 && empty($staleAssessmentAttempt['resume_allowed'])) {
+        portal_activity_end_assessment_attempt($staleAssessmentAttemptId, $uid, 'page_reopened');
+    }
+}
+
 $summary = portal_activity_student_card_summary($activity, $uid);
 $canStart = portal_activity_can_start($activity, $uid);
 
@@ -255,6 +289,23 @@ if ($latestResult) {
 }
 
 $needsIntegrityAck = ($activity['mode'] ?? '') === 'assessment' && !empty($activity['integrity_enabled']);
+$leaderboardRows = !empty($activity['leaderboard_enabled'])
+    ? portal_activity_course_leaderboard((int) $activity['course_id'], 8)
+    : [];
+$overviewVersionId = portal_activity_published_version_id($activityId)
+    ?? ($canManage ? portal_activity_draft_version_id($activityId) : null);
+$questionCount = 0;
+$maximumPoints = 0.0;
+if ($overviewVersionId !== null) {
+    $overviewStmt = $db->prepare(
+        'SELECT COUNT(*) AS question_count, COALESCE(SUM(points), 0) AS maximum_points
+         FROM activity_questions WHERE activity_version_id = ?'
+    );
+    $overviewStmt->execute([$overviewVersionId]);
+    $overview = $overviewStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $questionCount = (int) ($overview['question_count'] ?? 0);
+    $maximumPoints = (float) ($overview['maximum_points'] ?? 0);
+}
 
 $bootstrap = [
     'activity' => [
@@ -275,6 +326,9 @@ $bootstrap = [
         'navigation_policy' => $activity['navigation_policy'],
         'feedback_policy' => $activity['feedback_policy'],
         'results_released' => (int) ($activity['results_released'] ?? 0),
+        'xp_enabled' => (int) ($activity['xp_enabled'] ?? 0),
+        'xp_amount' => (int) ($activity['xp_amount'] ?? 0),
+        'leaderboard_enabled' => (int) ($activity['leaderboard_enabled'] ?? 0),
     ],
     'summary' => $summary,
     'can_start' => !empty($canStart['ok']),
@@ -353,8 +407,28 @@ ob_start();
                     <?php endif; ?>
                 </p>
                 <h1 class="ap-lobby-title"><?= portal_escape((string) $activity['title']) ?></h1>
-                <?php if (trim((string) $activity['short_description']) !== ''): ?>
-                    <p class="ap-lobby-lead"><?= portal_escape((string) $activity['short_description']) ?></p>
+                <p class="ap-lobby-lead"><?= portal_escape(
+                    trim((string) $activity['short_description']) !== ''
+                        ? (string) $activity['short_description']
+                        : (($activity['mode'] ?? '') === 'assessment'
+                            ? 'Review the details below, then continue when you are ready. Your answers are saved as you work.'
+                            : 'Review the details below, then begin when you are ready.')
+                ) ?></p>
+
+                <div class="ap-lobby-metrics" aria-label="Activity overview">
+                    <span><strong><?= $questionCount ?></strong> <?= $questionCount === 1 ? 'question' : 'questions' ?></span>
+                    <span><strong><?= portal_escape(rtrim(rtrim(number_format($maximumPoints, 2, '.', ''), '0'), '.')) ?></strong> points</span>
+                    <span><strong><?= (int) $activity['time_limit_seconds'] > 0 ? (int) ceil(((int) $activity['time_limit_seconds']) / 60) . ' min' : 'Untimed' ?></strong></span>
+                </div>
+
+                <?php if ($inProgressId): ?>
+                    <div class="ap-resume-note" role="status">
+                        <span class="ap-resume-icon" aria-hidden="true">→</span>
+                        <div>
+                            <strong>Activity in progress</strong>
+                            <span>Continue where you left off. Your saved answers are waiting.</span>
+                        </div>
+                    </div>
                 <?php endif; ?>
 
                 <?php if (trim((string) $activity['instructions_html']) !== ''): ?>
@@ -364,34 +438,48 @@ ob_start();
                     </div>
                 <?php endif; ?>
 
+                <?php if (($activity['mode'] ?? '') === 'assessment' && $inProgressId === null): ?>
+                    <div class="ap-single-sitting-note">
+                        <strong>One continuous sitting</strong>
+                        <span>Once started, leaving, refreshing, or closing this page ends and submits the assessment. You cannot return to the same attempt.</span>
+                    </div>
+                <?php endif; ?>
+
                 <?php if ($needsIntegrityAck && $inProgressId === null): ?>
                     <div class="ap-panel ap-panel--warn" data-ap-integrity-notice>
-                        <h2 class="ap-panel-title">Integrity notice</h2>
-                        <p>This assessment monitors focus changes, paste/copy attempts, and similar signals. Clipboard contents are never stored — only counts and classifications.</p>
+                        <div class="ap-integrity-heading">
+                            <span class="ap-integrity-icon" aria-hidden="true">✓</span>
+                            <div>
+                                <h2 class="ap-panel-title">Before you begin</h2>
+                                <p>Integrity checks are enabled for this assessment.</p>
+                            </div>
+                        </div>
+                        <p class="ap-integrity-copy">Focus changes and paste or copy actions may be recorded for your teacher to review. Your clipboard text is never saved.</p>
                         <label class="ap-ack-label">
                             <input type="checkbox" data-ap-integrity-ack>
-                            I understand and will complete this assessment honestly.
+                            <span>I understand how the checks work and I’m ready to continue.</span>
                         </label>
+                        <p class="ap-ack-error" data-ap-integrity-error hidden>Please tick the box above before starting.</p>
                     </div>
                 <?php endif; ?>
 
                 <div class="ap-landing-actions">
                     <?php if ($inProgressId): ?>
-                        <button type="button" class="button" data-ap-action="resume">Resume attempt</button>
+                        <button type="button" class="button ap-primary-action" data-ap-action="resume">Continue <?= ($activity['mode'] ?? '') === 'quiz' ? 'quiz' : 'activity' ?> <span aria-hidden="true">→</span></button>
                     <?php elseif (!empty($canStart['ok'])): ?>
-                        <button type="button" class="button" data-ap-action="start">Begin</button>
+                        <button type="button" class="button ap-primary-action" data-ap-action="start"><?= ($activity['mode'] ?? '') === 'assessment' ? 'Start assessment' : 'Start activity' ?> <span aria-hidden="true">→</span></button>
                     <?php else: ?>
                         <p class="ap-locked-msg"><?= portal_escape((string) ($canStart['error'] ?? 'Not available')) ?></p>
                     <?php endif; ?>
                     <?php if ($latestResult): ?>
                         <button type="button" class="button button-secondary" data-ap-action="view-result">View last result</button>
                     <?php endif; ?>
-                    <a class="ap-text-link" href="<?= portal_escape($backUrl) ?>">Cancel and return</a>
+                    <a class="ap-text-link" href="<?= portal_escape($backUrl) ?>">Return to course</a>
                 </div>
             </div>
 
             <aside class="ap-lobby-aside" aria-label="Activity details">
-                <h2 class="ap-panel-title">Details</h2>
+                <h2 class="ap-panel-title"><?= ($activity['mode'] ?? '') === 'assessment' ? 'Assessment details' : 'Activity details' ?></h2>
                 <dl class="ap-facts">
                     <div>
                         <dt>Attempts</dt>
@@ -429,13 +517,50 @@ ob_start();
                             <dd><?= (int) $activity['estimated_minutes'] ?> min</dd>
                         </div>
                     <?php endif; ?>
+                    <?php if (!empty($activity['xp_enabled']) && (int) ($activity['xp_amount'] ?? 0) > 0): ?>
+                        <div class="ap-fact-reward">
+                            <dt>Completion reward</dt>
+                            <dd><span class="ap-lobby-xp">+<?= (int) $activity['xp_amount'] ?> XP</span><?= ($activity['mode'] ?? '') === 'assessment' ? ' after release' : '' ?></dd>
+                        </div>
+                    <?php endif; ?>
                 </dl>
+                <?php if (!empty($activity['leaderboard_enabled'])): ?>
+                    <section class="activity-leaderboard activity-leaderboard--lobby" aria-labelledby="activity-leaderboard-title">
+                        <div class="activity-leaderboard-head">
+                            <span class="activity-leaderboard-mark"><?= portal_icon('trophy', 'icon-sm') ?></span>
+                            <div>
+                                <h2 id="activity-leaderboard-title" class="activity-leaderboard-title">Course XP</h2>
+                                <p class="activity-leaderboard-note">Earn XP from activities to move up.</p>
+                            </div>
+                        </div>
+                        <?php if ($leaderboardRows === []): ?>
+                            <p class="activity-leaderboard-empty">No XP earned in this course yet.</p>
+                        <?php else: ?>
+                            <ol class="activity-leaderboard-list">
+                                <?php foreach ($leaderboardRows as $rank => $leader): ?>
+                                    <li class="activity-leaderboard-row<?= (int) $leader['id'] === $uid ? ' is-self' : '' ?>">
+                                        <span class="activity-leaderboard-rank"><?= $rank + 1 ?></span>
+                                        <span class="activity-leaderboard-name"><?= portal_escape((string) $leader['name']) ?><?= (int) $leader['id'] === $uid ? ' · You' : '' ?></span>
+                                        <span class="activity-leaderboard-score"><?= (int) $leader['xp'] ?> XP</span>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ol>
+                        <?php endif; ?>
+                    </section>
+                <?php endif; ?>
             </aside>
         </div>
     </div>
 
     <div data-ap-shell<?= $showPlayer ? '' : ' hidden' ?>>
         <div class="ap-preview-banner" data-ap-banner hidden role="status"></div>
+        <div class="ap-network-warning" data-ap-network hidden role="alert">
+            <span class="ap-network-warning-icon" aria-hidden="true">!</span>
+            <div>
+                <strong data-ap-network-title>Connection lost</strong>
+                <span data-ap-network-text>Your answers are safe on this device while we try to reconnect.</span>
+            </div>
+        </div>
         <div class="ap-toolbar ap-toolbar--play">
             <a class="ap-back" href="<?= portal_escape($backUrl) ?>">
                 <span aria-hidden="true">←</span> Exit to course
@@ -490,6 +615,10 @@ ob_start();
 
     <div class="ap-confirm" data-ap-confirm hidden role="presentation">
         <div class="ap-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="ap-confirm-title" aria-describedby="ap-confirm-body">
+            <div class="ap-confirm-brand" aria-label="Rangoon International Education Online">
+                <img src="assets/rieo-crest.svg" alt="">
+                <span><strong>RIEO</strong><small>Assessment system</small></span>
+            </div>
             <div class="ap-confirm-icon" aria-hidden="true"><?= portal_icon('check-circle', 'icon-sm') ?></div>
             <h2 id="ap-confirm-title" class="ap-confirm-title">Submit quiz?</h2>
             <p id="ap-confirm-body" class="ap-confirm-body" data-ap-confirm-body></p>
@@ -502,7 +631,7 @@ ob_start();
 </section>
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
-<script src="assets/activity-player.js?v=20260728e"></script>
+<script src="assets/activity-player.js?v=20260802i"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';
