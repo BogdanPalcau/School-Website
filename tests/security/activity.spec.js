@@ -11,8 +11,8 @@ const phpBinary = process.env.PHP_BINARY || 'C:\\xampp\\php\\php.exe';
 const activityFixtureScript = path.join(rootDir, 'tests', 'fixtures', 'activity-fixtures.php');
 const phpSessionPath = path.join(rootDir, 'database');
 
-function runActivityFixture(command) {
-  return execFileSync(phpBinary, ['-d', `session.save_path=${phpSessionPath}`, activityFixtureScript, command], {
+function runActivityFixture(command, ...args) {
+  return execFileSync(phpBinary, ['-d', `session.save_path=${phpSessionPath}`, activityFixtureScript, command, ...args], {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -25,6 +25,10 @@ function setupActivityFixtures() {
 
 function cleanupActivityFixtures() {
   runActivityFixture('cleanup');
+}
+
+function allowActivityResume(activityId, username = 'sec_student') {
+  return JSON.parse(runActivityFixture('allow-resume', String(activityId), username));
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -311,22 +315,24 @@ test('saved activity answers remain selected after resume', async ({ page }) => 
   await signIn(page, fixtures.users.student, fixtures.password);
   await page.goto(`/activity.php?id=${fixtures.publishedActivityId}`);
 
-  const resume = page.locator('[data-ap-action="resume"]');
-  if (await resume.isVisible()) {
-    await resume.click();
-  } else {
-    await page.locator('[data-ap-integrity-ack]').check();
-    await page.locator('[data-ap-action="start"]').click();
-  }
-
+  await page.locator('[data-ap-integrity-ack]').check();
+  await page.getByRole('button', { name: /start assessment/i }).click();
+  await expect(page.locator('[data-ap-shell]')).toBeVisible();
   await expect(page.getByText('What is 2+2?')).toBeVisible();
-  const savedChoice = page.locator('.ap-option')
-    .filter({ has: page.getByText('4', { exact: true }) })
-    .locator('input[type="radio"]');
-  await savedChoice.check();
+
+  await page.getByText('4', { exact: true }).click();
   await expect(page.locator('[data-ap-save-state]')).toHaveText('Saved');
 
+  // Leaving an assessment ends it; teacher reopen restores resume_allowed.
+  await page.goto('/courses.php');
+  await expect(page).toHaveURL(/courses\.php/);
+
+  const allowed = allowActivityResume(fixtures.publishedActivityId, fixtures.users.student);
+  expect(allowed.ok).toBeTruthy();
+  expect(allowed.mode).toBe('reopened');
+
   await page.goto(`/activity.php?id=${fixtures.publishedActivityId}&resume=1`);
+  await expect(page.locator('[data-ap-shell]')).toBeVisible();
   await expect(page.getByText('What is 2+2?')).toBeVisible();
   await expect(
     page.locator('.ap-option')
