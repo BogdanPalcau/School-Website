@@ -176,8 +176,8 @@ function security_setup(PDO $db): array
         $db->prepare(
             "INSERT INTO course_submissions
              (item_id, course_id, user_id, filename, filepath, filesize,
-              score, feedback, marked_at, marked_by, grade_seen_at)
-             VALUES (?,?,?,?,?,0,?,?,'2026-07-21 12:00:00',?,'')"
+              score, feedback, marked_at, marked_by, grade_seen_at, receipt_number)
+             VALUES (?,?,?,?,?,0,?,?,'2026-07-21 12:00:00',?,'',?)"
         )->execute([
             $returnedItemId,
             $openCourseId,
@@ -187,6 +187,7 @@ function security_setup(PDO $db): array
             $score,
             'Returned grade fixture feedback.',
             $teacherId,
+            portal_generate_unique_receipt_number($db),
         ]);
         $returnedGradeSubmissionIds[] = (int) $db->lastInsertId();
     }
@@ -205,8 +206,9 @@ function security_setup(PDO $db): array
     file_put_contents(portal_uploads_base() . DIRECTORY_SEPARATOR . $blockedSubmissionPath, 'blocked submission');
 
     $db->prepare(
-        'INSERT INTO course_submissions (item_id, course_id, user_id, filename, filepath, filesize)
-         VALUES (?,?,?,?,?,?)'
+        'INSERT INTO course_submissions
+         (item_id, course_id, user_id, filename, filepath, filesize, receipt_number)
+         VALUES (?,?,?,?,?,?,?)'
     )->execute([
         $blockedItemId,
         $blockedCourseId,
@@ -214,6 +216,7 @@ function security_setup(PDO $db): array
         'blocked-submission.txt',
         $blockedSubmissionPath,
         strlen('blocked submission'),
+        portal_generate_unique_receipt_number($db),
     ]);
     $blockedSubmissionId = (int) $db->lastInsertId();
 
