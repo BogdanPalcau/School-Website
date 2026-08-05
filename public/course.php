@@ -1215,15 +1215,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $slotChk = $db->prepare(
-            "SELECT id, title, submission_deadline, submission_ai_detection, submission_max_attempts, description
-             FROM course_folder_items
-             WHERE id = ? AND course_id = ? AND type = 'submission'"
+            "SELECT cfi.id, cfi.title, cfi.submission_deadline, cfi.submission_ai_detection,
+                    cfi.submission_max_attempts, cfi.description, cfi.locked,
+                    cf.locked AS folder_locked
+             FROM course_folder_items cfi
+             JOIN course_folders cf ON cf.id = cfi.folder_id
+             WHERE cfi.id = ? AND cfi.course_id = ? AND cfi.type = 'submission'"
         );
         $slotChk->execute([$itemId, $courseId]);
         $slot = $slotChk->fetch();
         if (!$slot) {
             $_SESSION['course_flash'] = ['error', 'Submission slot not found.'];
             $submitJsonExit(false, [], 'Submission slot not found.');
+        }
+        if (!portal_can_manage_course($courseId) && portal_folder_item_content_locked($slot)) {
+            $msg = 'This submission slot is locked.';
+            $_SESSION['course_flash'] = ['error', $msg];
+            $submitJsonExit(false, [], $msg);
         }
 
         $maxAttempts = (int) ($slot['submission_max_attempts'] ?? 0);
@@ -1963,7 +1971,8 @@ if (!portal_can_manage_course($courseId)) {
     $unreadCourseGradeCount = (int) $_activityGradeBadgeStmt->fetchColumn();
 
     $openReviewRaw = (string) ($_GET['open_review'] ?? '');
-    if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
+    $hasOpenReview = preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch) === 1;
+    if ($hasOpenReview) {
         $_db->prepare(
             "UPDATE course_submissions
              SET grade_seen_at = datetime('now')
@@ -1972,7 +1981,7 @@ if (!portal_can_manage_course($courseId)) {
                AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
         )->execute([(int) $openReviewMatch[1], $courseId, (int) $_me['id']]);
     }
-    if ($sectionKey === 'gradebook') {
+    if ($sectionKey === 'gradebook' && !$hasOpenReview) {
         $_db->prepare(
             "UPDATE course_submissions
              SET grade_seen_at = datetime('now')

@@ -631,7 +631,7 @@ ob_start();
 </section>
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
-<script src="assets/activity-player.js?v=20260802i"></script>
+<script src="assets/activity-player.js?v=20260805a"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

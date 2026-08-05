@@ -45,6 +45,7 @@ expect_true(
 $viewSrc = file_get_contents(__DIR__ . '/../public/view.php') ?: '';
 $downloadSrc = file_get_contents(__DIR__ . '/../public/download.php') ?: '';
 $lessonSrc = file_get_contents(__DIR__ . '/../public/lesson-viewer.php') ?: '';
+$courseSrc = file_get_contents(__DIR__ . '/../public/course.php') ?: '';
 
 expect_true(
     str_contains($viewSrc, 'portal_folder_item_content_locked')
@@ -60,6 +61,12 @@ expect_true(
     str_contains($lessonSrc, 'portal_folder_item_content_locked')
         && str_contains($lessonSrc, 'folder_locked'),
     'lesson-viewer.php enforces material locks'
+);
+expect_true(
+    str_contains($courseSrc, "\$action === 'submit_work'")
+        && str_contains($courseSrc, 'portal_folder_item_content_locked($slot)')
+        && str_contains($courseSrc, 'cf.locked AS folder_locked'),
+    'course.php blocks submissions to locked slots and folders'
 );
 expect_true(
     str_contains($viewSrc, 'DOMPurify') && str_contains($viewSrc, 'sanitizeDocHtml'),

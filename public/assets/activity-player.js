@@ -101,12 +101,48 @@
     if (els.saveState) els.saveState.textContent = msg || '';
   }
 
+  function answerValueForQuestion(q, answer) {
+    if (answer == null || typeof answer !== 'object') return answer;
+    // Preserve the scalar-array shape accepted by the backend for legacy answers.
+    if (Array.isArray(answer)) return answer;
+
+    switch (q.question_type) {
+      case 'single_choice':
+      case 'true_false':
+        return answer.option_id ?? answer.value ?? null;
+      case 'multiple_choice':
+        return Array.isArray(answer.option_ids) ? answer.option_ids : [];
+      case 'ordering':
+        return Array.isArray(answer.order) ? answer.order : [];
+      case 'matching':
+        return answer.matches && typeof answer.matches === 'object' ? answer.matches : {};
+      case 'numeric':
+      case 'rating_scale':
+        return answer.value ?? answer.number ?? '';
+      case 'fill_blank':
+        return Array.isArray(answer.blanks) ? answer.blanks : [];
+      default:
+        return answer.text ?? answer.value ?? '';
+    }
+  }
+
+  function answerIsEmpty(q, answer) {
+    const value = answerValueForQuestion(q, answer);
+    if (value == null || value === '') return true;
+    if (Array.isArray(value)) {
+      return value.length === 0 || value.every((entry) => entry == null || entry === '');
+    }
+    if (typeof value === 'object') {
+      const entries = Object.values(value);
+      return entries.length === 0 || entries.every((entry) => entry == null || entry === '');
+    }
+    return false;
+  }
+
   function answeredCount() {
     return state.questions.filter(q => {
       const a = state.answers[q.id];
-      if (!a || a.answer == null || a.answer === '') return false;
-      if (Array.isArray(a.answer) && a.answer.length === 0) return false;
-      return true;
+      return !!a && !answerIsEmpty(q, a.answer);
     }).length;
   }
 
@@ -227,8 +263,7 @@
     state.questions.forEach((q, i) => {
       const b = document.createElement('button');
       b.type = 'button';
-      const answered = !!(state.answers[q.id] && state.answers[q.id].answer != null && state.answers[q.id].answer !== ''
-        && !(Array.isArray(state.answers[q.id].answer) && state.answers[q.id].answer.length === 0));
+      const answered = !!state.answers[q.id] && !answerIsEmpty(q, state.answers[q.id].answer);
       b.className = 'ap-qnav-item'
         + (i === state.index ? ' is-current' : '')
         + (answered ? ' is-answered' : '');
@@ -327,7 +362,7 @@
     // Quiet early-submit link only while there are still questions ahead.
     if (earlySubmit) earlySubmit.hidden = onLast || total <= 1;
 
-    const existing = state.answers[q.id]?.answer;
+    const existing = answerValueForQuestion(q, state.answers[q.id]?.answer);
     const points = q.points != null ? Number(q.points) : null;
     let html = '<div class="ap-q-head">'
       + '<p class="ap-q-kicker">Question ' + (state.index + 1) + ' of ' + state.questions.length + '</p>'
@@ -895,7 +930,7 @@
     } else if (action === 'submit') {
       const unanswered = state.questions.filter((q) => {
         const a = state.answers[q.id]?.answer;
-        return a == null || a === '' || (Array.isArray(a) && a.length === 0);
+        return answerIsEmpty(q, a);
       }).length;
       const msg = unanswered > 0
         ? 'You still have ' + unanswered + ' unanswered question' + (unanswered === 1 ? '' : 's') + '. Once submitted, you may not be able to change your answers.'

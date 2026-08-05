@@ -159,6 +159,39 @@ function security_setup(PDO $db): array
     ]);
     $blockedItemId = (int) $db->lastInsertId();
 
+    $returnedGradeSubmissionIds = [];
+    foreach ([['First Returned Grade', 78], ['Second Returned Grade', 91]] as [$title, $score]) {
+        $db->prepare(
+            "INSERT INTO course_folder_items
+             (folder_id, course_id, type, title, description)
+             VALUES (?,?,'submission',?,?)"
+        )->execute([
+            $folderId,
+            $openCourseId,
+            $title,
+            'Returned grade fixture for seen-state tests.',
+        ]);
+        $returnedItemId = (int) $db->lastInsertId();
+
+        $db->prepare(
+            "INSERT INTO course_submissions
+             (item_id, course_id, user_id, filename, filepath, filesize,
+              score, feedback, marked_at, marked_by, grade_seen_at, receipt_number)
+             VALUES (?,?,?,?,?,0,?,?,'2026-07-21 12:00:00',?,'',?)"
+        )->execute([
+            $returnedItemId,
+            $openCourseId,
+            $studentId,
+            strtolower(str_replace(' ', '-', $title)) . '.txt',
+            '',
+            $score,
+            'Returned grade fixture feedback.',
+            $teacherId,
+            portal_generate_unique_receipt_number($db),
+        ]);
+        $returnedGradeSubmissionIds[] = (int) $db->lastInsertId();
+    }
+
     $blockedSubmissionDir = portal_uploads_base()
         . DIRECTORY_SEPARATOR . 'submissions'
         . DIRECTORY_SEPARATOR . $blockedItemId
@@ -173,8 +206,9 @@ function security_setup(PDO $db): array
     file_put_contents(portal_uploads_base() . DIRECTORY_SEPARATOR . $blockedSubmissionPath, 'blocked submission');
 
     $db->prepare(
-        'INSERT INTO course_submissions (item_id, course_id, user_id, filename, filepath, filesize)
-         VALUES (?,?,?,?,?,?)'
+        'INSERT INTO course_submissions
+         (item_id, course_id, user_id, filename, filepath, filesize, receipt_number)
+         VALUES (?,?,?,?,?,?,?)'
     )->execute([
         $blockedItemId,
         $blockedCourseId,
@@ -182,6 +216,7 @@ function security_setup(PDO $db): array
         'blocked-submission.txt',
         $blockedSubmissionPath,
         strlen('blocked submission'),
+        portal_generate_unique_receipt_number($db),
     ]);
     $blockedSubmissionId = (int) $db->lastInsertId();
 
@@ -207,6 +242,7 @@ function security_setup(PDO $db): array
         ],
         'folderId' => $folderId,
         'topicId' => $topicId,
+        'returnedGradeSubmissionIds' => $returnedGradeSubmissionIds,
         'idorTargets' => [
             'blockedFolderId' => $blockedFolderId,
             'blockedItemId' => $blockedItemId,
@@ -262,6 +298,12 @@ function security_count(PDO $db, string $kind, string $value): int
 
     if ($kind === 'submission-for-item') {
         $stmt = $db->prepare('SELECT COUNT(*) FROM course_submissions WHERE item_id = ?');
+        $stmt->execute([(int) $value]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    if ($kind === 'seen-submission-id') {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM course_submissions WHERE id = ? AND grade_seen_at != ''");
         $stmt->execute([(int) $value]);
         return (int) $stmt->fetchColumn();
     }

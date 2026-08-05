@@ -67,7 +67,7 @@ function activity_fixtures_setup(PDO $db): array
     }
 
     $settings = portal_activity_save_settings($publishedId, [
-        'max_attempts' => 6,
+        'max_attempts' => 12,
         'integrity_enabled' => 1,
         'feedback_policy' => 'when_released',
         'results_released' => 0,
@@ -79,7 +79,7 @@ function activity_fixtures_setup(PDO $db): array
         // Revision may have bumped — retry once with fresh revision.
         $act = portal_activity_find($publishedId);
         $settings = portal_activity_save_settings($publishedId, [
-            'max_attempts' => 6,
+            'max_attempts' => 12,
             'integrity_enabled' => 1,
             'feedback_policy' => 'when_released',
             'results_released' => 0,
@@ -210,6 +210,58 @@ if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === realpath(__FILE__
         if ($command === 'cleanup') {
             activity_fixtures_cleanup($db);
             echo "cleaned\n";
+            exit(0);
+        }
+        if ($command === 'allow-resume') {
+            $activityId = (int) ($argv[2] ?? 0);
+            $username = (string) ($argv[3] ?? 'sec_student');
+            if ($activityId <= 0) {
+                throw new InvalidArgumentException('allow-resume requires an activity id');
+            }
+            $userId = (int) $db->query(
+                "SELECT id FROM users WHERE username = " . $db->quote($username)
+            )->fetchColumn();
+            if ($userId <= 0) {
+                throw new RuntimeException('Unknown fixture user: ' . $username);
+            }
+
+            // Prefer reopening the latest ended attempt (teacher reopen path).
+            $ended = $db->prepare(
+                "SELECT id FROM activity_attempts
+                 WHERE activity_id = ? AND user_id = ?
+                   AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')
+                 ORDER BY id DESC LIMIT 1"
+            );
+            $ended->execute([$activityId, $userId]);
+            $endedId = (int) ($ended->fetchColumn() ?: 0);
+            if ($endedId > 0) {
+                $db->prepare(
+                    "UPDATE activity_attempts
+                     SET status = 'in_progress', submitted_at = '', score = NULL,
+                         maximum_score = NULL, percentage = NULL, end_reason = '',
+                         resume_allowed = 1, session_token_hash = '',
+                         reopened_at = datetime('now'), updated_at = datetime('now')
+                     WHERE id = ?"
+                )->execute([$endedId]);
+                echo json_encode([
+                    'ok' => true,
+                    'mode' => 'reopened',
+                    'attempt_id' => $endedId,
+                ], JSON_THROW_ON_ERROR) . PHP_EOL;
+                exit(0);
+            }
+
+            $stmt = $db->prepare(
+                "UPDATE activity_attempts
+                 SET resume_allowed = 1, updated_at = datetime('now')
+                 WHERE activity_id = ? AND user_id = ? AND status = 'in_progress'"
+            );
+            $stmt->execute([$activityId, $userId]);
+            echo json_encode([
+                'ok' => true,
+                'mode' => 'in_progress',
+                'updated' => $stmt->rowCount(),
+            ], JSON_THROW_ON_ERROR) . PHP_EOL;
             exit(0);
         }
         throw new InvalidArgumentException('Unknown command: ' . $command);

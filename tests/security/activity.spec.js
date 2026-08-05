@@ -11,8 +11,8 @@ const phpBinary = process.env.PHP_BINARY || 'C:\\xampp\\php\\php.exe';
 const activityFixtureScript = path.join(rootDir, 'tests', 'fixtures', 'activity-fixtures.php');
 const phpSessionPath = path.join(rootDir, 'database');
 
-function runActivityFixture(command) {
-  return execFileSync(phpBinary, ['-d', `session.save_path=${phpSessionPath}`, activityFixtureScript, command], {
+function runActivityFixture(command, ...args) {
+  return execFileSync(phpBinary, ['-d', `session.save_path=${phpSessionPath}`, activityFixtureScript, command, ...args], {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -25,6 +25,10 @@ function setupActivityFixtures() {
 
 function cleanupActivityFixtures() {
   runActivityFixture('cleanup');
+}
+
+function allowActivityResume(activityId, username = 'sec_student') {
+  return JSON.parse(runActivityFixture('allow-resume', String(activityId), username));
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -305,6 +309,36 @@ test('student assessment player payload does not leak answer keys while in progr
   const submitJson = await (await submitResponsePromise).json();
   const savedAnswers = Object.values(submitJson.player?.answers || {});
   expect(savedAnswers.some((entry) => Number(entry?.answer?.option_id) > 0)).toBeTruthy();
+});
+
+test('saved activity answers remain selected after resume', async ({ page }) => {
+  await signIn(page, fixtures.users.student, fixtures.password);
+  await page.goto(`/activity.php?id=${fixtures.publishedActivityId}`);
+
+  await page.locator('[data-ap-integrity-ack]').check();
+  await page.getByRole('button', { name: /start assessment/i }).click();
+  await expect(page.locator('[data-ap-shell]')).toBeVisible();
+  await expect(page.getByText('What is 2+2?')).toBeVisible();
+
+  await page.getByText('4', { exact: true }).click();
+  await expect(page.locator('[data-ap-save-state]')).toHaveText('Saved');
+
+  // Leaving an assessment ends it; teacher reopen restores resume_allowed.
+  await page.goto('/courses.php');
+  await expect(page).toHaveURL(/courses\.php/);
+
+  const allowed = allowActivityResume(fixtures.publishedActivityId, fixtures.users.student);
+  expect(allowed.ok).toBeTruthy();
+  expect(allowed.mode).toBe('reopened');
+
+  await page.goto(`/activity.php?id=${fixtures.publishedActivityId}&resume=1`);
+  await expect(page.locator('[data-ap-shell]')).toBeVisible();
+  await expect(page.getByText('What is 2+2?')).toBeVisible();
+  await expect(
+    page.locator('.ap-option')
+      .filter({ has: page.getByText('4', { exact: true }) })
+      .locator('input[type="radio"]')
+  ).toBeChecked();
 });
 
 test('builder POST without CSRF token fails', async ({ page }) => {
