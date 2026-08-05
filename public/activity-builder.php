@@ -976,7 +976,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260727a"></script>
-<script src="assets/activity-builder.js?v=20260802a"></script>
+<script src="assets/activity-builder.js?v=20260805c"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

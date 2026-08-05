@@ -126,6 +126,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'notify_grades'        => isset($_POST['notify_grades']) ? 1 : 0,
             'notify_qa'            => isset($_POST['notify_qa']) ? 1 : 0,
             'notify_announcements' => isset($_POST['notify_announcements']) ? 1 : 0,
+            'notify_events'        => isset($_POST['notify_events']) ? 1 : 0,
         ]);
         $_SESSION['settings_flash'] = ['success', 'Notification preferences saved.'];
         portal_redirect('settings.php#tab-notifications');
@@ -318,6 +319,13 @@ ob_start();
                             <small>Personal notes tied to bulletin updates</small>
                         </span>
                         <input type="checkbox" name="notify_announcements" value="1"<?= !empty($prefs['notify_announcements']) ? ' checked' : '' ?>>
+                    </label>
+                    <label class="settings-toggle">
+                        <span>
+                            <strong>Event alerts</strong>
+                            <small>When school or course events are created, updated, or cancelled</small>
+                        </span>
+                        <input type="checkbox" name="notify_events" value="1"<?= !empty($prefs['notify_events']) ? ' checked' : '' ?>>
                     </label>
                 </div>
 

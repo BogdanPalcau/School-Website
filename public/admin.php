@@ -450,6 +450,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['admin_flash'] = ['error', 'Cannot delete: course has ' . implode(', ', $blockers) . '. Archive instead.'];
             } else {
                 $pdo->prepare('DELETE FROM courses WHERE id = ?')->execute([$courseId]);
+                // Course-scoped inbox alerts (announcements, replies, lesson answers, course events).
+                $pdo->prepare('DELETE FROM portal_notifications WHERE course_id = ?')->execute([$courseId]);
                 $_SESSION['admin_flash'] = ['success', 'Empty course deleted permanently.'];
             }
         }

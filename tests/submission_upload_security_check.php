@@ -131,6 +131,31 @@ if ($zip->open($tmpDocx, ZipArchive::CREATE) === true) {
     echo "SKIP  could not create docx fixtures\n";
 }
 
+// PPTX package + text extract (presentation-only path)
+$tmpPptx = tempnam(sys_get_temp_dir(), 'pptx') . '.pptx';
+$zip = new ZipArchive();
+if ($zip->open($tmpPptx, ZipArchive::CREATE) === true) {
+    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types></Types>');
+    $zip->addFromString('_rels/.rels', '<?xml version="1.0"?><Relationships></Relationships>');
+    $zip->addFromString('ppt/presentation.xml', '<?xml version="1.0"?><p:presentation></p:presentation>');
+    $zip->addFromString(
+        'ppt/slides/slide1.xml',
+        '<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        . '<a:p><a:t>Hello deck</a:t></a:p><a:p><a:t>Bullet one</a:t></a:p></p:sld>'
+    );
+    $zip->close();
+    expect_true(portal_pptx_structure_ok($tmpPptx)['ok'] === true, 'minimal pptx structure accepted');
+    $pptxText = portal_extract_pptx_text($tmpPptx);
+    expect_true(str_contains($pptxText, 'Hello deck'), 'pptx text extract finds title text');
+    expect_true(str_contains($pptxText, 'Bullet one'), 'pptx text extract finds body text');
+    $detail = portal_extract_submission_text_detailed($tmpPptx, 'demo.pptx');
+    expect_true(($detail['extractor'] ?? '') === 'pptx', 'pptx detailed extract uses pptx extractor');
+    expect_true(in_array($detail['confidence'] ?? '', ['low', 'medium'], true), 'pptx confidence is provisional');
+    @unlink($tmpPptx);
+} else {
+    echo "SKIP  could not create pptx fixtures\n";
+}
+
 // MIME fail-closed for missing file
 expect_true(portal_upload_mime_ok('', 'pdf') === false, 'mime_ok fails closed on missing path');
 

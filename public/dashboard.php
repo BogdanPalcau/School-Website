@@ -452,6 +452,8 @@ $notifStmt = $db->prepare(
 $notifStmt->execute([$uid]);
 $unreadNotifCount = (int) $notifStmt->fetchColumn();
 
+$dashUpcomingEvents = portal_events_for_dashboard(3);
+
 $dueSoonCount = count(array_filter(
     $upcomingDeadlines,
     static fn(array $d): bool => in_array($d['deadline_info']['state'], ['soon', 'closed'], true)
@@ -1013,6 +1015,7 @@ ob_start();
                                 'lesson_answer', 'qa' => 'Q&A',
                                 'announcement', 'announcements' => 'Announcement',
                                 'grade', 'grades' => 'Grade',
+                                'event' => 'Event',
                                 default => '',
                             };
                         ?>
@@ -1029,6 +1032,42 @@ ob_start();
                                     <span><?= portal_escape(substr((string) $n['body'], 0, 100)) ?></span>
                                 <?php endif; ?>
                                 <span><?= portal_escape($relativeWhen((string) $n['created_at'])) ?></span>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <?php endif; ?>
+            </article>
+
+            <article class="card-shell" id="dashboard-upcoming-events">
+                <div class="section-head">
+                    <div>
+                        <p class="eyebrow">Calendar</p>
+                        <h3 class="card-title">Upcoming events</h3>
+                    </div>
+                    <a class="inline-action" href="events.php">All events</a>
+                </div>
+                <?php if (empty($dashUpcomingEvents)): ?>
+                    <p class="dash-empty">No upcoming events right now.</p>
+                <?php else: ?>
+                <ul class="dash-announce-list">
+                    <?php foreach ($dashUpcomingEvents as $dashEvent): ?>
+                        <?php
+                            $dashCid = isset($dashEvent['course_id']) && $dashEvent['course_id'] !== null && $dashEvent['course_id'] !== ''
+                                ? (int) $dashEvent['course_id']
+                                : 0;
+                            $dashTag = $dashCid > 0
+                                ? (string) ($dashEvent['course_title'] ?? 'Course')
+                                : 'School';
+                        ?>
+                        <li>
+                            <a href="events.php?event=<?= (int) $dashEvent['id'] ?>">
+                                <?php if ($dashCid > 0 && !empty($dashEvent['course_accent'])): ?>
+                                    <span class="dash-accent" style="background:<?= portal_escape((string) $dashEvent['course_accent']) ?>"></span>
+                                <?php endif; ?>
+                                <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape($dashTag) ?></span>
+                                <strong><?= portal_escape((string) $dashEvent['title']) ?></strong>
+                                <span><?= portal_escape(portal_event_format_full((string) $dashEvent['starts_at'])) ?></span>
                             </a>
                         </li>
                     <?php endforeach; ?>

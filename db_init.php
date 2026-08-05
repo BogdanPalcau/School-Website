@@ -262,6 +262,29 @@ $_pdo->exec("
 ");
 
 $_pdo->exec("
+    CREATE TABLE IF NOT EXISTS events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_id   INTEGER NULL REFERENCES courses(id) ON DELETE CASCADE,
+        created_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title       TEXT NOT NULL,
+        summary     TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        starts_at   TEXT NOT NULL,
+        ends_at     TEXT NOT NULL DEFAULT '',
+        location    TEXT NOT NULL DEFAULT '',
+        online_url  TEXT NOT NULL DEFAULT '',
+        important   INTEGER NOT NULL DEFAULT 0,
+        status      TEXT NOT NULL DEFAULT 'scheduled'
+                    CHECK(status IN ('scheduled', 'cancelled')),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_events_starts_at ON events(starts_at)");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_events_course_id ON events(course_id)");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)");
+
+$_pdo->exec("
     CREATE TABLE IF NOT EXISTS course_discussion_topics (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,

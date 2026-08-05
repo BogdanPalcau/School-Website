@@ -106,6 +106,7 @@ ob_start();
                     'lesson_answer', 'qa' => 'Q&A',
                     'announcement', 'announcements' => 'Announcement',
                     'grade', 'grades' => 'Grade',
+                    'event' => 'Event',
                     default => '',
                 };
             ?>

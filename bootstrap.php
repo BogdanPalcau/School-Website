@@ -52,6 +52,22 @@ if (!function_exists('portal_is_safe_rich_text_href')) {
     }
 }
 
+if (!function_exists('portal_valid_external_url')) {
+    function portal_valid_external_url(string $url): bool
+    {
+        if ($url === '' || strlen($url) > 500) {
+            return false;
+        }
+        $parts = parse_url($url);
+        if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
+            return false;
+        }
+
+        return in_array(strtolower($parts['scheme']), ['http', 'https'], true)
+            && filter_var($url, FILTER_VALIDATE_URL) !== false;
+    }
+}
+
 if (!function_exists('portal_rich_text_strip_tags')) {
     /** Tags removed entirely with all descendant content (never unwrapped). */
     function portal_rich_text_strip_tags(): array
@@ -1058,7 +1074,7 @@ if (!function_exists('portal_year_group_options')) {
 
 if (!function_exists('portal_user_preferences')) {
     /**
-     * @return array{notify_grades:int,notify_qa:int,notify_announcements:int}
+     * @return array{notify_grades:int,notify_qa:int,notify_announcements:int,notify_events:int}
      */
     function portal_user_preferences(int $userId): array
     {
@@ -1066,6 +1082,7 @@ if (!function_exists('portal_user_preferences')) {
             'notify_grades'        => 1,
             'notify_qa'            => 1,
             'notify_announcements' => 1,
+            'notify_events'        => 1,
         ];
         if ($userId <= 0) {
             return $defaults;
@@ -1073,7 +1090,7 @@ if (!function_exists('portal_user_preferences')) {
 
         try {
             $stmt = portal_db()->prepare(
-                "SELECT notify_grades, notify_qa, notify_announcements
+                "SELECT notify_grades, notify_qa, notify_announcements, notify_events
                  FROM user_preferences WHERE user_id = ? LIMIT 1"
             );
             $stmt->execute([$userId]);
@@ -1086,9 +1103,30 @@ if (!function_exists('portal_user_preferences')) {
                 'notify_grades'        => (int) $row['notify_grades'] === 1 ? 1 : 0,
                 'notify_qa'            => (int) $row['notify_qa'] === 1 ? 1 : 0,
                 'notify_announcements' => (int) $row['notify_announcements'] === 1 ? 1 : 0,
+                'notify_events'        => (int) ($row['notify_events'] ?? 1) === 1 ? 1 : 0,
             ];
         } catch (\Throwable $e) {
-            return $defaults;
+            // Older DBs may lack notify_events until migration runs.
+            try {
+                $stmt = portal_db()->prepare(
+                    "SELECT notify_grades, notify_qa, notify_announcements
+                     FROM user_preferences WHERE user_id = ? LIMIT 1"
+                );
+                $stmt->execute([$userId]);
+                $row = $stmt->fetch();
+                if (!$row) {
+                    return $defaults;
+                }
+
+                return [
+                    'notify_grades'        => (int) $row['notify_grades'] === 1 ? 1 : 0,
+                    'notify_qa'            => (int) $row['notify_qa'] === 1 ? 1 : 0,
+                    'notify_announcements' => (int) $row['notify_announcements'] === 1 ? 1 : 0,
+                    'notify_events'        => 1,
+                ];
+            } catch (\Throwable $e2) {
+                return $defaults;
+            }
         }
     }
 }
@@ -1101,18 +1139,20 @@ if (!function_exists('portal_save_user_preferences')) {
         }
 
         portal_db()->prepare(
-            "INSERT INTO user_preferences (user_id, notify_grades, notify_qa, notify_announcements, updated_at)
-             VALUES (?,?,?,?,datetime('now'))
+            "INSERT INTO user_preferences (user_id, notify_grades, notify_qa, notify_announcements, notify_events, updated_at)
+             VALUES (?,?,?,?,?,datetime('now'))
              ON CONFLICT(user_id) DO UPDATE SET
                 notify_grades = excluded.notify_grades,
                 notify_qa = excluded.notify_qa,
                 notify_announcements = excluded.notify_announcements,
+                notify_events = excluded.notify_events,
                 updated_at = datetime('now')"
         )->execute([
             $userId,
             !empty($prefs['notify_grades']) ? 1 : 0,
             !empty($prefs['notify_qa']) ? 1 : 0,
             !empty($prefs['notify_announcements']) ? 1 : 0,
+            !empty($prefs['notify_events']) ? 1 : 0,
         ]);
     }
 }
@@ -1135,6 +1175,7 @@ if (!function_exists('portal_notify_user')) {
             'lesson_answer', 'qa', 'discussion_reply', 'discussion' => 'notify_qa',
             'grade', 'grades' => 'notify_grades',
             'announcement', 'announcements' => 'notify_announcements',
+            'event' => 'notify_events',
             default => null,
         };
         if ($prefKey !== null && empty($prefs[$prefKey])) {
@@ -1156,6 +1197,47 @@ if (!function_exists('portal_notify_user')) {
             return true;
         } catch (\Throwable $e) {
             return false;
+        }
+    }
+}
+
+if (!function_exists('portal_notifications_unsend')) {
+    /**
+     * Remove inbox notifications that point at a resource that was deleted.
+     *
+     * @param string      $link   Exact link value stored on the notification
+     * @param bool        $prefix Also match links that start with $link (e.g. topic + &reply=)
+     * @param string|null $type   Optional type filter (event, announcement, …)
+     */
+    function portal_notifications_unsend(string $link, bool $prefix = false, ?string $type = null): int
+    {
+        $link = trim($link);
+        if ($link === '') {
+            return 0;
+        }
+
+        $params = [];
+        if ($prefix) {
+            $sql = 'DELETE FROM portal_notifications WHERE (link = ? OR link LIKE ? ESCAPE \'\\\')';
+            $params[] = $link;
+            $params[] = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $link) . '%';
+        } else {
+            $sql = 'DELETE FROM portal_notifications WHERE link = ?';
+            $params[] = $link;
+        }
+
+        if ($type !== null && $type !== '') {
+            $sql .= ' AND type = ?';
+            $params[] = $type;
+        }
+
+        try {
+            $stmt = portal_db()->prepare($sql);
+            $stmt->execute($params);
+
+            return $stmt->rowCount();
+        } catch (\Throwable $e) {
+            return 0;
         }
     }
 }
@@ -2012,6 +2094,30 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
 
+        // ── School / course events (one-off dated activities) ─────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id   INTEGER NULL REFERENCES courses(id) ON DELETE CASCADE,
+                created_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                summary     TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                starts_at   TEXT NOT NULL,
+                ends_at     TEXT NOT NULL DEFAULT '',
+                location    TEXT NOT NULL DEFAULT '',
+                online_url  TEXT NOT NULL DEFAULT '',
+                important   INTEGER NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'scheduled'
+                            CHECK(status IN ('scheduled', 'cancelled')),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_events_starts_at ON events(starts_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_events_course_id ON events(course_id)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)");
+
         // ── Discussion forum ──────────────────────────────────────────────────
         $db->exec("
             CREATE TABLE IF NOT EXISTS course_discussion_topics (
@@ -2103,9 +2209,14 @@ if (!function_exists('portal_run_migrations')) {
                 notify_grades        INTEGER NOT NULL DEFAULT 1,
                 notify_qa            INTEGER NOT NULL DEFAULT 1,
                 notify_announcements INTEGER NOT NULL DEFAULT 1,
+                notify_events        INTEGER NOT NULL DEFAULT 1,
                 updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         ");
+        $prefCols = array_column($db->query("PRAGMA table_info(user_preferences)")->fetchAll(), 'name');
+        if (!in_array('notify_events', $prefCols, true)) {
+            $db->exec("ALTER TABLE user_preferences ADD COLUMN notify_events INTEGER NOT NULL DEFAULT 1");
+        }
 
         // ── Groups ────────────────────────────────────────────────────────────
         $db->exec("
@@ -2558,4 +2669,5 @@ if (!function_exists('portal_folder_item_content_locked')) {
 
 require_once __DIR__ . '/integrity.php';
 require_once __DIR__ . '/submission_security.php';
+require_once __DIR__ . '/events.php';
 // activity.php is loaded earlier so migrations run with portal_run_migrations()

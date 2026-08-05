@@ -35,6 +35,7 @@ if (!function_exists('portal_submission_type_labels')) {
             'pdf'  => 'PDF (.pdf)',
             'docx' => 'Word (.docx)',
             'doc'  => 'Word (.doc)',
+            'pptx' => 'PowerPoint (.pptx) — download to view',
             'txt'  => 'Text (.txt)',
             'png'  => 'Image PNG (.png)',
             'jpg'  => 'Image JPG (.jpg)',
@@ -260,6 +261,10 @@ if (!function_exists('portal_submission_signature_ok')) {
             return portal_docx_structure_ok($tmpPath);
         }
 
+        if ($declaredType === 'pptx') {
+            return portal_pptx_structure_ok($tmpPath);
+        }
+
         if ($declaredType === 'doc') {
             // Rely on MIME fail-closed; OLE signature is variable.
             return ['ok' => true];
@@ -269,12 +274,14 @@ if (!function_exists('portal_submission_signature_ok')) {
     }
 }
 
-if (!function_exists('portal_docx_structure_ok')) {
+if (!function_exists('portal_ooxml_package_ok')) {
     /**
-     * Validate OOXML structure without extracting to disk.
+     * Shared ZIP/OOXML safety checks (path traversal, encryption, zip bombs).
+     *
+     * @param list<string> $required
      * @return array{ok: bool, reason?: string}
      */
-    function portal_docx_structure_ok(string $tmpPath): array
+    function portal_ooxml_package_ok(string $tmpPath, array $required, string $structureReason): array
     {
         if (!class_exists('ZipArchive')) {
             return ['ok' => false, 'reason' => 'mime_unavailable'];
@@ -283,18 +290,13 @@ if (!function_exists('portal_docx_structure_ok')) {
         $zip = new ZipArchive();
         $opened = @$zip->open($tmpPath);
         if ($opened !== true) {
-            return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+            return ['ok' => false, 'reason' => $structureReason];
         }
 
-        $required = [
-            '[Content_Types].xml',
-            '_rels/.rels',
-            'word/document.xml',
-        ];
         foreach ($required as $need) {
             if ($zip->locateName($need) === false) {
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
         }
 
@@ -312,32 +314,27 @@ if (!function_exists('portal_docx_structure_ok')) {
             $stat = $zip->statIndex($i);
             if ($stat === false) {
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
             $name = (string) ($stat['name'] ?? '');
             if ($name === '' || str_contains($name, "\0")) {
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
-            // Path traversal / absolute paths
             $norm = str_replace('\\', '/', $name);
             if (str_starts_with($norm, '/') || preg_match('#^[A-Za-z]:/#', $norm) || str_contains($norm, '../')) {
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
 
-            // Encrypted entries (ZipCrypto / WinZip AES often set encryption bit)
             $encryption = (int) ($stat['encryption_method'] ?? 0);
             if ($encryption !== 0) {
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
-            // Fallback flag check when encryption_method absent
             if (isset($stat['flags']) && (((int) $stat['flags']) & 0x1) === 0x1) {
-                // bit 0 = encrypted in traditional ZIP
-                // Many DOCX are not encrypted; reject if set.
                 $zip->close();
-                return ['ok' => false, 'reason' => 'invalid_docx_structure'];
+                return ['ok' => false, 'reason' => $structureReason];
             }
 
             $comp = (int) ($stat['comp_size'] ?? 0);
@@ -362,6 +359,36 @@ if (!function_exists('portal_docx_structure_ok')) {
 
         $zip->close();
         return ['ok' => true];
+    }
+}
+
+if (!function_exists('portal_docx_structure_ok')) {
+    /**
+     * Validate OOXML Word structure without extracting to disk.
+     * @return array{ok: bool, reason?: string}
+     */
+    function portal_docx_structure_ok(string $tmpPath): array
+    {
+        return portal_ooxml_package_ok(
+            $tmpPath,
+            ['[Content_Types].xml', '_rels/.rels', 'word/document.xml'],
+            'invalid_docx_structure'
+        );
+    }
+}
+
+if (!function_exists('portal_pptx_structure_ok')) {
+    /**
+     * Validate OOXML PowerPoint structure without extracting to disk.
+     * @return array{ok: bool, reason?: string}
+     */
+    function portal_pptx_structure_ok(string $tmpPath): array
+    {
+        return portal_ooxml_package_ok(
+            $tmpPath,
+            ['[Content_Types].xml', '_rels/.rels', 'ppt/presentation.xml'],
+            'invalid_pptx_structure'
+        );
     }
 }
 

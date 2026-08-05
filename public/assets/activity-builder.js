@@ -495,6 +495,18 @@
       '</div>' +
       '<label class="ab-field"><span>Question text</span><div class="quill-wrap ab-quill-compact"><div class="quill-editor" data-ab-q-quill="prompt"></div></div>' +
       '<textarea hidden data-ab-q-field="prompt_html">' + escapeHtml(q.prompt_html || '') + '</textarea></label>' +
+      '<div class="ab-media-dropzone" data-ab-media-dropzone>' +
+      '<div class="ab-media-dropzone-ui">' +
+      '<div class="ab-media-dropzone-copy"><strong>Drop media here</strong><span>Images, audio, or video — or browse</span></div>' +
+      '<div class="ab-media-dropzone-actions">' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-upload-media>Upload media</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-camera>Camera</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-record-audio>Record audio</button>' +
+      '</div></div>' +
+      '<div class="ab-media-progress is-hidden" data-ab-media-progress aria-live="polite">' +
+      '<div class="ab-media-progress-track"><div class="ab-media-progress-bar" data-ab-media-progress-bar></div></div>' +
+      '<span class="ab-media-progress-label" data-ab-media-progress-label>0%</span>' +
+      '</div></div>' +
       '<div class="ab-editor-meta">' +
       '<label class="ab-field"><span>Points</span><input type="number" min="0" step="0.5" data-ab-q-field="points" value="' + Number(q.points || 1) + '"></label>' +
       '<label class="ab-check ab-check--inline"><input type="checkbox" data-ab-q-bool="required"' + (Number(q.required) !== 0 ? ' checked' : '') + '><span>Required</span></label>' +
@@ -697,6 +709,45 @@
       els.camera.click();
     });
     els.editor.querySelector('[data-ab-record-audio]')?.addEventListener('click', () => recordAudio(q.id));
+
+    const mediaZone = els.editor.querySelector('[data-ab-media-dropzone]');
+    if (mediaZone) {
+      let dragDepth = 0;
+      const hasFiles = (dt) => {
+        if (!dt) return false;
+        if (dt.types && typeof dt.types.includes === 'function') return dt.types.includes('Files');
+        return Array.from(dt.types || []).indexOf('Files') !== -1;
+      };
+      mediaZone.addEventListener('dragenter', (e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepth += 1;
+        mediaZone.classList.add('is-dragover');
+      });
+      mediaZone.addEventListener('dragover', (e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      });
+      mediaZone.addEventListener('dragleave', (e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) mediaZone.classList.remove('is-dragover');
+      });
+      mediaZone.addEventListener('drop', (e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepth = 0;
+        mediaZone.classList.remove('is-dragover');
+        const file = e.dataTransfer?.files?.[0];
+        if (file) uploadMedia(file, q.id);
+      });
+    }
   }
 
   function collectQuestionFields(q) {
@@ -808,6 +859,65 @@
     });
   }
 
+  function setMediaUploadProgress(pct, visible) {
+    const wrap = els.editor?.querySelector('[data-ab-media-progress]');
+    const bar = els.editor?.querySelector('[data-ab-media-progress-bar]');
+    const label = els.editor?.querySelector('[data-ab-media-progress-label]');
+    if (!wrap) return;
+    if (!visible) {
+      wrap.classList.add('is-hidden');
+      if (bar) bar.style.width = '0%';
+      if (label) label.textContent = '0%';
+      return;
+    }
+    wrap.classList.remove('is-hidden');
+    const safe = Math.max(0, Math.min(100, Math.round(pct || 0)));
+    if (bar) bar.style.width = safe + '%';
+    if (label) label.textContent = safe + '%';
+  }
+
+  function xhrUploadMedia(fd, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'activity-builder.php?id=' + activityId);
+      xhr.setRequestHeader('X-Requested-With', 'fetch');
+      xhr.responseType = 'text';
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && typeof onProgress === 'function') {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        let data;
+        try {
+          data = JSON.parse(xhr.responseText || '{}');
+        } catch (_) {
+          reject(new Error('Invalid response'));
+          return;
+        }
+        if (data.conflict) {
+          state.revision = data.revision || state.revision;
+          setSaveState('Conflict — another save happened. Reloading…', true);
+          if (data.activity) state.activity = data.activity;
+          if (data.tree) state.tree = data.tree;
+          renderAll();
+          reject(new Error(data.error || 'Revision conflict'));
+          return;
+        }
+        if (xhr.status >= 400 || data.ok === false) {
+          reject(new Error(data.error || 'Upload failed'));
+          return;
+        }
+        if (data.revision) state.revision = data.revision;
+        if (data.activity) state.activity = data.activity;
+        if (data.tree) state.tree = data.tree;
+        resolve(data);
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(fd);
+    });
+  }
+
   async function uploadMedia(file, questionId) {
     if (!file) return;
     const fd = new FormData();
@@ -820,8 +930,11 @@
     else if (file.type.startsWith('video/')) mediaType = 'video';
     fd.append('media_type', mediaType);
     if (questionId) fd.append('question_id', String(questionId));
+    setMediaUploadProgress(0, true);
+    setSaveState('Uploading media…');
     try {
-      const data = await api('upload_media', fd, true);
+      const data = await xhrUploadMedia(fd, (pct) => setMediaUploadProgress(pct, true));
+      setMediaUploadProgress(100, true);
       setSaveState('Media uploaded #' + data.media_id);
       if (state.selectedQuestionId) {
         const ta = els.editor?.querySelector('[data-ab-q-field="prompt_html"]');
@@ -836,7 +949,10 @@
         }
       }
     } catch (err) {
+      setSaveState(err.message || 'Upload failed', true);
       alert(err.message || 'Upload failed');
+    } finally {
+      setTimeout(() => setMediaUploadProgress(0, false), 400);
     }
   }
 

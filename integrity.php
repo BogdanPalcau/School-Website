@@ -107,6 +107,72 @@ if (!function_exists('portal_extract_docx_text')) {
     }
 }
 
+if (!function_exists('portal_extract_pptx_text')) {
+    /**
+     * Extract readable text from a PPTX (slide body text only).
+     * Does not include notes, charts-as-images, or layout.
+     */
+    function portal_extract_pptx_text(string $absPath): string
+    {
+        if (!class_exists('ZipArchive')) {
+            return '';
+        }
+
+        $zip = new ZipArchive();
+        if ($zip->open($absPath) !== true) {
+            return '';
+        }
+
+        $slideNames = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = (string) $zip->getNameIndex($i);
+            if (preg_match('#^ppt/slides/slide(\d+)\.xml$#', $name, $m)) {
+                $slideNames[(int) $m[1]] = $name;
+            }
+        }
+        ksort($slideNames, SORT_NUMERIC);
+
+        $parts = [];
+        foreach ($slideNames as $num => $name) {
+            $xml = (string) $zip->getFromName($name);
+            if ($xml === '') {
+                continue;
+            }
+            $lines = [];
+            if (preg_match_all('/<a:p\b[^>]*>(.*?)<\/a:p>/s', $xml, $paraMatches)) {
+                foreach ($paraMatches[1] as $paraXml) {
+                    $chunks = [];
+                    if (preg_match_all('/<a:t\b[^>]*>(.*?)<\/a:t>/s', $paraXml, $textMatches)) {
+                        foreach ($textMatches[1] as $chunk) {
+                            $chunks[] = html_entity_decode(strip_tags($chunk), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                        }
+                    }
+                    $line = trim(preg_replace('/\s+/', ' ', implode('', $chunks)) ?? '');
+                    if ($line !== '') {
+                        $lines[] = $line;
+                    }
+                }
+            }
+            if ($lines === []) {
+                // Fallback for unusual packages
+                $xml = preg_replace('/<\/a:p>/', "\n", $xml) ?? $xml;
+                $xml = preg_replace('/<a:br\b[^>]*\/>/', "\n", $xml) ?? $xml;
+                $text = html_entity_decode(strip_tags($xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                $text = trim(preg_replace("/[ \t]+/", ' ', $text) ?? $text);
+                $text = trim(preg_replace("/\n{3,}/", "\n\n", $text) ?? $text);
+                if ($text !== '') {
+                    $parts[] = 'Slide ' . $num . ":\n" . $text;
+                }
+                continue;
+            }
+            $parts[] = 'Slide ' . $num . ":\n" . implode("\n", $lines);
+        }
+        $zip->close();
+
+        return trim(implode("\n\n", $parts));
+    }
+}
+
 if (!function_exists('portal_extract_pdf_text')) {
     function portal_extract_pdf_text(string $absPath): string
     {
@@ -211,6 +277,14 @@ if (!function_exists('portal_extract_submission_text_detailed')) {
             if ($text === '' && !class_exists('ZipArchive')) {
                 $note = 'PHP zip extension is required to read DOCX files.';
             }
+        } elseif ($ext === 'pptx') {
+            $text = portal_extract_pptx_text($absPath);
+            $extractor = $text !== '' ? 'pptx' : 'none';
+            if ($text === '' && !class_exists('ZipArchive')) {
+                $note = 'PHP zip extension is required to read PowerPoint files.';
+            } elseif ($text !== '') {
+                $note = 'PowerPoint checks use extracted slide text only. Layout, images, charts, and speaker notes are not included.';
+            }
         } elseif ($ext === 'pdf') {
             $text = portal_extract_pdf_text($absPath);
             $extractor = $text !== '' ? 'pdf-raw' : 'none';
@@ -219,16 +293,20 @@ if (!function_exists('portal_extract_submission_text_detailed')) {
             }
         }
 
-        if (mb_strlen($text) < 80 && in_array($ext, ['doc', 'docx', 'pdf', 'odt', 'rtf'], true)) {
+        if (mb_strlen($text) < 80 && in_array($ext, ['doc', 'docx', 'pdf', 'pptx', 'odt', 'rtf'], true)) {
             $converted = portal_extract_text_via_soffice($absPath);
             if (mb_strlen($converted) > mb_strlen($text)) {
                 $text = $converted;
-                $extractor = 'soffice';
-                $note = '';
+                $extractor = $ext === 'pptx' ? 'pptx-soffice' : 'soffice';
+                $note = $ext === 'pptx'
+                    ? 'PowerPoint text was extracted with LibreOffice. Layout, images, and charts are still not checked for originality.'
+                    : '';
             } elseif ($text === '' && $converted === '') {
                 $note = $note !== ''
                     ? $note
-                    : 'Could not extract readable text. Try DOCX/TXT, or install LibreOffice for PDF/DOC.';
+                    : ($ext === 'pptx'
+                        ? 'Could not extract readable slide text from this presentation.'
+                        : 'Could not extract readable text. Try DOCX/TXT, or install LibreOffice for PDF/DOC.');
             }
         }
 
@@ -241,6 +319,12 @@ if (!function_exists('portal_extract_submission_text_detailed')) {
             $confidence = 'none';
             if ($note === '') {
                 $note = 'No readable text could be extracted from this file.';
+            }
+        } elseif ($extractor === 'pptx' || $extractor === 'pptx-soffice') {
+            // Presentations are short / bullet-heavy — never treat as full essay confidence.
+            $confidence = $wordCount < 40 ? 'low' : 'medium';
+            if ($note === '') {
+                $note = 'PowerPoint checks use extracted slide text only. Layout, images, charts, and speaker notes are not included.';
             }
         } elseif ($extractor === 'pdf-raw' && $wordCount < 80) {
             $confidence = 'low';
@@ -524,14 +608,14 @@ if (!function_exists('portal_submission_is_image')) {
 if (!function_exists('portal_supported_submission_extensions')) {
     function portal_supported_submission_extensions(): array
     {
-        return array_merge(['doc', 'docx', 'pdf', 'txt'], portal_submission_image_extensions());
+        return array_merge(['doc', 'docx', 'pdf', 'pptx', 'txt'], portal_submission_image_extensions());
     }
 }
 
 if (!function_exists('portal_supported_submission_hint')) {
     function portal_supported_submission_hint(): string
     {
-        return 'DOC, DOCX, PDF, TXT, or an image (PNG, JPG)';
+        return 'DOC, DOCX, PDF, PPTX (download to view), TXT, or an image (PNG, JPG)';
     }
 }
 
@@ -3299,16 +3383,33 @@ if (!function_exists('portal_integrity_check_similarity')) {
             $score = round($dampened, 1);
         }
 
+        $isPresentationExtract = in_array((string) ($extraction['extractor'] ?? ''), ['pptx', 'pptx-soffice'], true);
+
         $status = 'checked';
         if (in_array($extractionConfidence, ['low', 'medium'], true) && $score < 15) {
-            $status = 'incomplete';
+            // Medium-confidence PPTX with usable slide text is expected — don't treat a clean deck as incomplete.
+            $pptxOk = $isPresentationExtract && $extractionConfidence === 'medium' && $wordCount >= 40;
+            if (!$pptxOk) {
+                $status = 'incomplete';
+            }
         }
 
         $webScope = 'not_configured';
         $webMatches = [];
         $web = ['status' => 'not_configured', 'score' => null, 'report' => '', 'matches' => []];
         if ($submissionContext !== null && portal_external_ai_should_run($submissionContext)) {
-            $web = portal_gptzero_plagiarism($cleanText);
+            // Short bullet-heavy slide text produces unreliable web/AI plagiarism scores.
+            if ($isPresentationExtract && in_array($extractionConfidence, ['none', 'low', 'medium'], true)) {
+                $web = [
+                    'status' => 'skipped',
+                    'score' => null,
+                    'report' => 'External AI/plagiarism checks are limited for PowerPoint submissions and were skipped.',
+                    'matches' => [],
+                ];
+                $webScope = 'skipped';
+            } else {
+                $web = portal_gptzero_plagiarism($cleanText);
+            }
         }
         if ($web['status'] === 'checked' && ($web['score'] !== null || $web['matches'] !== [])) {
             $webScope = 'checked';
@@ -3319,7 +3420,7 @@ if (!function_exists('portal_integrity_check_similarity')) {
             $matches = array_merge($webMatches, $institutionalMatches);
             usort($matches, static fn(array $a, array $b): int => $b['score'] <=> $a['score']);
             $matches = array_slice($matches, 0, 6);
-        } elseif ($submissionContext !== null && portal_external_ai_should_run($submissionContext)) {
+        } elseif ($submissionContext !== null && portal_external_ai_should_run($submissionContext) && $webScope !== 'skipped') {
             $webScope = 'unavailable';
         }
 
@@ -3337,6 +3438,14 @@ if (!function_exists('portal_integrity_check_similarity')) {
             if ($score < 15) {
                 $score = null;
             }
+        } elseif ($isPresentationExtract) {
+            $summary = 'Presentation originality is based on extracted slide text only'
+                . ((string) ($extraction['note'] ?? '') !== '' ? ' — ' . $extraction['note'] : '.')
+                . (empty($institutionalMatches) && empty($webMatches)
+                    ? ' No meaningful overlap was found in the institutional database.'
+                    : (empty($webMatches)
+                        ? ' Potential overlap was found against institutional sources.'
+                        : ' Overlap was found against institutional sources and/or the web.'));
         } elseif ($hasSelfAuthoredOnly) {
             $summary = 'Overlap found only with this student\'s own earlier work — not flagged as plagiarism.';
         } elseif (empty($institutionalMatches) && empty($webMatches)) {
@@ -3355,7 +3464,19 @@ if (!function_exists('portal_integrity_check_similarity')) {
             : (is_array($processReview['file_metadata'] ?? null) ? $processReview['file_metadata'] : null);
 
         $heuristicAi = null;
-        if (!($status === 'incomplete' && $wordCount < 80)) {
+        if ($isPresentationExtract) {
+            $heuristicAi = [
+                'disabled' => true,
+                'score' => null,
+                'level' => 'n/a',
+                'level_label' => 'Disabled',
+                'evidence_strength' => '',
+                'summary' => 'AI detection is disabled for PowerPoint submissions. Download the file to review the full presentation design.',
+                'risk_signals' => [],
+                'positive_signals' => [],
+                'teacher_note' => 'Download the PowerPoint and open it in a presentation app before grading.',
+            ];
+        } elseif (!($status === 'incomplete' && $wordCount < 80)) {
             $heuristicAi = portal_integrity_heuristic_ai_review($cleanText, [
                 'file_metadata' => $fileMetadata,
                 'process_review' => $processReview,
@@ -3748,6 +3869,8 @@ if (!function_exists('portal_integrity_summary_cards')) {
             || ($extractionConfidence === 'low' && $simScore === null);
 
         $aiChance    = $heuristicAi !== null && isset($heuristicAi['score']) ? (float) $heuristicAi['score'] : null;
+        $aiDisabledForPresentation = !empty($heuristicAi['disabled'])
+            || in_array((string) ($extraction['extractor'] ?? ''), ['pptx', 'pptx-soffice'], true);
         $processLevel = $processRev['level'] ?? 'low';
         $processLabel = match ($processLevel) {
             'high'   => 'Needs review',
@@ -3798,6 +3921,10 @@ if (!function_exists('portal_integrity_summary_cards')) {
                             Text extraction confidence:
                             <strong><?= portal_escape($extractionConfidence !== '' ? $extractionConfidence : 'low') ?></strong>.
                             <?= portal_escape((string) ($extraction['note'] ?? $report['summary'] ?? 'Treat this originality result as provisional.')) ?>
+                        </p>
+                    <?php elseif (in_array((string) ($extraction['extractor'] ?? ''), ['pptx', 'pptx-soffice'], true)): ?>
+                        <p class="rvw-card-note rvw-card-note--warn">
+                            <?= portal_escape((string) ($extraction['note'] ?? 'PowerPoint checks use extracted slide text only.')) ?>
                         </p>
                     <?php endif; ?>
                     <?php if ($isTeacher && !empty($matches)): ?>
@@ -3855,11 +3982,13 @@ if (!function_exists('portal_integrity_summary_cards')) {
             </details>
 
             <!-- Chance of AI usage -->
-            <details class="rvw-card rvw-card--<?= portal_escape($extractionIncomplete && $aiChance === null ? 'muted' : portal_integrity_tone($aiChance, 20, 45)) ?>"<?= $isTeacher ? '' : ' data-static="1"' ?>>
+            <details class="rvw-card rvw-card--<?= portal_escape($aiDisabledForPresentation ? 'muted' : ($extractionIncomplete && $aiChance === null ? 'muted' : portal_integrity_tone($aiChance, 20, 45))) ?>"<?= ($isTeacher && !$aiDisabledForPresentation) ? '' : ' data-static="1"' ?>>
                 <summary class="rvw-card-head">
                     <span class="rvw-card-label">Chance of AI usage</span>
                     <span class="rvw-card-value"><?php
-                        if ($extractionIncomplete && $aiChance === null) {
+                        if ($aiDisabledForPresentation) {
+                            echo 'Disabled';
+                        } elseif ($extractionIncomplete && $aiChance === null) {
                             echo 'Incomplete';
                         } elseif ($aiChance !== null) {
                             echo portal_escape((string) round($aiChance, 0)) . '%';
@@ -3869,6 +3998,11 @@ if (!function_exists('portal_integrity_summary_cards')) {
                     ?></span>
                 </summary>
                 <div class="rvw-card-body">
+                    <?php if ($aiDisabledForPresentation): ?>
+                        <p class="rvw-card-note rvw-card-note--warn">
+                            AI detection is turned off for PowerPoint submissions. Download the file and review the slides in PowerPoint instead.
+                        </p>
+                    <?php else: ?>
                     <p class="rvw-card-note rvw-card-note--soft">Statistical estimate only — not proof of AI use.</p>
                     <?php if ($extractionIncomplete && $aiChance === null): ?>
                         <p class="rvw-card-note rvw-card-note--warn">Style review was skipped because text extraction was incomplete.</p>
@@ -3927,6 +4061,7 @@ if (!function_exists('portal_integrity_summary_cards')) {
                         <?php endif; ?>
                     <?php else: ?>
                         <p class="rvw-card-note">Your teacher can review the detailed evidence.</p>
+                    <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </details>
@@ -4115,8 +4250,21 @@ if (!function_exists('portal_render_submission_review')) {
                             <p class="rvw-doc-loading">Loading spreadsheet…</p>
                         </div>
                     <?php elseif ($previewMode === 'pptx'): ?>
-                        <div class="rvw-docx-scroll" data-preview-mount>
-                            <p class="rvw-doc-loading">Loading presentation…</p>
+                        <div class="rvw-pptx-download">
+                            <div class="rvw-pptx-download-card">
+                                <div class="rvw-pptx-download-icon" aria-hidden="true"><?= portal_icon('presentation', 'icon-sm') ?></div>
+                                <h3 class="rvw-pptx-download-title">Download to review this presentation</h3>
+                                <p class="rvw-pptx-download-copy">
+                                    PowerPoint files are accepted as download-only. Open
+                                    <strong><?= portal_escape($filename) ?></strong>
+                                    in PowerPoint (or another presentation app) to see the full design, images, and layout.
+                                </p>
+                                <p class="rvw-pptx-download-meta">AI detection is disabled for presentations. Grade and leave feedback after reviewing the downloaded file.</p>
+                                <a class="button" href="download.php?sub=<?= $subId ?>">
+                                    <?= portal_icon('file', 'icon-xs') ?>
+                                    Download PowerPoint
+                                </a>
+                            </div>
                         </div>
                     <?php elseif ($previewMode === 'txt'): ?>
                         <div class="rvw-docx-scroll">
@@ -4323,17 +4471,32 @@ if (!function_exists('portal_rerun_submission_integrity')) {
             'course_id' => (int) ($submission['course_id'] ?? 0),
             'submission_ai_detection' => (int) ($submission['submission_ai_detection'] ?? 0),
         ])) {
-            $ai = portal_gptzero_detection($text);
-            $db->prepare(
-                "UPDATE course_submissions
-                 SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
-                 WHERE id = ?"
-            )->execute([
-                $ai['status'],
-                $ai['score'],
-                $ai['report'],
-                $submissionId,
-            ]);
+            $extName = strtolower(pathinfo((string) ($submission['filename'] ?? ''), PATHINFO_EXTENSION));
+            $isPptx = in_array((string) ($extraction['extractor'] ?? ''), ['pptx', 'pptx-soffice'], true)
+                || in_array($extName, ['ppt', 'pptx', 'pps', 'ppsx'], true);
+            if ($isPptx) {
+                $db->prepare(
+                    "UPDATE course_submissions
+                     SET ai_status = ?, ai_score = NULL, ai_report = ?, ai_checked_at = datetime('now')
+                     WHERE id = ?"
+                )->execute([
+                    'disabled',
+                    'AI detection is disabled for PowerPoint submissions.',
+                    $submissionId,
+                ]);
+            } else {
+                $ai = portal_gptzero_detection($text);
+                $db->prepare(
+                    "UPDATE course_submissions
+                     SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
+                     WHERE id = ?"
+                )->execute([
+                    $ai['status'],
+                    $ai['score'],
+                    $ai['report'],
+                    $submissionId,
+                ]);
+            }
         }
 
         return true;

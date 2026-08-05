@@ -354,6 +354,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($canManage || ($isOwner && (string) $qRow['answer'] === '')) {
                 $db->prepare("DELETE FROM course_video_questions WHERE id = ? AND item_id = ? AND course_id = ?")
                    ->execute([$questionId, $itemId, $courseId]);
+                portal_notifications_unsend($viewerUrl . '#q-' . $questionId, false, 'lesson_answer');
                 $_SESSION['lesson_flash'] = ['success', 'Question deleted.'];
             }
         }

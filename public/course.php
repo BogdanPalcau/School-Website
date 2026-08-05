@@ -484,6 +484,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'delete_folder') {
             $folderId = (int) ($_POST['folder_id'] ?? 0);
+            $folderItemIds = [];
+            if ($folderId > 0) {
+                $idStmt = $db->prepare(
+                    "SELECT id FROM course_folder_items WHERE folder_id = ? AND course_id = ?"
+                );
+                $idStmt->execute([$folderId, $courseId]);
+                $folderItemIds = array_map('intval', $idStmt->fetchAll(PDO::FETCH_COLUMN) ?: []);
+            }
             // Delete any uploaded files in this folder
             $fiStmt = $db->prepare(
                 "SELECT file_path FROM course_folder_items WHERE folder_id = ? AND course_id = ? AND file_path != ''"
@@ -506,6 +514,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $db->prepare("DELETE FROM course_folders WHERE id = ? AND course_id = ?")
                ->execute([$folderId, $courseId]);
+            foreach ($folderItemIds as $deletedItemId) {
+                if ($deletedItemId > 0) {
+                    portal_notifications_unsend('lesson-viewer.php?item=' . $deletedItemId, true, 'lesson_answer');
+                }
+            }
 
         } elseif ($action === 'create_item') {
             $folderId = (int) ($_POST['folder_id'] ?? 0);
@@ -745,6 +758,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $db->prepare("DELETE FROM course_folder_items WHERE id = ? AND course_id = ?")
                ->execute([$itemId, $courseId]);
+            if ($itemId > 0) {
+                portal_notifications_unsend('lesson-viewer.php?item=' . $itemId, true, 'lesson_answer');
+            }
 
         } elseif ($action === 'post_announcement') {
             $title = substr(trim((string) ($_POST['title'] ?? '')), 0, 200);
@@ -791,7 +807,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                     $annLink = 'course.php?course=' . urlencode((string) $course['slug'])
-                        . '&section=announcements';
+                        . '&section=announcements&ann=' . $newAnnId;
                     $courseTitle = (string) ($course['title'] ?? 'Module');
                     $notifTitle = 'New announcement in “' . substr($courseTitle, 0, 80) . '”';
                     $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
@@ -815,13 +831,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'delete_announcement') {
             $annId = (int) ($_POST['announcement_id'] ?? 0);
-            if (portal_is_admin()) {
-                $db->prepare("DELETE FROM course_announcements WHERE id = ? AND course_id = ?")
-                   ->execute([$annId, $courseId]);
-            } else {
-                $db->prepare(
-                    "DELETE FROM course_announcements WHERE id = ? AND course_id = ? AND user_id = ?"
-                )->execute([$annId, $courseId, (int) $me['id']]);
+            $annMeta = null;
+            if ($annId > 0) {
+                $annMetaStmt = $db->prepare(
+                    "SELECT id, title FROM course_announcements WHERE id = ? AND course_id = ?"
+                );
+                $annMetaStmt->execute([$annId, $courseId]);
+                $annMeta = $annMetaStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            }
+            $annDeleted = false;
+            if ($annMeta) {
+                if (portal_is_admin()) {
+                    $delAnn = $db->prepare("DELETE FROM course_announcements WHERE id = ? AND course_id = ?");
+                    $delAnn->execute([$annId, $courseId]);
+                    $annDeleted = $delAnn->rowCount() > 0;
+                } else {
+                    $delAnn = $db->prepare(
+                        "DELETE FROM course_announcements WHERE id = ? AND course_id = ? AND user_id = ?"
+                    );
+                    $delAnn->execute([$annId, $courseId, (int) $me['id']]);
+                    $annDeleted = $delAnn->rowCount() > 0;
+                }
+            }
+            if ($annDeleted && $annMeta) {
+                $slug = (string) ($course['slug'] ?? '');
+                $annLink = 'course.php?course=' . urlencode($slug)
+                    . '&section=announcements&ann=' . $annId;
+                portal_notifications_unsend($annLink, true, 'announcement');
+                // Legacy alerts (no ann= id in the link) matched by course + body prefix.
+                $annTitle = trim((string) ($annMeta['title'] ?? ''));
+                if ($annTitle !== '') {
+                    $legacyLink = 'course.php?course=' . urlencode($slug) . '&section=announcements';
+                    $db->prepare(
+                        "DELETE FROM portal_notifications
+                         WHERE type = 'announcement' AND course_id = ? AND link = ?
+                           AND (body = ? OR body LIKE ?)"
+                    )->execute([$courseId, $legacyLink, $annTitle, $annTitle . ' —%']);
+                }
             }
 
         } elseif ($action === 'save_tab_settings') {
@@ -994,6 +1040,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $topicId = (int)($_POST['topic_id'] ?? 0);
             $db->prepare("DELETE FROM course_discussion_topics WHERE id = ? AND course_id = ?")
                ->execute([$topicId, $courseId]);
+            if ($topicId > 0) {
+                $topicLink = 'course.php?course=' . urlencode((string) $course['slug'])
+                    . '&section=discussions&topic=' . $topicId;
+                portal_notifications_unsend($topicLink, true, 'discussion_reply');
+            }
 
         } elseif ($action === 'create_group') {
             $title  = substr(trim((string)($_POST['title'] ?? '')), 0, 150);
@@ -1048,6 +1099,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->prepare(
                     "INSERT INTO course_discussion_replies (topic_id, course_id, user_id, body) VALUES (?,?,?,?)"
                 )->execute([$topicId, $courseId, $posterId, $body]);
+                $newReplyId = (int) $db->lastInsertId();
 
                 // Personal alerts for thread starter, prior participants, and
                 // course managers (notify_qa). Poster is excluded below.
@@ -1088,11 +1140,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                if (!empty($recipientIds)) {
+                if (!empty($recipientIds) && $newReplyId > 0) {
                     $posterName = trim((string) ($me['name'] ?? 'Someone')) ?: 'Someone';
                     $topicTitle = (string) $topicRow['title'];
                     $discLink = 'course.php?course=' . urlencode((string) $course['slug'])
-                        . '&section=discussions&topic=' . $topicId;
+                        . '&section=discussions&topic=' . $topicId
+                        . '&reply=' . $newReplyId;
                     $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
                     $snippet = substr($plainBody !== '' ? $plainBody : 'New reply in the discussion.', 0, 160);
                     $notifTitle = $posterName . ' replied in “' . substr($topicTitle, 0, 80) . '”';
@@ -1113,13 +1166,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete_reply') {
         $replyId = (int)($_POST['reply_id'] ?? 0);
-        if (portal_can_manage_course($courseId)) {
-            $db->prepare("DELETE FROM course_discussion_replies WHERE id = ? AND course_id = ?")
-               ->execute([$replyId, $courseId]);
-        } else {
+        $replyMeta = null;
+        if ($replyId > 0) {
+            $replyMetaStmt = $db->prepare(
+                "SELECT id, topic_id, body FROM course_discussion_replies WHERE id = ? AND course_id = ?"
+            );
+            $replyMetaStmt->execute([$replyId, $courseId]);
+            $replyMeta = $replyMetaStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+        $replyDeleted = false;
+        if ($replyMeta) {
+            if (portal_can_manage_course($courseId)) {
+                $delReply = $db->prepare("DELETE FROM course_discussion_replies WHERE id = ? AND course_id = ?");
+                $delReply->execute([$replyId, $courseId]);
+                $replyDeleted = $delReply->rowCount() > 0;
+            } else {
+                $delReply = $db->prepare(
+                    "DELETE FROM course_discussion_replies WHERE id = ? AND course_id = ? AND user_id = ?"
+                );
+                $delReply->execute([$replyId, $courseId, (int)$me['id']]);
+                $replyDeleted = $delReply->rowCount() > 0;
+            }
+        }
+        if ($replyDeleted && $replyMeta) {
+            $topicId = (int) ($replyMeta['topic_id'] ?? 0);
+            $topicBase = 'course.php?course=' . urlencode((string) $course['slug'])
+                . '&section=discussions&topic=' . $topicId;
+            portal_notifications_unsend($topicBase . '&reply=' . $replyId, false, 'discussion_reply');
+            // Legacy alerts (no reply= id): match the same topic link + body snippet.
+            $plainBody = trim(preg_replace('/\s+/u', ' ', strip_tags((string) ($replyMeta['body'] ?? ''))) ?? '');
+            $snippet = substr($plainBody !== '' ? $plainBody : 'New reply in the discussion.', 0, 160);
             $db->prepare(
-                "DELETE FROM course_discussion_replies WHERE id = ? AND course_id = ? AND user_id = ?"
-            )->execute([$replyId, $courseId, (int)$me['id']]);
+                "DELETE FROM portal_notifications
+                 WHERE type = 'discussion_reply' AND course_id = ? AND link = ? AND body = ?"
+            )->execute([$courseId, $topicBase, $snippet]);
         }
     }
 
@@ -1541,18 +1621,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'course_id' => $courseId,
             'submission_ai_detection' => (int) ($slot['submission_ai_detection'] ?? 0),
         ])) {
-            $ai = portal_gptzero_detection($combinedText);
-            $db->prepare(
-                "UPDATE course_submissions
-                 SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
-                 WHERE item_id = ? AND user_id = ?"
-            )->execute([
-                $ai['status'],
-                $ai['score'],
-                $ai['report'],
-                $itemId,
-                $uid,
-            ]);
+            $isPptxSubmission = in_array((string) ($extraction['extractor'] ?? ''), ['pptx', 'pptx-soffice'], true)
+                || in_array($ext, ['ppt', 'pptx', 'pps', 'ppsx'], true)
+                || $declaredType === 'pptx';
+            if ($isPptxSubmission) {
+                $db->prepare(
+                    "UPDATE course_submissions
+                     SET ai_status = ?, ai_score = NULL, ai_report = ?, ai_checked_at = datetime('now')
+                     WHERE item_id = ? AND user_id = ?"
+                )->execute([
+                    'disabled',
+                    'AI detection is disabled for PowerPoint submissions.',
+                    $itemId,
+                    $uid,
+                ]);
+            } else {
+                $ai = portal_gptzero_detection($combinedText);
+                $db->prepare(
+                    "UPDATE course_submissions
+                     SET ai_status = ?, ai_score = ?, ai_report = ?, ai_checked_at = datetime('now')
+                     WHERE item_id = ? AND user_id = ?"
+                )->execute([
+                    $ai['status'],
+                    $ai['score'],
+                    $ai['report'],
+                    $itemId,
+                    $uid,
+                ]);
+            }
         }
 
         $submittedAt = '';
@@ -1588,6 +1684,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $rBase = 'course.php?course=' . urlencode($slug);
+    if ($action === 'create_item' && portal_is_fetch_request()) {
+        $flash = $_SESSION['course_flash'] ?? null;
+        $ok = is_array($flash) && ($flash[0] ?? '') === 'success';
+        $message = is_array($flash) ? (string) ($flash[1] ?? '') : '';
+        // Keep success flash so the redirected page can show the toast.
+        if (!$ok) {
+            unset($_SESSION['course_flash']);
+        }
+        portal_json_response([
+            'ok' => $ok,
+            'message' => $message,
+            'error' => $ok ? '' : ($message !== '' ? $message : 'Could not add item.'),
+            'redirect' => $ok ? ($rBase . '&section=content') : '',
+        ]);
+    }
     if (portal_is_fetch_request() && in_array($action, ['mark_submission', 'submit_work'], true)) {
         portal_json_response(['ok' => false, 'error' => 'Unexpected response.'], 500);
     }
@@ -1842,6 +1953,7 @@ $_schStmt = $_db->prepare(
 );
 $_schStmt->execute([$courseId]);
 $courseSchedule = $_schStmt->fetchAll();
+$courseUpcomingEvents = portal_events_for_course($courseId, 20, true);
 
 // Discussion topics (with reply count)
 $_topicId = (int) ($_GET['topic'] ?? 0);
@@ -2736,7 +2848,7 @@ ob_start();
                                                                             <input type="hidden" name="process_pasted_chars" value="0">
                                                                             <div class="sub-submit-error" data-sub-error role="alert"></div>
                                                                             <label class="submit-file-label">
-                                                                                <span class="submit-hint">1. Choose file type</span>
+                                                                                <span class="submit-hint">1. Choose file type <small>(or skip — dropping a file detects it)</small></span>
                                                                                 <select name="submission_type" required data-sub-type-select>
                                                                                     <option value="">Select type…</option>
                                                                                     <?php foreach (portal_submission_type_labels() as $typeKey => $typeLabel): ?>
@@ -2744,9 +2856,33 @@ ob_start();
                                                                                     <?php endforeach; ?>
                                                                                 </select>
                                                                             </label>
+                                                                            <p class="sub-pptx-note is-hidden" data-sub-pptx-note role="note">
+                                                                                <strong>PowerPoint note:</strong>
+                                                                                Teachers review presentations by downloading the file and opening it in PowerPoint (or similar). There is no in-browser slide preview. AI detection is disabled for this file type.
+                                                                            </p>
                                                                             <label class="submit-file-label">
-                                                                                <span class="submit-hint">2. Choose file (max 40 MB)</span>
-                                                                                <input type="file" name="submission_file" disabled data-sub-file-input accept="">
+                                                                                <span class="submit-hint">2. Drop or choose a file (max 40 MB)</span>
+                                                                                <div class="upload-dropzone" data-upload-dropzone data-upload-autodetect-type>
+                                                                                    <input type="file" name="submission_file" data-sub-file-input data-upload-input
+                                                                                           accept=".pdf,.docx,.doc,.pptx,.txt,.png,.jpg,.jpeg,.gif,.webp">
+                                                                                    <div class="upload-dropzone-ui">
+                                                                                        <strong class="upload-dropzone-title">Drop a file here</strong>
+                                                                                        <span class="upload-dropzone-sub">or click to browse — type is filled in automatically if empty</span>
+                                                                                        <div class="upload-dropzone-file-row is-hidden" data-upload-file-row>
+                                                                                            <span class="upload-dropzone-file" data-upload-filename></span>
+                                                                                            <button type="button" class="upload-dropzone-clear" data-upload-clear title="Remove file" aria-label="Remove file">
+                                                                                                <?= portal_icon('trash', 'icon-xs') ?>
+                                                                                            </button>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div class="upload-progress is-hidden" data-upload-progress aria-live="polite">
+                                                                                        <div class="upload-progress-track">
+                                                                                            <div class="upload-progress-bar" data-upload-progress-bar></div>
+                                                                                        </div>
+                                                                                        <span class="upload-progress-label" data-upload-progress-label>0%</span>
+                                                                                    </div>
+                                                                                    <p class="upload-dropzone-error is-hidden" data-upload-error role="alert"></p>
+                                                                                </div>
                                                                             </label>
                                                                             <label class="submit-file-label">
                                                                                 <span class="submit-hint">Or paste your text</span>
@@ -2914,12 +3050,31 @@ ob_start();
                                             <div class="folder-form-row item-file-group">
                                                 <label class="folder-form-label" style="grid-column:1/-1;">
                                                     <span class="item-file-label">Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
-                                                    <input type="file" name="file" class="item-file-input"
-                                                           accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
-                                                           data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
-                                                           data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
-                                                           data-video-accept=".mp4,.webm,.mov,.m4v,.ogv"
-                                                           data-video-hint="Upload a video file <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>) — or paste a link below</small>">
+                                                    <div class="upload-dropzone" data-upload-dropzone>
+                                                        <input type="file" name="file" class="item-file-input" data-upload-input
+                                                               accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
+                                                               data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
+                                                               data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
+                                                               data-video-accept=".mp4,.webm,.mov,.m4v,.ogv"
+                                                               data-video-hint="Upload a video file <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>) — or paste a link below</small>">
+                                                        <div class="upload-dropzone-ui">
+                                                            <strong class="upload-dropzone-title">Drop a file here</strong>
+                                                            <span class="upload-dropzone-sub">or click to browse</span>
+                                                            <div class="upload-dropzone-file-row is-hidden" data-upload-file-row>
+                                                                <span class="upload-dropzone-file" data-upload-filename></span>
+                                                                <button type="button" class="upload-dropzone-clear" data-upload-clear title="Remove file" aria-label="Remove file">
+                                                                    <?= portal_icon('trash', 'icon-xs') ?>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        <div class="upload-progress is-hidden" data-upload-progress aria-live="polite">
+                                                            <div class="upload-progress-track">
+                                                                <div class="upload-progress-bar" data-upload-progress-bar></div>
+                                                            </div>
+                                                            <span class="upload-progress-label" data-upload-progress-label>0%</span>
+                                                        </div>
+                                                        <p class="upload-dropzone-error is-hidden" data-upload-error role="alert"></p>
+                                                    </div>
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-url-group">
@@ -3119,6 +3274,43 @@ ob_start();
                             </div>
                             <?php endif; ?>
                         </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+                </article>
+
+                <article class="card-shell">
+                    <div class="section-head">
+                        <div>
+                            <p class="eyebrow">One-off activities</p>
+                            <h3 class="card-title">Upcoming events</h3>
+                        </div>
+                        <span class="chip"><?= count($courseUpcomingEvents) ?></span>
+                    </div>
+                    <?php if (empty($courseUpcomingEvents)): ?>
+                        <p style="margin:0;color:var(--muted);font-size:.9rem;">No upcoming course events yet.</p>
+                    <?php else: ?>
+                    <div class="ev-list">
+                        <?php foreach ($courseUpcomingEvents as $courseEvent): ?>
+                        <?php
+                            $evCancelled = (string) ($courseEvent['status'] ?? '') === 'cancelled';
+                            $evChips = portal_event_chip_parts($courseEvent);
+                        ?>
+                        <article class="ev-item<?= $evCancelled ? ' ev-item--cancelled' : '' ?>">
+                            <div class="ev-date">
+                                <strong><?= portal_escape($evChips['day']) ?></strong>
+                                <span><?= portal_escape($evChips['month']) ?></span>
+                            </div>
+                            <div class="ev-body">
+                                <h3><?= portal_escape((string) $courseEvent['title']) ?></h3>
+                                <p class="event-location">
+                                    <?= portal_escape(portal_event_format_time_range($courseEvent)) ?>
+                                    · <?= portal_escape(portal_event_place_label($courseEvent)) ?>
+                                    <?php if ($evCancelled): ?> · Cancelled<?php endif; ?>
+                                </p>
+                                <a class="inline-action" href="events.php?event=<?= (int) $courseEvent['id'] ?>">View details</a>
+                            </div>
+                        </article>
                         <?php endforeach; ?>
                     </div>
                     <?php endif; ?>
@@ -3842,7 +4034,6 @@ ob_start();
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 
 <div id="portal-page-data"
      data-slug="<?= portal_escape($slug) ?>"
@@ -4304,55 +4495,6 @@ ob_start();
         return '<div class="xlsx-wrap"><table class="xlsx-table"><thead>' + header + '</thead><tbody>' + body + '</tbody></table></div>';
     }
 
-    async function extractPptxSlides(arrayBuffer) {
-        const zip = await JSZip.loadAsync(arrayBuffer);
-        const relsFile = zip.file('ppt/_rels/presentation.xml.rels');
-
-        if (!relsFile) {
-            return [];
-        }
-
-        const relsXml = await relsFile.async('text');
-        const relsDoc = new DOMParser().parseFromString(relsXml, 'application/xml');
-        const relNodes = Array.from(relsDoc.getElementsByTagName('Relationship'));
-        const relMap = new Map(relNodes.map(node => [node.getAttribute('Id'), node.getAttribute('Target') || '']));
-
-        const presentationFile = zip.file('ppt/presentation.xml');
-        if (!presentationFile) {
-            return [];
-        }
-
-        const presentationXml = await presentationFile.async('text');
-        const presentationDoc = new DOMParser().parseFromString(presentationXml, 'application/xml');
-        const slideIdNodes = Array.from(presentationDoc.getElementsByTagName('p:sldId'));
-        const relIds = slideIdNodes
-            .map(node => node.getAttribute('r:id'))
-            .filter(Boolean);
-
-        const slides = [];
-        for (const relId of relIds) {
-            const target = relMap.get(relId);
-            if (!target) {
-                continue;
-            }
-
-            const cleanTarget = target.replace(/^\//, '').replace(/^\.\.\//, '');
-            const slidePath = cleanTarget.startsWith('ppt/') ? cleanTarget : 'ppt/' + cleanTarget;
-            const slideFile = zip.file(slidePath);
-            if (!slideFile) {
-                continue;
-            }
-
-            const slideXml = await slideFile.async('text');
-            const slideDoc = new DOMParser().parseFromString(slideXml, 'application/xml');
-            const textNodes = Array.from(slideDoc.getElementsByTagName('a:t'));
-            const lines = textNodes.map(node => (node.textContent || '').trim()).filter(Boolean);
-            slides.push(lines);
-        }
-
-        return slides;
-    }
-
     // ── Tab settings toggle ───────────────────────────────────────────────────
     const settingsBtn   = document.getElementById('tab-settings-btn');
     const settingsPanel = document.getElementById('tab-settings-panel');
@@ -4403,6 +4545,219 @@ ob_start();
             }
         });
     })();
+
+    // ── File upload dropzones + progress (desktop DnD, not folder reorder) ──
+    function uploadHasFiles(dt) {
+        if (!dt) return false;
+        if (dt.types && typeof dt.types.includes === 'function') {
+            return dt.types.includes('Files');
+        }
+        return Array.from(dt.types || []).indexOf('Files') !== -1;
+    }
+
+    function setUploadFilename(zone, name) {
+        const el = zone?.querySelector('[data-upload-filename]');
+        const row = zone?.querySelector('[data-upload-file-row]');
+        if (el) el.textContent = name || '';
+        if (row) row.classList.toggle('is-hidden', !name);
+        else if (el) el.classList.toggle('is-hidden', !name);
+    }
+
+    function clearUploadFile(zone) {
+        if (!zone) return;
+        const input = zone.querySelector('[data-upload-input]');
+        if (input) {
+            input.value = '';
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        setUploadError(zone, '');
+        setUploadProgress(zone, 0, false);
+        syncUploadDropzoneState(zone);
+    }
+
+    function setUploadProgress(zone, pct, visible) {
+        if (!zone) return;
+        const wrap = zone.querySelector('[data-upload-progress]');
+        const bar = zone.querySelector('[data-upload-progress-bar]');
+        const label = zone.querySelector('[data-upload-progress-label]');
+        if (!wrap) return;
+        if (!visible) {
+            wrap.classList.add('is-hidden');
+            zone.classList.remove('is-uploading');
+            if (bar) bar.style.width = '0%';
+            if (label) label.textContent = '0%';
+            return;
+        }
+        wrap.classList.remove('is-hidden');
+        zone.classList.add('is-uploading');
+        const safe = Math.max(0, Math.min(100, Math.round(pct || 0)));
+        if (bar) bar.style.width = safe + '%';
+        if (label) label.textContent = safe + '%';
+    }
+
+    function setUploadError(zone, msg) {
+        const el = zone?.querySelector('[data-upload-error]');
+        if (!el) return;
+        if (msg) {
+            el.textContent = msg;
+            el.classList.remove('is-hidden');
+        } else {
+            el.textContent = '';
+            el.classList.add('is-hidden');
+        }
+    }
+
+    function assignFileToInput(input, file) {
+        if (!input || !file) return false;
+        try {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            input.files = dt.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function syncUploadDropzoneState(zone) {
+        if (!zone) return;
+        const input = zone.querySelector('[data-upload-input]');
+        zone.classList.toggle('is-disabled', !!(input && input.disabled));
+        const file = input?.files?.[0];
+        setUploadFilename(zone, file ? file.name : '');
+    }
+
+    function initUploadDropzones(scope) {
+        (scope || document).querySelectorAll('[data-upload-dropzone]').forEach(zone => {
+            if (zone.dataset.uploadBound === '1') return;
+            zone.dataset.uploadBound = '1';
+            const input = zone.querySelector('[data-upload-input]');
+            if (!input) return;
+
+            let dragDepth = 0;
+            const onDragEnter = e => {
+                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragDepth += 1;
+                zone.classList.add('is-dragover');
+            };
+            const onDragOver = e => {
+                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+            };
+            const onDragLeave = e => {
+                if (!uploadHasFiles(e.dataTransfer)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (dragDepth === 0) zone.classList.remove('is-dragover');
+            };
+            const onDrop = e => {
+                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragDepth = 0;
+                zone.classList.remove('is-dragover');
+                const file = e.dataTransfer?.files?.[0];
+                if (!file) return;
+                setUploadError(zone, '');
+                if (!assignFileToInput(input, file)) {
+                    setUploadError(zone, 'Could not attach that file. Use Browse instead.');
+                }
+            };
+
+            zone.addEventListener('dragenter', onDragEnter);
+            zone.addEventListener('dragover', onDragOver);
+            zone.addEventListener('dragleave', onDragLeave);
+            zone.addEventListener('drop', onDrop);
+            zone.querySelector('[data-upload-clear]')?.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                clearUploadFile(zone);
+            });
+            input.addEventListener('change', () => {
+                setUploadError(zone, '');
+                syncUploadDropzoneState(zone);
+            });
+            syncUploadDropzoneState(zone);
+        });
+    }
+
+    function xhrFormUpload(url, formData, onProgress) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url);
+            xhr.setRequestHeader('X-Requested-With', 'fetch');
+            xhr.responseType = 'text';
+            xhr.upload.onprogress = e => {
+                if (e.lengthComputable && typeof onProgress === 'function') {
+                    onProgress(Math.round((e.loaded / e.total) * 100));
+                }
+            };
+            xhr.onload = () => {
+                let data = null;
+                try {
+                    data = JSON.parse(xhr.responseText || '{}');
+                } catch (_) {
+                    reject(new Error('Invalid response'));
+                    return;
+                }
+                resolve({ status: xhr.status, data });
+            };
+            xhr.onerror = () => reject(new Error('Network error'));
+            xhr.send(formData);
+        });
+    }
+
+    initUploadDropzones(document);
+
+    document.querySelectorAll('form.folder-admin-form').forEach(form => {
+        const actionInput = form.querySelector('input[name="action"]');
+        if (!actionInput || actionInput.value !== 'create_item') return;
+        form.addEventListener('submit', async e => {
+            const fileInput = form.querySelector('.item-file-input');
+            const hasFile = !!(fileInput && fileInput.files && fileInput.files.length);
+            if (!hasFile) return;
+
+            e.preventDefault();
+            const zone = form.querySelector('[data-upload-dropzone]');
+            const btn = form.querySelector('button[type="submit"]');
+            const origLabel = btn ? btn.textContent : '';
+            setUploadError(zone, '');
+            setUploadProgress(zone, 0, true);
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Uploading…';
+            }
+            try {
+                const body = new FormData(form);
+                const { data } = await xhrFormUpload(
+                    window.location.pathname + window.location.search,
+                    body,
+                    pct => setUploadProgress(zone, pct, true)
+                );
+                if (!data || !data.ok) {
+                    setUploadProgress(zone, 0, false);
+                    setUploadError(zone, (data && data.error) || 'Upload failed.');
+                    return;
+                }
+                setUploadProgress(zone, 100, true);
+                window.location.href = data.redirect || (window.location.pathname + window.location.search);
+            } catch (_) {
+                setUploadProgress(zone, 0, false);
+                setUploadError(zone, 'Could not upload. Please try again.');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = origLabel;
+                }
+            }
+        });
+    });
 
     document.querySelectorAll('.item-type-select').forEach(sel => {
         const update = () => {
@@ -4570,18 +4925,68 @@ ob_start();
         let pastedChars = 0;
 
         if (typeSelect && fileInput) {
+            const allowedTypes = Array.from(typeSelect.options)
+                .map(o => (o.value || '').toLowerCase())
+                .filter(Boolean);
+            const allAccept = allowedTypes.map(t => '.' + t).join(',');
+
+            const fileExt = (file) => {
+                const name = String(file?.name || '');
+                const dot = name.lastIndexOf('.');
+                return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+            };
+
+            const applyDetectedType = (file) => {
+                const zone = form.querySelector('[data-upload-dropzone]');
+                if (!file) {
+                    setUploadError(zone, '');
+                    syncUploadDropzoneState(zone);
+                    return true;
+                }
+                const ext = fileExt(file);
+                if (!allowedTypes.includes(ext)) {
+                    fileInput.value = '';
+                    setUploadError(zone, 'Unsupported file type. Use PDF, Word, PowerPoint, text, or an image.');
+                    syncUploadDropzoneState(zone);
+                    return false;
+                }
+                setUploadError(zone, '');
+                if (typeSelect.value !== ext) {
+                    typeSelect.value = ext;
+                }
+                fileInput.accept = '.' + ext;
+                syncUploadDropzoneState(zone);
+                return true;
+            };
+
             const syncType = () => {
                 const type = (typeSelect.value || '').toLowerCase();
-                if (!type) {
-                    fileInput.value = '';
-                    fileInput.disabled = true;
-                    fileInput.removeAttribute('accept');
-                    return;
-                }
                 fileInput.disabled = false;
-                fileInput.accept = '.' + type;
+                const file = fileInput.files?.[0];
+                if (file && type) {
+                    const ext = fileExt(file);
+                    if (ext !== type) {
+                        fileInput.value = '';
+                        setUploadError(form.querySelector('[data-upload-dropzone]'),
+                            'Selected type does not match the file. Drop the file again or pick a matching type.');
+                    }
+                }
+                fileInput.accept = type ? ('.' + type) : allAccept;
+                const zone = form.querySelector('[data-upload-dropzone]');
+                syncUploadDropzoneState(zone);
+                setUploadProgress(zone, 0, false);
+                const pptxNote = form.querySelector('[data-sub-pptx-note]');
+                if (pptxNote) pptxNote.classList.toggle('is-hidden', type !== 'pptx');
             };
+
             typeSelect.addEventListener('change', syncType);
+            fileInput.addEventListener('change', () => {
+                applyDetectedType(fileInput.files?.[0] || null);
+                const pptxNote = form.querySelector('[data-sub-pptx-note]');
+                if (pptxNote) {
+                    pptxNote.classList.toggle('is-hidden', (typeSelect.value || '').toLowerCase() !== 'pptx');
+                }
+            });
             syncType();
         }
 
@@ -4618,12 +5023,21 @@ ob_start();
             const hasPaste = !!(textArea && textArea.value.trim());
             const hasFile = !!(fileInput && fileInput.files && fileInput.files.length);
             if (hasFile && typeSelect && !typeSelect.value) {
-                const errEl = form.querySelector('[data-sub-error]');
-                if (errEl) {
-                    errEl.textContent = 'Choose a file type before uploading.';
-                    errEl.classList.add('is-visible');
+                // Last-chance auto-detect if the type select was cleared.
+                const name = String(fileInput.files[0].name || '');
+                const dot = name.lastIndexOf('.');
+                const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+                const match = Array.from(typeSelect.options).some(o => o.value === ext);
+                if (match) {
+                    typeSelect.value = ext;
+                } else {
+                    const errEl = form.querySelector('[data-sub-error]');
+                    if (errEl) {
+                        errEl.textContent = 'Unsupported file type. Use PDF, Word, PowerPoint, text, or an image.';
+                        errEl.classList.add('is-visible');
+                    }
+                    return;
                 }
-                return;
             }
             if (!hasFile && !hasPaste) {
                 const errEl = form.querySelector('[data-sub-error]');
@@ -4637,14 +5051,16 @@ ob_start();
             const btn = form.querySelector('[data-sub-submit-btn]') || form.querySelector('button[type="submit"]');
             const origLabel = btn ? btn.textContent : '';
             const errEl = form.querySelector('[data-sub-error]');
+            const zone = form.querySelector('[data-upload-dropzone]');
             if (errEl) {
                 errEl.textContent = '';
                 errEl.classList.remove('is-visible');
             }
             if (btn) {
                 btn.disabled = true;
-                btn.textContent = 'Submitting…';
+                btn.textContent = hasFile ? 'Uploading…' : 'Submitting…';
             }
+            if (hasFile) setUploadProgress(zone, 0, true);
 
             try {
                 // Disabled file inputs are omitted from FormData — re-enable briefly if needed.
@@ -4653,13 +5069,24 @@ ob_start();
                 const body = new FormData(form);
                 if (wasDisabled) fileInput.disabled = true;
 
-                const res = await fetch(window.location.pathname + window.location.search, {
-                    method: 'POST',
-                    body,
-                    headers: { 'X-Requested-With': 'fetch' }
-                });
-                const data = await res.json();
+                let data;
+                if (hasFile) {
+                    const result = await xhrFormUpload(
+                        window.location.pathname + window.location.search,
+                        body,
+                        pct => setUploadProgress(zone, pct, true)
+                    );
+                    data = result.data;
+                } else {
+                    const res = await fetch(window.location.pathname + window.location.search, {
+                        method: 'POST',
+                        body,
+                        headers: { 'X-Requested-With': 'fetch' }
+                    });
+                    data = await res.json();
+                }
                 if (!data.ok) {
+                    setUploadProgress(zone, 0, false);
                     const msg = data.error || 'Submission failed.';
                     if (errEl) {
                         errEl.textContent = msg;
@@ -4669,8 +5096,12 @@ ob_start();
                     }
                     return;
                 }
+                if (hasFile) setUploadProgress(zone, 100, true);
                 handleSubmitSuccess(form, data);
+                setUploadProgress(zone, 0, false);
+                setUploadFilename(zone, '');
             } catch (_) {
+                setUploadProgress(zone, 0, false);
                 const msg = 'Could not submit. Please try again.';
                 if (errEl) {
                     errEl.textContent = msg;
@@ -5421,7 +5852,7 @@ ob_start();
             }
 
             if (!mount || !subId) {
-                if (mode === 'pdf' || mode === 'office' || mode === 'viewer') {
+                if (mode === 'pdf' || mode === 'office' || mode === 'viewer' || mode === 'pptx') {
                     shell.dataset.previewLoaded = '1';
                 }
                 return;
@@ -5468,26 +5899,9 @@ ob_start();
                     mount.innerHTML = '<div class="viewer-sheet-head">Sheet: ' + escapeHtml(sheetName) + '</div>'
                         + renderSheetToTable(sheet);
                 } else if (mode === 'pptx') {
-                    const resp = await fetch(url);
-                    if (!resp.ok) {
-                        showErr('Could not load presentation.');
-                        return;
-                    }
-                    const buf = await resp.arrayBuffer();
-                    const slides = await extractPptxSlides(buf);
-                    if (!slides.length) {
-                        showErr('Could not read slide text from this presentation.');
-                        return;
-                    }
-                    mount.innerHTML = slides.map((lines, idx) => {
-                        const safeLines = lines.length
-                            ? lines.map(line => '<li>' + escapeHtml(line) + '</li>').join('')
-                            : '<li><em>(No text content found on this slide)</em></li>';
-                        return '<section class="pptx-slide">'
-                            + '<h4>Slide ' + (idx + 1) + '</h4>'
-                            + '<ul>' + safeLines + '</ul>'
-                            + '</section>';
-                    }).join('');
+                    // Download-only: no in-browser slide render.
+                    shell.dataset.previewLoaded = '1';
+                    return;
                 } else if (mode === 'txt') {
                     const resp = await fetch(url);
                     if (!resp.ok) {

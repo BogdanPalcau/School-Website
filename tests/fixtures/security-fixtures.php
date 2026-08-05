@@ -44,8 +44,13 @@ function security_cleanup(PDO $db): void
 
     $usernames = ['sec_admin', 'sec_teacher', 'sec_student', 'sec_outsider', 'csrf_created_user'];
     foreach ($usernames as $username) {
+        $db->prepare(
+            'DELETE FROM events WHERE created_by IN (SELECT id FROM users WHERE username = ?)'
+        )->execute([$username]);
         $db->prepare('DELETE FROM users WHERE username = ?')->execute([$username]);
     }
+
+    $db->prepare("DELETE FROM events WHERE title LIKE 'Security %' OR title = 'Forged CSRF Event'")->execute();
 
     foreach ([SECURE_OPEN_SLUG, SECURE_BLOCKED_SLUG] as $slug) {
         $db->prepare('DELETE FROM courses WHERE slug = ?')->execute([$slug]);
@@ -274,6 +279,12 @@ function security_count(PDO $db, string $kind, string $value): int
              WHERE cgm.group_id = ? AND u.username = 'sec_student'"
         );
         $stmt->execute([(int) $value]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    if ($kind === 'event') {
+        $stmt = $db->prepare('SELECT COUNT(*) FROM events WHERE title = ?');
+        $stmt->execute([$value]);
         return (int) $stmt->fetchColumn();
     }
 
