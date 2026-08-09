@@ -931,6 +931,11 @@ $securityFilterParams = [
     'sec_ip'       => $secIp,
     'sec_ids'      => $secIdsRaw,
 ];
+$securityNonActionableUserEventTypes = [
+    'failed_login', 'login_throttled',
+    'role_changed', 'user_deleted', 'user_updated',
+    'course_archived', 'course_restored', 'grade_changed', 'account_status_changed',
+];
 $securityUserProfiles = [];
 foreach ($securityEvents as $profileEvent) {
     $profileUserId = (int) ($profileEvent['user_id'] ?? 0);
@@ -2177,11 +2182,6 @@ ob_start();
                                     }
                                     $evIp = trim((string) ($event['ip_address'] ?? ''));
                                     $evType = (string) ($event['event_type'] ?? '');
-                                    // Admin-audit events store the staff actor in user_id — not the account to discipline.
-                                    $adminActorEventTypes = [
-                                        'role_changed', 'user_deleted', 'user_updated',
-                                        'course_archived', 'course_restored', 'account_status_changed',
-                                    ];
                                     $targetUser = null;
                                     if ($evUserId > 0) {
                                         $targetUser = portal_find_user_by_id($evUserId);
@@ -2195,7 +2195,7 @@ ob_start();
                                         && $evUserId > 0
                                         && $evUserId !== (int) $currentUser['id']
                                         && (string) ($targetUser['role'] ?? '') !== 'owner'
-                                        && !in_array($evType, $adminActorEventTypes, true)
+                                        && !in_array($evType, $securityNonActionableUserEventTypes, true)
                                         && (!in_array((string) ($targetUser['role'] ?? ''), ['admin'], true) || $isOwner);
                                     $showAccountActions = $canActOnTarget;
                                     $targetStatus = portal_user_account_status($targetUser);
@@ -2841,7 +2841,7 @@ $canEditOpenedUser = $editUser !== null
 
         if (profileActions && profileActionGrid && profileActionTemplate) {
             profileActionGrid.innerHTML = '';
-            if (profile.can_act) {
+            if (profile.can_act && eventId) {
                 var actions = [
                     { key: 'mute', label: 'Mute discussions' },
                     { key: 'restrict', label: 'Restrict submissions' },

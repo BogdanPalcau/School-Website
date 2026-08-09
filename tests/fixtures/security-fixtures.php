@@ -317,8 +317,11 @@ function security_seed_ui_events(PDO $db): array
         $insert->execute([$user, $ip, 'sec_bulk_ui_' . $user, $now]);
         $ids[] = (int) $db->lastInsertId();
     }
+    $insert->execute(['sec_student', $ip, 'sec_bulk_ui_login_victim', $now]);
+    $victimEventId = (int) $db->lastInsertId();
+    $ids[] = $victimEventId;
 
-    return ['ip' => $ip, 'ids' => $ids];
+    return ['ip' => $ip, 'ids' => $ids, 'victimEventId' => $victimEventId];
 }
 
 // Only run CLI when this file is the entry script (safe to require from other fixtures).
