@@ -1450,17 +1450,26 @@ if (!function_exists('portal_client_ip')) {
         }
 
         $forwarded = trim((string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
-        if ($forwarded === '') {
-            $forwarded = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''));
-        }
-        if ($forwarded === '') {
+        if ($forwarded !== '') {
+            $parts = array_values(array_filter(array_map('trim', explode(',', $forwarded))));
+            // Walk toward the client from the trusted peer. The first untrusted
+            // address is the client; anything farther left can be user-supplied.
+            for ($i = count($parts) - 1; $i >= 0; $i--) {
+                $candidate = $parts[$i];
+                if (!filter_var($candidate, FILTER_VALIDATE_IP)) {
+                    return $remote;
+                }
+                if (!portal_ip_matches_trusted_list($candidate, $trusted)) {
+                    return $candidate;
+                }
+            }
+
             return $remote;
         }
 
-        $parts = array_values(array_filter(array_map('trim', explode(',', $forwarded))));
-        $candidate = $parts[0] ?? '';
-        if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP)) {
-            return $candidate;
+        $realIp = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''));
+        if ($realIp !== '' && filter_var($realIp, FILTER_VALIDATE_IP)) {
+            return $realIp;
         }
 
         return $remote;

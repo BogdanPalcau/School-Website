@@ -191,6 +191,53 @@ expect_true(
     'select_all_matching is checked as exact string "1" (not empty("0") quirk)'
 );
 
+// ── Trusted-proxy client IP chain ─────────────────────────────────────────────
+$trustedSettingStmt = $db->prepare(
+    "SELECT setting_value FROM portal_site_settings WHERE setting_key = 'trusted_proxies'"
+);
+$trustedSettingStmt->execute();
+$trustedSettingValue = $trustedSettingStmt->fetchColumn();
+$trustedSettingExisted = $trustedSettingValue !== false;
+$serverKeys = ['REMOTE_ADDR', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'];
+$savedServer = [];
+foreach ($serverKeys as $serverKey) {
+    $savedServer[$serverKey] = [
+        'exists' => array_key_exists($serverKey, $_SERVER),
+        'value' => $_SERVER[$serverKey] ?? null,
+    ];
+}
+try {
+    portal_site_setting_set('trusted_proxies', '10.0.0.0/8');
+    $_SERVER['REMOTE_ADDR'] = '10.0.0.10';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77, 203.0.113.24';
+    unset($_SERVER['HTTP_X_REAL_IP']);
+
+    expect_true(
+        portal_client_ip() === '203.0.113.24',
+        'trusted proxy ignores spoofed leftmost forwarded address'
+    );
+
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77, 203.0.113.24, 10.0.0.11';
+    expect_true(
+        portal_client_ip() === '203.0.113.24',
+        'trusted proxy chain skips trusted internal hops from the right'
+    );
+} finally {
+    if ($trustedSettingExisted) {
+        portal_site_setting_set('trusted_proxies', (string) $trustedSettingValue);
+    } else {
+        $db->exec("DELETE FROM portal_site_settings WHERE setting_key = 'trusted_proxies'");
+        portal_site_settings_reload();
+    }
+    foreach ($savedServer as $serverKey => $saved) {
+        if ($saved['exists']) {
+            $_SERVER[$serverKey] = $saved['value'];
+        } else {
+            unset($_SERVER[$serverKey]);
+        }
+    }
+}
+
 // ── Account-action role hierarchy ────────────────────────────────────────────
 $statusSuffix = substr($tag, -8);
 $statusActorUsername = 'sec_status_actor_' . $statusSuffix;
