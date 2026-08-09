@@ -38,6 +38,7 @@ $navItems = [
     ['key' => 'notifications', 'label' => 'Notifications', 'href' => 'notifications.php', 'icon' => 'bell'],
     ['key' => 'communication', 'label' => 'Communication', 'href' => 'communication.php', 'icon' => 'megaphone'],
     ['key' => 'events',        'label' => 'Events',        'href' => 'events.php',        'icon' => 'sparkles'],
+    ['key' => 'flashcards',    'label' => 'Flashcards',    'href' => 'flashcards.php',    'icon' => 'layers'],
     ['key' => 'settings',      'label' => 'Settings',      'href' => 'settings.php',      'icon' => 'settings'],
     ['key' => 'logout',        'label' => 'Logout',        'href' => 'logout.php',        'icon' => 'log-out'],
 ];

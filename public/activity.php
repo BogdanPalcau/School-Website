@@ -410,15 +410,23 @@ ob_start();
                 <p class="ap-lobby-lead"><?= portal_escape(
                     trim((string) $activity['short_description']) !== ''
                         ? (string) $activity['short_description']
-                        : (($activity['mode'] ?? '') === 'assessment'
+                        : (($activity['mode'] ?? '') === 'flashcard'
+                            ? 'Flip through the cards to revise. Mark each one Know or Still learning as you go.'
+                            : (($activity['mode'] ?? '') === 'assessment'
                             ? 'Review the details below, then continue when you are ready. Your answers are saved as you work.'
-                            : 'Review the details below, then begin when you are ready.')
+                            : 'Review the details below, then begin when you are ready.'))
                 ) ?></p>
 
                 <div class="ap-lobby-metrics" aria-label="Activity overview">
+                    <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+                    <span><strong><?= $questionCount ?></strong> <?= $questionCount === 1 ? 'card' : 'cards' ?></span>
+                    <span><strong>Study</strong> flip &amp; revise</span>
+                    <span><strong>Untimed</strong></span>
+                    <?php else: ?>
                     <span><strong><?= $questionCount ?></strong> <?= $questionCount === 1 ? 'question' : 'questions' ?></span>
                     <span><strong><?= portal_escape(rtrim(rtrim(number_format($maximumPoints, 2, '.', ''), '0'), '.')) ?></strong> points</span>
                     <span><strong><?= (int) $activity['time_limit_seconds'] > 0 ? (int) ceil(((int) $activity['time_limit_seconds']) / 60) . ' min' : 'Untimed' ?></strong></span>
+                    <?php endif; ?>
                 </div>
 
                 <?php if ($inProgressId): ?>
@@ -465,9 +473,13 @@ ob_start();
 
                 <div class="ap-landing-actions">
                     <?php if ($inProgressId): ?>
-                        <button type="button" class="button ap-primary-action" data-ap-action="resume">Continue <?= ($activity['mode'] ?? '') === 'quiz' ? 'quiz' : 'activity' ?> <span aria-hidden="true">→</span></button>
+                        <button type="button" class="button ap-primary-action" data-ap-action="resume">Continue <?= ($activity['mode'] ?? '') === 'flashcard' ? 'studying' : (($activity['mode'] ?? '') === 'quiz' ? 'quiz' : 'activity') ?> <span aria-hidden="true">→</span></button>
                     <?php elseif (!empty($canStart['ok'])): ?>
-                        <button type="button" class="button ap-primary-action" data-ap-action="start"><?= ($activity['mode'] ?? '') === 'assessment' ? 'Start assessment' : 'Start activity' ?> <span aria-hidden="true">→</span></button>
+                        <button type="button" class="button ap-primary-action" data-ap-action="start"><?=
+                            ($activity['mode'] ?? '') === 'flashcard'
+                                ? 'Study flashcards'
+                                : (($activity['mode'] ?? '') === 'assessment' ? 'Start assessment' : 'Start activity')
+                        ?> <span aria-hidden="true">→</span></button>
                     <?php else: ?>
                         <p class="ap-locked-msg"><?= portal_escape((string) ($canStart['error'] ?? 'Not available')) ?></p>
                     <?php endif; ?>
@@ -553,6 +565,62 @@ ob_start();
     </div>
 
     <div data-ap-shell<?= $showPlayer ? '' : ' hidden' ?>>
+        <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+        <div class="fc-player" data-fc-player>
+            <div class="ap-preview-banner" data-ap-banner hidden role="status"></div>
+            <div class="fc-toolbar">
+                <a class="ap-back" href="<?= portal_escape($backUrl) ?>">
+                    <span aria-hidden="true">←</span> Exit
+                </a>
+                <div class="fc-toolbar-center">
+                    <strong data-ap-title><?= portal_escape((string) $activity['title']) ?></strong>
+                    <span data-fc-progress-label>Card 1 of <?= max(1, $questionCount) ?></span>
+                </div>
+                <label class="fc-shuffle">
+                    <input type="checkbox" data-fc-shuffle<?= !empty($activity['shuffle_questions']) ? ' checked' : '' ?>>
+                    <span>Shuffle</span>
+                </label>
+            </div>
+            <div class="fc-progress-track" aria-hidden="true"><div class="fc-progress-fill" data-fc-progress-fill></div></div>
+            <div class="fc-stage" data-fc-stage>
+                <div class="fc-swipe-unit" data-fc-card-motion>
+                    <div class="fc-card" data-fc-card role="button" tabindex="0" aria-label="Flashcard — tap to flip, swipe to mark">
+                        <div class="fc-card-inner" data-fc-card-inner>
+                            <div class="fc-face fc-face--front">
+                                <div class="fc-face-body" data-fc-front></div>
+                                <span class="fc-face-hint">Click or press Space to flip</span>
+                            </div>
+                            <div class="fc-face fc-face--back">
+                                <div class="fc-face-body" data-fc-back></div>
+                                <span class="fc-face-hint">Swipe right Know · left Still learning</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="fc-actions" data-fc-actions>
+                        <button type="button" class="button button-secondary" data-fc-mark="learning" disabled>Still learning</button>
+                        <button type="button" class="button" data-fc-mark="known" disabled>Know</button>
+                    </div>
+                </div>
+                <div class="fc-stats" aria-live="polite">
+                    <span><strong data-fc-known>0</strong> know</span>
+                    <span><strong data-fc-learning>0</strong> still learning</span>
+                </div>
+                <p class="fc-keys" data-fc-keys hidden>After flipping: swipe or use the buttons</p>
+            </div>
+            <div class="fc-end" data-fc-end hidden>
+                <div class="fc-end-card">
+                    <p class="fc-end-kicker">Session finished</p>
+                    <h2>Deck complete</h2>
+                    <p class="fc-end-summary" data-fc-end-summary></p>
+                    <div class="fc-end-actions">
+                        <button type="button" class="button" data-fc-restart>Study again</button>
+                        <button type="button" class="button button-secondary" data-fc-restart-learning>Retry still learning</button>
+                        <a class="button button-secondary" href="<?= portal_escape($backUrl) ?>">Back to course</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php else: ?>
         <div class="ap-preview-banner" data-ap-banner hidden role="status"></div>
         <div class="ap-network-warning" data-ap-network hidden role="alert">
             <span class="ap-network-warning-icon" aria-hidden="true">!</span>
@@ -609,6 +677,7 @@ ob_start();
                 </p>
             </div>
         </div>
+        <?php endif; ?>
     </div>
 
     <div data-ap-result hidden></div>
@@ -631,7 +700,11 @@ ob_start();
 </section>
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
+<?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+<script src="assets/activity-flashcards.js?v=20260809f"></script>
+<?php else: ?>
 <script src="assets/activity-player.js?v=20260802i"></script>
+<?php endif; ?>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

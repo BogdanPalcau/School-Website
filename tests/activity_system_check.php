@@ -787,6 +787,124 @@ try {
     $statusStmt = $db->prepare('SELECT status FROM activity_versions WHERE id = ?');
     $statusStmt->execute([$publishedVersionId]);
     expect_eq((string) $statusStmt->fetchColumn(), 'superseded', 'previous published version superseded');
+
+    // ── Flashcards ───────────────────────────────────────────────────────────
+    echo "\n=== Flashcards ===\n";
+
+    expect_true(in_array('flashcard', portal_activity_modes(), true), 'flashcard mode registered');
+    expect_true(in_array('flashcard', portal_activity_question_types(), true), 'flashcard question type registered');
+
+    act_login_as($teacherUser);
+    $fcCreate = portal_activity_create($courseId, $folderId, 'Revision Deck', 'flashcard', $teacherUser['id']);
+    expect_true(!empty($fcCreate['ok']), 'create flashcard activity');
+    $fcId = (int) ($fcCreate['activity_id'] ?? 0);
+    $createdActivityIds[] = $fcId;
+
+    $fcRow = portal_activity_find($fcId);
+    expect_eq((string) ($fcRow['mode'] ?? ''), 'flashcard', 'flashcard activity mode persisted');
+    expect_eq((string) ($fcRow['feedback_policy'] ?? ''), 'after_each', 'flashcard default feedback after_each');
+    expect_eq((int) ($fcRow['include_in_gradebook'] ?? 1), 0, 'flashcard not in gradebook by default');
+    expect_eq((int) ($fcRow['integrity_enabled'] ?? 1), 0, 'flashcard integrity off by default');
+
+    $emptyPub = portal_activity_publish($fcId);
+    expect_true(empty($emptyPub['ok']), 'cannot publish empty flashcard deck');
+
+    $card1 = portal_activity_add_question($fcId, 'flashcard', 'Front A', null, [
+        'settings' => ['back' => 'Back A'],
+    ]);
+    expect_true(!empty($card1['ok']), 'add flashcard with front/back');
+    $card1Id = (int) ($card1['question_id'] ?? 0);
+
+    $card2 = portal_activity_add_question($fcId, 'flashcard', 'Front B', null, [
+        'back' => 'Back B',
+    ]);
+    expect_true(!empty($card2['ok']), 'add second flashcard via back helper');
+    $card2Id = (int) ($card2['question_id'] ?? 0);
+
+    $noBack = portal_activity_add_question($fcId, 'flashcard', 'Orphan front', null, [
+        'settings' => ['back' => ''],
+    ]);
+    expect_true(!empty($noBack['ok']), 'draft allows empty back temporarily');
+    $noBackId = (int) ($noBack['question_id'] ?? 0);
+
+    $badPub = portal_activity_publish($fcId);
+    expect_true(empty($badPub['ok']), 'cannot publish flashcard missing back');
+
+    if ($noBackId > 0 && function_exists('portal_activity_delete_question')) {
+        portal_activity_delete_question($fcId, $noBackId);
+    } else {
+        $db->prepare('DELETE FROM activity_questions WHERE id = ?')->execute([$noBackId]);
+    }
+
+    $fcPub = portal_activity_publish($fcId);
+    expect_true(!empty($fcPub['ok']), 'publish flashcard deck');
+
+    act_login_as($studentUser);
+    $fcStart = portal_activity_start_attempt($fcId, $studentUser['id']);
+    expect_true(!empty($fcStart['ok']), 'student can start flashcard study');
+    $fcAttemptId = (int) ($fcStart['attempt']['id'] ?? 0);
+    $fcToken = (string) ($fcStart['token'] ?? '');
+    $fcQuestions = $fcStart['questions'] ?? [];
+    expect_true(is_array($fcQuestions) && count($fcQuestions) >= 2, 'flashcard start returns cards');
+
+    $studyQids = [];
+    $backSeen = '';
+    foreach ($fcQuestions as $q) {
+        $qid = (int) ($q['id'] ?? 0);
+        if ($qid > 0) {
+            $studyQids[] = $qid;
+        }
+        $settings = $q['settings'] ?? [];
+        if (is_string($settings)) {
+            $settings = json_decode($settings, true) ?: [];
+        }
+        if ($backSeen === '' && is_array($settings)) {
+            $backSeen = (string) ($settings['back'] ?? '');
+        }
+    }
+    expect_true($backSeen !== '', 'flashcard back available during study');
+    expect_true(count($studyQids) >= 2, 'study payload has at least two card ids');
+
+    $saveKnown = portal_activity_save_answer(
+        $fcAttemptId,
+        $studentUser['id'],
+        $studyQids[0],
+        ['value' => 'known'],
+        1,
+        $fcToken
+    );
+    expect_true(!empty($saveKnown['ok']), 'save Know mark on flashcard');
+
+    $saveLearn = portal_activity_save_answer(
+        $fcAttemptId,
+        $studentUser['id'],
+        $studyQids[1],
+        ['value' => 'learning'],
+        1,
+        $fcToken
+    );
+    expect_true(!empty($saveLearn['ok']), 'save Still learning mark on flashcard');
+
+    $qKnown = ['question_type' => 'flashcard', 'points' => 1.0, 'settings_json' => '{}', 'manual_marking' => 0];
+    expect_approx(portal_activity_score_answer($qKnown, [], ['value' => 'known']), 1.0, 'Know scores full points');
+    expect_approx(portal_activity_score_answer($qKnown, [], ['value' => 'learning']), 0.0, 'Still learning scores zero');
+
+    $fcSubmit = portal_activity_submit_attempt($fcAttemptId, $studentUser['id'], $fcToken);
+    expect_true(!empty($fcSubmit['ok']), 'submit flashcard study attempt');
+
+    if (!function_exists('portal_user_course_catalog')) {
+        require_once __DIR__ . '/../course_catalog.php';
+    }
+    $decks = portal_flashcard_decks_for_user((int) $studentUser['id']);
+    $foundDeck = false;
+    foreach ($decks as $deck) {
+        if ((int) ($deck['id'] ?? 0) === $fcId) {
+            $foundDeck = true;
+            expect_true((int) ($deck['card_count'] ?? 0) >= 2, 'hub reports flashcard count');
+            break;
+        }
+    }
+    expect_true($foundDeck, 'published deck listed in flashcards hub for student');
 } catch (Throwable $e) {
     $failures++;
     echo 'FAIL  uncaught: ' . $e->getMessage() . "\n";

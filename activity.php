@@ -75,7 +75,7 @@ if (!function_exists('portal_activity_modes')) {
     /** @return list<string> */
     function portal_activity_modes(): array
     {
-        return ['practice', 'quiz', 'challenge', 'assessment', 'survey'];
+        return ['practice', 'quiz', 'challenge', 'assessment', 'survey', 'flashcard'];
     }
 }
 
@@ -88,6 +88,7 @@ if (!function_exists('portal_activity_mode_label')) {
             'challenge'  => 'Challenge',
             'assessment' => 'Assessment',
             'survey'     => 'Survey',
+            'flashcard'  => 'Flashcards',
             default      => ucfirst($mode),
         };
     }
@@ -108,6 +109,7 @@ if (!function_exists('portal_activity_question_types')) {
             'ordering',
             'matching',
             'rating_scale',
+            'flashcard',
         ];
     }
 }
@@ -126,6 +128,7 @@ if (!function_exists('portal_activity_question_type_label')) {
             'ordering'        => 'Ordering',
             'matching'        => 'Matching',
             'rating_scale'    => 'Rating scale',
+            'flashcard'       => 'Flashcard',
             default           => $type,
         };
     }
@@ -144,7 +147,7 @@ if (!function_exists('portal_activity_run_migrations')) {
                 course_item_id INTEGER NOT NULL REFERENCES course_folder_items(id) ON DELETE CASCADE,
                 course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
                 mode TEXT NOT NULL DEFAULT 'quiz'
-                    CHECK(mode IN ('practice','quiz','challenge','assessment','survey')),
+                    CHECK(mode IN ('practice','quiz','challenge','assessment','survey','flashcard')),
                 status TEXT NOT NULL DEFAULT 'draft'
                     CHECK(status IN ('draft','published','archived')),
                 title TEXT NOT NULL,
@@ -223,7 +226,7 @@ if (!function_exists('portal_activity_run_migrations')) {
                 question_type TEXT NOT NULL
                     CHECK(question_type IN (
                         'single_choice','multiple_choice','true_false','short_text','numeric',
-                        'long_response','fill_blank','ordering','matching','rating_scale'
+                        'long_response','fill_blank','ordering','matching','rating_scale','flashcard'
                     )),
                 prompt_html TEXT NOT NULL DEFAULT '',
                 explanation_html TEXT NOT NULL DEFAULT '',
@@ -539,6 +542,7 @@ if (!function_exists('portal_activity_run_migrations')) {
 
         portal_activity_migrate_attempt_lifecycle_columns($db);
         portal_activity_migrate_folder_item_type($db);
+        portal_activity_migrate_flashcard_checks($db);
         portal_activity_seed_badges($db);
         portal_activity_seed_templates($db);
     }
@@ -645,6 +649,124 @@ if (!function_exists('portal_activity_migrate_folder_item_type')) {
             $fk = $db->query('PRAGMA foreign_key_check')->fetchAll(PDO::FETCH_ASSOC);
             if ($fk !== []) {
                 throw new RuntimeException('Foreign key check failed after course_folder_items rebuild.');
+            }
+
+            $db->exec('COMMIT');
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->exec('ROLLBACK');
+            }
+            try {
+                $db->exec('PRAGMA foreign_keys = ON');
+            } catch (Throwable $ignored) {
+            }
+            portal_log_security_event('activity_migration_failed', 'high', $e->getMessage());
+            throw $e;
+        }
+    }
+}
+
+if (!function_exists('portal_activity_migrate_flashcard_checks')) {
+    /**
+     * Widen mode / question_type CHECK constraints to include flashcard.
+     * Existing DBs keep their CREATE TABLE SQL until rebuilt.
+     */
+    function portal_activity_migrate_flashcard_checks(PDO $db): void
+    {
+        $activitiesSql = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='course_activities'"
+        )->fetchColumn() ?: '');
+        if ($activitiesSql !== '' && strpos($activitiesSql, "'flashcard'") === false) {
+            portal_activity_rebuild_table_check(
+                $db,
+                'course_activities',
+                '/CHECK\s*\(\s*mode\s+IN\s*\([^)]*\)\s*\)/i',
+                "CHECK(mode IN ('practice','quiz','challenge','assessment','survey','flashcard'))"
+            );
+        }
+
+        $questionsSql = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_questions'"
+        )->fetchColumn() ?: '');
+        if ($questionsSql !== '' && strpos($questionsSql, "'flashcard'") === false) {
+            portal_activity_rebuild_table_check(
+                $db,
+                'activity_questions',
+                '/CHECK\s*\(\s*question_type\s+IN\s*\([^)]*\)\s*\)/i',
+                "CHECK(question_type IN ("
+                . "'single_choice','multiple_choice','true_false','short_text','numeric',"
+                . "'long_response','fill_blank','ordering','matching','rating_scale','flashcard'"
+                . '))'
+            );
+        }
+    }
+}
+
+if (!function_exists('portal_activity_rebuild_table_check')) {
+    function portal_activity_rebuild_table_check(PDO $db, string $table, string $checkPattern, string $newCheck): void
+    {
+        $tableSql = (string) ($db->query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=" . $db->quote($table)
+        )->fetchColumn() ?: '');
+        if ($tableSql === '') {
+            return;
+        }
+
+        $tmp = '_' . $table . '_flashcard_new';
+        $db->exec('BEGIN');
+        try {
+            $db->exec('PRAGMA foreign_keys = OFF');
+
+            $createSql = preg_replace($checkPattern, $newCheck, $tableSql);
+            if (!is_string($createSql) || $createSql === $tableSql) {
+                throw new RuntimeException('Unable to widen CHECK on ' . $table);
+            }
+
+            $quoted = preg_quote($table, '/');
+            $createSql = preg_replace(
+                '/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?' . $quoted . '["`]?/i',
+                'CREATE TABLE ' . $tmp,
+                $createSql,
+                1
+            );
+            if (!is_string($createSql)) {
+                throw new RuntimeException('Unable to rename ' . $table . ' for rebuild.');
+            }
+
+            $db->exec($createSql);
+
+            $existingCols = array_column($db->query('PRAGMA table_info(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC), 'name');
+            $newCols = array_column($db->query('PRAGMA table_info(' . $tmp . ')')->fetchAll(PDO::FETCH_ASSOC), 'name');
+            $copyCols = array_values(array_intersect($newCols, $existingCols));
+            if ($copyCols === []) {
+                throw new RuntimeException('No overlapping columns for ' . $table . ' rebuild.');
+            }
+
+            $colList = implode(', ', array_map(
+                static fn(string $c): string => '"' . str_replace('"', '""', $c) . '"',
+                $copyCols
+            ));
+            $db->exec("INSERT INTO {$tmp} ({$colList}) SELECT {$colList} FROM {$table}");
+
+            $indexRows = $db->query(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE type='index' AND tbl_name=" . $db->quote($table) . ' AND sql IS NOT NULL'
+            )->fetchAll(PDO::FETCH_ASSOC);
+
+            $db->exec('DROP TABLE ' . $table);
+            $db->exec('ALTER TABLE ' . $tmp . ' RENAME TO ' . $table);
+
+            foreach ($indexRows as $idx) {
+                $idxSql = (string) ($idx['sql'] ?? '');
+                if ($idxSql !== '') {
+                    $db->exec($idxSql);
+                }
+            }
+
+            $db->exec('PRAGMA foreign_keys = ON');
+            $fk = $db->query('PRAGMA foreign_key_check')->fetchAll(PDO::FETCH_ASSOC);
+            if ($fk !== []) {
+                throw new RuntimeException('Foreign key check failed after ' . $table . ' rebuild.');
             }
 
             $db->exec('COMMIT');
@@ -875,6 +997,86 @@ if (!function_exists('portal_activity_find_by_item')) {
         $stmt->execute([$itemId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+}
+
+if (!function_exists('portal_flashcard_decks_for_user')) {
+    /**
+     * Published flashcard activities across courses the user can access.
+     *
+     * @return list<array<string, mixed>>
+     */
+    function portal_flashcard_decks_for_user(int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+        if (!function_exists('portal_user_course_catalog')) {
+            $catalogFile = __DIR__ . '/course_catalog.php';
+            if (is_file($catalogFile)) {
+                require_once $catalogFile;
+            }
+        }
+        if (!function_exists('portal_user_course_catalog')) {
+            return [];
+        }
+
+        $catalog = portal_user_course_catalog($userId);
+        if ($catalog === []) {
+            return [];
+        }
+
+        $courseIds = [];
+        $courseTitles = [];
+        foreach ($catalog as $course) {
+            $cid = (int) ($course['id'] ?? 0);
+            if ($cid <= 0) {
+                continue;
+            }
+            $courseIds[] = $cid;
+            $courseTitles[$cid] = (string) ($course['title'] ?? $course['name'] ?? ('Course ' . $cid));
+        }
+        if ($courseIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($courseIds), '?'));
+        $db = portal_db();
+        $stmt = $db->prepare(
+            "SELECT a.id, a.title, a.course_id, a.course_item_id, a.short_description, a.updated_at, a.published_at,
+                    (
+                        SELECT COUNT(*)
+                        FROM activity_questions q
+                        INNER JOIN activity_versions v ON v.id = q.activity_version_id
+                        WHERE v.activity_id = a.id AND v.status = 'published' AND q.question_type = 'flashcard'
+                    ) AS card_count
+             FROM course_activities a
+             WHERE a.mode = 'flashcard'
+               AND a.status = 'published'
+               AND a.course_id IN ($placeholders)
+             ORDER BY a.title COLLATE NOCASE ASC"
+        );
+        $stmt->execute($courseIds);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $decks = [];
+        foreach ($rows as $row) {
+            $cid = (int) $row['course_id'];
+            $decks[] = [
+                'id' => (int) $row['id'],
+                'title' => (string) $row['title'],
+                'course_id' => $cid,
+                'course_item_id' => (int) $row['course_item_id'],
+                'course_title' => $courseTitles[$cid] ?? ('Course ' . $cid),
+                'short_description' => (string) ($row['short_description'] ?? ''),
+                'card_count' => (int) ($row['card_count'] ?? 0),
+                'updated_at' => (string) ($row['updated_at'] ?? ''),
+                'published_at' => (string) ($row['published_at'] ?? ''),
+                'can_manage' => portal_can_manage_course($cid),
+            ];
+        }
+
+        return $decks;
     }
 }
 
@@ -1109,11 +1311,12 @@ if (!function_exists('portal_activity_create')) {
 
         $integrityDefault = $mode === 'assessment' ? 1 : 0;
         $feedbackDefault = match ($mode) {
-            'practice' => 'after_each',
+            'practice', 'flashcard' => 'after_each',
             'assessment' => 'when_released',
             'survey' => 'never',
             default => 'after_submission',
         };
+        $includeGradebook = 0;
 
         $db->beginTransaction();
         try {
@@ -1127,8 +1330,9 @@ if (!function_exists('portal_activity_create')) {
             $db->prepare(
                 "INSERT INTO course_activities
                     (course_item_id, course_id, mode, status, title, feedback_policy,
-                     integrity_enabled, focus_monitoring, created_by, updated_by)
-                 VALUES (?,?,?,'draft',?,?,?,?,?,?)"
+                     integrity_enabled, focus_monitoring, include_in_gradebook,
+                     created_by, updated_by)
+                 VALUES (?,?,?,'draft',?,?,?,?,?,?,?)"
             )->execute([
                 $itemId,
                 $courseId,
@@ -1137,6 +1341,7 @@ if (!function_exists('portal_activity_create')) {
                 $feedbackDefault,
                 $integrityDefault,
                 $integrityDefault,
+                $includeGradebook,
                 $userId,
                 $userId,
             ]);
@@ -1329,7 +1534,9 @@ if (!function_exists('portal_activity_validate_for_publish')) {
 
         $tree = portal_activity_load_version_tree($draftId, true);
         if ($tree['questions'] === []) {
-            $errors[] = 'Add at least one question before publishing.';
+            $errors[] = ($activity['mode'] ?? '') === 'flashcard'
+                ? 'Add at least one flashcard before publishing.'
+                : 'Add at least one question before publishing.';
         }
 
         foreach ($tree['questions'] as $q) {
@@ -1337,10 +1544,20 @@ if (!function_exists('portal_activity_validate_for_publish')) {
             $type = (string) $q['question_type'];
             $prompt = trim(strip_tags((string) $q['prompt_html']));
             if ($prompt === '') {
-                $errors[] = 'A question is missing a prompt.';
+                $errors[] = $type === 'flashcard'
+                    ? 'A flashcard is missing its front side.'
+                    : 'A question is missing a prompt.';
             }
             $options = $tree['options_by_question'][$qid] ?? [];
             $settings = portal_activity_json_decode((string) ($q['settings_json'] ?? '{}'), []) ?: [];
+
+            if ($type === 'flashcard') {
+                $back = trim(strip_tags((string) ($settings['back'] ?? $q['explanation_html'] ?? '')));
+                if ($back === '') {
+                    $errors[] = 'A flashcard is missing its back side.';
+                }
+                continue;
+            }
 
             if (in_array($type, ['single_choice', 'multiple_choice', 'true_false'], true)) {
                 if (count($options) < 2) {
@@ -1896,9 +2113,15 @@ if (!function_exists('portal_activity_add_question')) {
         if ($questionType === 'rating_scale' && !array_key_exists('points', $extra)) {
             $points = 0.0;
         }
+        if ($questionType === 'flashcard' && !array_key_exists('points', $extra)) {
+            $points = 1.0;
+        }
         $settings = $extra['settings'] ?? [];
         if (!is_array($settings)) {
             $settings = [];
+        }
+        if ($questionType === 'flashcard' && !isset($settings['back'])) {
+            $settings['back'] = (string) ($extra['back'] ?? '');
         }
 
         $db->prepare(
@@ -2830,6 +3053,22 @@ if (!function_exists('portal_activity_answer_view')) {
             return array_merge($blank, ['kind' => 'rows', 'rows' => $rows]);
         }
 
+        if ($type === 'flashcard') {
+            $mark = is_array($answer)
+                ? (string) ($answer['value'] ?? $answer['mark'] ?? $answer['text'] ?? '')
+                : (string) $answer;
+            $mark = strtolower(trim($mark));
+            $label = match ($mark) {
+                'known', 'know' => 'Know',
+                'learning', 'still_learning', 'unknown' => 'Still learning',
+                default => $mark !== '' ? $mark : '',
+            };
+            return array_merge($blank, [
+                'kind' => $label === '' ? 'empty' : 'value',
+                'text' => $label,
+            ]);
+        }
+
         if ($answer === null || $answer === '' || $answer === []) {
             return $blank;
         }
@@ -2850,6 +3089,20 @@ if (!function_exists('portal_activity_score_answer')) {
         }
 
         $settings = portal_activity_json_decode((string) ($question['settings_json'] ?? '{}'), []) ?: [];
+
+        if ($type === 'flashcard') {
+            $mark = is_array($answer)
+                ? (string) ($answer['value'] ?? $answer['mark'] ?? $answer['text'] ?? '')
+                : (string) $answer;
+            $mark = strtolower(trim($mark));
+            if ($mark === 'known' || $mark === 'know') {
+                return $points;
+            }
+            if ($mark === 'learning' || $mark === 'still_learning' || $mark === 'unknown') {
+                return 0.0;
+            }
+            return 0.0;
+        }
 
         if ($type === 'single_choice' || $type === 'true_false') {
             $selected = is_array($answer) ? ($answer['option_id'] ?? $answer['value'] ?? null) : $answer;

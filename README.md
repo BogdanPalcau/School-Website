@@ -58,6 +58,7 @@ Teachers can place Activities inside course folders. Students open them from the
 - Challenge — harder formative tasks, often with scoring and XP
 - Assessment — formal assessed work with attempt limits, integrity signals, and delayed result release
 - Survey — opinion / feedback collection (typically unscored)
+- Flashcards — course decks with a flip study player (Know / Still learning); also listed on the global Flashcards hub (`flashcards.php`)
 
 Teacher builder (`activity-builder.php`) lets staff author sections and questions, configure timing and attempt limits, attach media, import CSV question banks, publish a version, and review results. Students use the player (`activity.php`) to start or resume attempts, autosave answers, and submit. Correct answers, teacher notes, and explanations are not exposed while an assessment attempt is in progress.
 
@@ -79,6 +80,7 @@ Security
 - Course-level access checks
 - CSRF protection on sensitive actions
 - Login throttling
+- Self-service password reset via SMTP (when configured)
 - Safer upload validation
 - Protected database and upload folders
 - Rich-text sanitisation for discussions and announcements
@@ -94,6 +96,7 @@ Backend: PHP 8+
 Database: SQLite via PDO
 Frontend: HTML, CSS, JavaScript
 Local dev: XAMPP / Apache
+Email: PHPMailer (Composer)
 Testing: Playwright + PHP CLI checks
 Document previews (optional): LibreOffice
 
@@ -103,6 +106,12 @@ Required PHP extensions
 - dom
 - json
 - mbstring
+
+Composer dependencies (password reset / outbound mail)
+```
+composer install
+```
+Copy `.env.example` to `.env` and set `SMTP_*`, `PORTAL_BASE_URL`, and `PORTAL_APP_SECRET`. Without SMTP, the forgot-password form still shows a neutral success message and does not reveal whether an account exists.
 
 ---
 
@@ -153,6 +162,8 @@ School-Website/
 ├── public/                 Public web pages
 │   ├── index.php
 │   ├── login.php
+│   ├── forgot-password.php
+│   ├── reset-password.php
 │   ├── courses.php
 │   ├── course.php
 │   ├── activity.php            Student activity player
@@ -185,7 +196,9 @@ School-Website/
 │       └── activity.spec.js
 │
 ├── bootstrap.php             Core helpers, auth, database, security utilities
+├── mailer.php                PHPMailer SMTP helper
 ├── activity.php              Activities domain helpers (scoring, attempts, integrity, media)
+├── composer.json             PHP dependencies (PHPMailer)
 ├── db_init.php               Database setup and seed data
 ├── course_catalog.php        Course data/helpers
 ├── integrity.php             Academic integrity and review helpers

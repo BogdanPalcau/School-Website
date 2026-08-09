@@ -39,7 +39,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $name = substr(trim((string) ($_POST['name'] ?? '')), 0, 150);
         $email = strtolower(substr(trim((string) ($_POST['email'] ?? '')), 0, 190));
         $year = (string) ($me['year'] ?? '');
-        $programme = (string) ($me['programme'] ?? '');
 
         if ($name === '') {
             $_SESSION['settings_flash'] = ['error', 'Name cannot be empty.'];
@@ -78,8 +77,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             substr($parts[0] ?? 'S', 0, 1) . substr($parts[1] ?? 'T', 0, 1)
         );
 
-        $db->prepare("UPDATE users SET name = ?, year = ?, programme = ?, initials = ?, email = ? WHERE id = ?")
-           ->execute([$name, $year, $programme, $initials, $email, $meId]);
+        $db->prepare("UPDATE users SET name = ?, year = ?, initials = ?, email = ? WHERE id = ?")
+           ->execute([$name, $year, $initials, $email, $meId]);
 
         $fresh = portal_find_user_by_id($meId);
         if ($fresh) {
@@ -89,7 +88,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 'email'     => $fresh['email'],
                 'name'      => $fresh['name'],
                 'year'      => $fresh['year'],
-                'programme' => $fresh['programme'],
                 'initials'  => $fresh['initials'],
                 'role'      => $fresh['role'],
             ];

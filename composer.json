@@ -1,0 +1,11 @@
+{
+    "name": "rieo/school-website",
+    "description": "School portal",
+    "require": {
+        "php": ">=8.1",
+        "phpmailer/phpmailer": "^6.9"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

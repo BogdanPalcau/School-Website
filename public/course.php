@@ -433,7 +433,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!portal_valid_assignment_role($assignmentRole)) {
                 $assignmentRole = 'teacher';
             }
-            $chk = $db->prepare("SELECT id FROM users WHERE id = ? AND role = 'teacher'");
+            $chk = $db->prepare(
+                "SELECT id FROM users WHERE id = ? AND role IN ('owner', 'admin', 'teacher')"
+            );
             $chk->execute([$uid]);
             if ($chk->fetch()) {
                 $db->prepare("
@@ -1792,11 +1794,17 @@ $_tStmt = $_db->prepare(
 $_tStmt->execute([$courseId]);
 $courseTeachers = $_tStmt->fetchAll();
 
-// Teacher accounts not yet assigned to this course (admin assign dropdown)
+// Staff accounts (owner / admin / teacher) not yet assigned to this course
 $courseTeacherIds = array_column($courseTeachers, 'id');
 $availableTeachers = [];
 if (portal_is_admin()) {
-    $_atStmt = $_db->query("SELECT id, name, initials FROM users WHERE role = 'teacher' ORDER BY name ASC");
+    $_atStmt = $_db->query(
+        "SELECT id, name, initials, role FROM users
+         WHERE role IN ('owner', 'admin', 'teacher')
+         ORDER BY
+            CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+            name ASC"
+    );
     foreach ($_atStmt->fetchAll() as $_t) {
         if (!in_array((int) $_t['id'], $courseTeacherIds, true)) {
             $availableTeachers[] = $_t;
@@ -3044,6 +3052,7 @@ ob_start();
                                                         <option value="challenge">Challenge</option>
                                                         <option value="assessment">Assessment</option>
                                                         <option value="survey">Survey</option>
+                                                        <option value="flashcard">Flashcards</option>
                                                     </select>
                                                 </label>
                                             </div>
@@ -3886,10 +3895,13 @@ ob_start();
                                 <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
                                 <input type="hidden" name="action" value="assign_teacher">
                                 <label class="folder-form-label">
-                                    <span>Select teacher account</span>
+                                    <span>Select staff account</span>
                                     <select name="user_id">
                                         <?php foreach ($availableTeachers as $t): ?>
-                                            <option value="<?= (int) $t['id'] ?>"><?= portal_escape($t['name']) ?></option>
+                                            <option value="<?= (int) $t['id'] ?>">
+                                                <?= portal_escape($t['name']) ?>
+                                                (<?= portal_escape(ucfirst((string) ($t['role'] ?? 'teacher'))) ?>)
+                                            </option>
                                         <?php endforeach; ?>
                                     </select>
                                 </label>
@@ -3904,7 +3916,7 @@ ob_start();
                             </form>
                         </details>
                     <?php elseif (empty($courseTeachers)): ?>
-                        <p class="folder-empty-note" style="margin-top:10px;">No teacher accounts exist yet. Create one in Admin → Manage Users.</p>
+                        <p class="folder-empty-note" style="margin-top:10px;">No staff accounts are available to assign. Create an owner, admin, or teacher in Admin → Manage Users.</p>
                     <?php endif; ?>
                 <?php endif; ?>
             </article>

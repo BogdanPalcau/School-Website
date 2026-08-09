@@ -50,7 +50,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email     = strtolower(trim((string) ($_POST['email'] ?? '')));
         $name      = trim((string) ($_POST['name'] ?? ''));
         $year      = trim((string) ($_POST['year'] ?? 'Year 11'));
-        $programme = trim((string) ($_POST['programme'] ?? 'General'));
         $password  = (string) ($_POST['password'] ?? '');
         $newRole   = (string) ($_POST['role'] ?? 'student');
 
@@ -80,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ")->execute([
                     $username, $email,
                     password_hash($password, PASSWORD_DEFAULT),
-                    $name, $year, $programme, $initials, $newRole,
+                    $name, $year, 'General', $initials, $newRole,
                 ]);
                 $_SESSION['admin_flash'] = ['success', "Account for {$name} created successfully."];
             } catch (\PDOException $e) {
@@ -98,7 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email     = strtolower(trim((string) ($_POST['email'] ?? '')));
         $name      = trim((string) ($_POST['name'] ?? ''));
         $year      = trim((string) ($_POST['year'] ?? 'Year 11'));
-        $programme = trim((string) ($_POST['programme'] ?? 'General'));
         $newRole   = (string) ($_POST['role'] ?? ($target['role'] ?? 'student'));
         $newPass   = (string) ($_POST['new_password'] ?? '');
         $confirmPass = (string) ($_POST['confirm_password'] ?? '');
@@ -161,8 +159,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $passwordChanged = true;
         }
 
-        $pdo->prepare('UPDATE users SET username = ?, email = ?, name = ?, year = ?, programme = ?, initials = ?, role = ? WHERE id = ?')
-            ->execute([$username, $email, $name, $year, $programme, $initials, $newRole, $targetId]);
+        $pdo->prepare('UPDATE users SET username = ?, email = ?, name = ?, year = ?, initials = ?, role = ? WHERE id = ?')
+            ->execute([$username, $email, $name, $year, $initials, $newRole, $targetId]);
 
         $notes = [];
         if ($passwordChanged) {
@@ -652,7 +650,7 @@ $filteredUsers = array_values(array_filter(
         if ($userQuery === '') {
             return true;
         }
-        $haystack = implode(' ', [$u['name'], $u['email'], $u['username'], $u['year'], $u['programme']]);
+        $haystack = implode(' ', [$u['name'], $u['email'], $u['username'], $u['year']]);
         return stripos($haystack, $userQuery) !== false;
     }
 ));
@@ -1096,10 +1094,6 @@ ob_start();
                             </select>
                         </label>
                         <label class="admin-field">
-                            <span>Programme</span>
-                            <input type="text" name="programme" value="General" placeholder="e.g. Sciences pathway">
-                        </label>
-                        <label class="admin-field">
                             <span>Password</span>
                             <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters, letter + number">
                         </label>
@@ -1193,7 +1187,6 @@ ob_start();
                                             <div class="admin-avatar admin-avatar--sm"><?= portal_escape($u['initials']) ?></div>
                                             <div>
                                                 <strong><?= portal_escape($u['name']) ?></strong>
-                                                <span class="admin-table-meta"><?= portal_escape((string) $u['programme']) ?></span>
                                             </div>
                                         </div>
                                     </td>
@@ -2014,10 +2007,6 @@ $canEditOpenedUser = $editUser !== null
                     <option value="<?= portal_escape((string) $editUser['year']) ?>" selected><?= portal_escape((string) $editUser['year']) ?></option>
                     <?php endif; ?>
                 </select>
-            </label>
-            <label class="admin-field">
-                <span>Programme</span>
-                <input type="text" name="programme" maxlength="120" value="<?= portal_escape((string) $editUser['programme']) ?>">
             </label>
             <label class="admin-field">
                 <span>Role</span>

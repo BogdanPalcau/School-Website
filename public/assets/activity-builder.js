@@ -32,6 +32,7 @@
 
   const csrf = root.dataset.csrf || '';
   const activityId = Number(root.dataset.activityId || boot.activity?.id || 0);
+  const isFlashcardMode = root.dataset.flashcard === '1' || (boot.activity?.mode === 'flashcard');
   const recoveryKey = 'ab-recovery-' + activityId;
 
   const els = {
@@ -233,7 +234,13 @@
     const questionMetric = root.querySelector('[data-ab-metric="questions"]');
     const pointsMetric = root.querySelector('[data-ab-metric="points"]');
     if (questionMetric) questionMetric.textContent = String(questions.length);
-    if (pointsMetric) pointsMetric.textContent = fmtPoints(points);
+    if (pointsMetric) {
+      pointsMetric.textContent = isFlashcardMode ? String(questions.length) : fmtPoints(points);
+      const pointsLabel = pointsMetric.parentElement;
+      if (isFlashcardMode && pointsLabel && pointsLabel.childNodes.length) {
+        // "N points" label sits outside the strong — leave structure, summary text handles wording
+      }
+    }
 
     const settings = collectSettings();
     const xpEnabled = !!Number(settings.xp_enabled || 0);
@@ -271,7 +278,7 @@
       if (state.dirty) message.textContent = 'Saving changes before the next readiness check.';
       else if (errors.length) message.textContent = errors.length + (errors.length === 1 ? ' issue blocks' : ' issues block') + ' publishing.';
       else if (warnings.length) message.textContent = warnings.length + (warnings.length === 1 ? ' setting deserves' : ' settings deserve') + ' a quick review.';
-      else if (!questions.length) message.textContent = 'Add your first question to begin.';
+      else if (!questions.length) message.textContent = isFlashcardMode ? 'Add your first flashcard to begin.' : 'Add your first question to begin.';
       else message.textContent = 'Ready to preview and publish.';
     }
   }
@@ -299,17 +306,23 @@
       card.dataset.questionId = String(q.id);
       card.setAttribute('role', 'listitem');
       card.tabIndex = 0;
-      const marking = Number(q.manual_marking)
+      const marking = isFlashcardMode
+        ? ''
+        : (Number(q.manual_marking)
         ? '<span class="ab-mark-pill ab-mark-pill--manual" title="Teacher marks this">Manual</span>'
-        : '<span class="ab-mark-pill ab-mark-pill--auto" title="Scored automatically">Auto</span>';
+        : '<span class="ab-mark-pill ab-mark-pill--auto" title="Scored automatically">Auto</span>');
+      const front = stripHtml(q.prompt_html) || (isFlashcardMode ? 'Untitled card' : 'Untitled question');
+      const cardSettings = safeJson(q.settings_json || q.settings, {});
+      const backPreview = isFlashcardMode ? stripHtml(cardSettings.back || q.explanation_html || '') : '';
       card.innerHTML =
         '<button type="button" class="ab-drag-handle" aria-label="Drag to reorder" data-ab-drag>⋮⋮</button>' +
         '<div class="ab-question-card-body">' +
         '<span class="ab-question-index">' + indexLabel + '</span>' +
-        '<strong>' + escapeHtml(stripHtml(q.prompt_html) || 'Untitled question') + '</strong>' +
+        '<strong>' + escapeHtml(front) + '</strong>' +
+        (backPreview ? '<small class="ab-card-back-preview">' + escapeHtml(backPreview.slice(0, 80)) + (backPreview.length > 80 ? '…' : '') + '</small>' : '') +
         '<p class="ab-question-card-meta">' +
-        '<span>' + escapeHtml(typeLabel(q.question_type)) + '</span>' +
-        '<strong>' + Number(q.points || 0) + ' pts</strong>' +
+        '<span>' + escapeHtml(isFlashcardMode ? 'Flashcard' : typeLabel(q.question_type)) + '</span>' +
+        (isFlashcardMode ? '' : ('<strong>' + Number(q.points || 0) + ' pts</strong>')) +
         marking + '</p>' +
         '</div>' +
         '<div class="ab-q-actions">' +
@@ -376,6 +389,11 @@
     }
     if (els.editorEmpty) els.editorEmpty.hidden = true;
     if (els.editor) els.editor.hidden = false;
+
+    if (isFlashcardMode || q.question_type === 'flashcard') {
+      renderFlashcardEditor(q);
+      return;
+    }
 
     const opts = optionsFor(q.id);
     const settings = safeJson(q.settings_json, {});
@@ -540,6 +558,85 @@
 
     initQuestionQuills(q);
     bindEditorEvents(q);
+  }
+
+  function renderFlashcardEditor(q) {
+    const settings = safeJson(q.settings_json || q.settings, {});
+    const frontText = stripHtml(q.prompt_html || '');
+    const backText = String(settings.back || stripHtml(q.explanation_html || '') || '');
+
+    els.editor.innerHTML =
+      '<div class="ab-editor-block ab-flashcard-editor">' +
+      '<div class="ab-editor-head"><h3>Flashcard</h3></div>' +
+      '<label class="ab-field"><span>Front</span>' +
+      '<textarea data-ab-fc-front rows="4" placeholder="Term, question, or prompt">' + escapeHtml(frontText) + '</textarea></label>' +
+      '<label class="ab-field"><span>Back</span>' +
+      '<textarea data-ab-fc-back rows="4" placeholder="Definition or answer">' + escapeHtml(backText) + '</textarea></label>' +
+      '<p class="ab-hint-line">Students flip the card to reveal the back, then mark Know or Still learning.</p>' +
+      '<div class="ab-editor-actions">' +
+      '<button type="button" class="ab-btn ab-btn--primary" data-ab-save-question>Save card</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-dup-question>Duplicate</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-del-question>Delete</button>' +
+      '</div></div>';
+
+    bindFlashcardEditorEvents(q);
+  }
+
+  function bindFlashcardEditorEvents(q) {
+    const saveBtn = els.editor.querySelector('[data-ab-save-question]');
+    const dupBtn = els.editor.querySelector('[data-ab-dup-question]');
+    const delBtn = els.editor.querySelector('[data-ab-del-question]');
+    const front = els.editor.querySelector('[data-ab-fc-front]');
+    const back = els.editor.querySelector('[data-ab-fc-back]');
+
+    [front, back].forEach((el) => {
+      el?.addEventListener('input', () => markDirty());
+    });
+
+    saveBtn?.addEventListener('click', async () => {
+      try {
+        const frontRaw = (front?.value || '').trim();
+        const backText = (back?.value || '').trim();
+        const frontHtml = '<p>' + escapeHtml(frontRaw).replace(/\n/g, '<br>') + '</p>';
+        await api('update_question', {
+          question_id: q.id,
+          fields: {
+            prompt_html: frontHtml,
+            explanation_html: '',
+            settings: { back: backText },
+            points: 1,
+            question_type: 'flashcard',
+          },
+        });
+        state.dirty = false;
+        setSaveState('Saved');
+        renderAll();
+        selectQuestion(q.id);
+      } catch (err) {
+        alert(err.message || 'Could not save card');
+      }
+    });
+
+    dupBtn?.addEventListener('click', async () => {
+      try {
+        const data = await api('duplicate_question', { question_id: q.id });
+        renderAll();
+        if (data.question_id) selectQuestion(data.question_id);
+      } catch (err) {
+        alert(err.message || 'Duplicate failed');
+      }
+    });
+
+    delBtn?.addEventListener('click', async () => {
+      if (!confirm('Delete this flashcard?')) return;
+      try {
+        await api('delete_question', { question_id: q.id });
+        state.selectedQuestionId = null;
+        renderAll();
+      } catch (err) {
+        alert(err.message || 'Delete failed');
+      }
+    });
   }
 
   function safeJson(raw, fallback) {
@@ -1022,6 +1119,14 @@
     try {
       if (action === 'open-type-picker') {
         els.typePicker?.showModal();
+      } else if (action === 'add-flashcard') {
+        const data = await api('add_question', {
+          question_type: 'flashcard',
+          prompt_html: '<p></p>',
+          settings: { back: '' },
+        });
+        renderAll();
+        if (data.question_id) selectQuestion(data.question_id);
       } else if (action === 'add-section') {
         const title = prompt('Section title', 'Section') || 'Section';
         await api('add_section', { title });
@@ -1101,6 +1206,13 @@
           lab.innerHTML = '<input type="radio" name="pq' + q.id + '"> <span>' + (o.option_text_html || '') + '</span>';
           form.appendChild(lab);
         });
+      } else if (q.question_type === 'flashcard') {
+        const back = escapeHtml(q.settings?.back || stripHtml(q.explanation_html || '') || 'Back of card');
+        form.innerHTML =
+          '<div class="ab-fc-preview-card">' +
+          '<div class="ab-fc-preview-face"><small>Front</small><div>' + (q.prompt_html || '') + '</div></div>' +
+          '<div class="ab-fc-preview-face"><small>Back</small><div>' + back + '</div></div>' +
+          '</div>';
       } else if (q.question_type === 'multiple_choice') {
         (q.options || []).forEach(o => {
           const lab = document.createElement('label');

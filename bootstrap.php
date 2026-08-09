@@ -21,6 +21,11 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
 }
 
+$portalComposerAutoload = __DIR__ . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+if (is_file($portalComposerAutoload)) {
+    require_once $portalComposerAutoload;
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 if (!function_exists('portal_escape')) {
@@ -926,7 +931,6 @@ if (!function_exists('portal_default_student')) {
             'id'        => 0,
             'name'      => 'Student',
             'year'      => 'Year group',
-            'programme' => 'Student pathway',
             'initials'  => 'ST',
             'role'      => 'student',
         ];
@@ -1303,7 +1307,6 @@ if (!function_exists('portal_attempt_login')) {
             'email'     => $user['email'],
             'name'      => $user['name'],
             'year'      => $user['year'],
-            'programme' => $user['programme'],
             'initials'  => $user['initials'],
             'role'      => $user['role'],
         ];
@@ -2269,6 +2272,30 @@ if (!function_exists('portal_run_migrations')) {
         ");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, attempted_at)");
 
+        // ── Password reset tokens (self-service via email) ─────────────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash    TEXT    NOT NULL UNIQUE,
+                expires_at    INTEGER NOT NULL,
+                used_at       INTEGER NULL,
+                requested_ip  TEXT    NOT NULL DEFAULT '',
+                created_at    INTEGER NOT NULL
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id, created_at)");
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS password_reset_attempts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip           TEXT    NOT NULL,
+                attempted_at INTEGER NOT NULL
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_ip ON password_reset_attempts(ip, attempted_at)");
+
         // ── Security activity log ──────────────────────────────────────────────
         $db->exec("
             CREATE TABLE IF NOT EXISTS security_events (
@@ -2466,10 +2493,13 @@ portal_protect_sensitive_paths();
 // ── Teacher / course-manager permission helpers ───────────────────────────────
 
 if (!function_exists('portal_is_teacher')) {
-    /** Global teacher account (not the same as course-level assignment role). */
+    /**
+     * Teaching staff by global role: owner, admin, and teacher.
+     * Not the same as a course-level assignment role (see portal_is_course_teacher).
+     */
     function portal_is_teacher(): bool
     {
-        return portal_current_user_role() === 'teacher';
+        return in_array(portal_current_user_role(), ['owner', 'admin', 'teacher'], true);
     }
 }
 
@@ -2551,7 +2581,7 @@ if (!function_exists('portal_is_supervisor')) {
 }
 
 if (!function_exists('portal_is_course_staff')) {
-    /** True for global teacher accounts (may hold course-level teacher or supervisor assignments). */
+    /** True for owner, admin, and teacher accounts (staff teaching capabilities). */
     function portal_is_course_staff(): bool
     {
         return portal_is_teacher();
@@ -2670,4 +2700,263 @@ if (!function_exists('portal_folder_item_content_locked')) {
 require_once __DIR__ . '/integrity.php';
 require_once __DIR__ . '/submission_security.php';
 require_once __DIR__ . '/events.php';
+require_once __DIR__ . '/mailer.php';
 // activity.php is loaded earlier so migrations run with portal_run_migrations()
+
+// ── Password reset (self-service email) ───────────────────────────────────────
+
+if (!function_exists('portal_app_secret')) {
+    function portal_app_secret(): string
+    {
+        static $secret = null;
+        if ($secret !== null) {
+            return $secret;
+        }
+
+        $env = getenv('PORTAL_APP_SECRET');
+        if (is_string($env) && trim($env) !== '') {
+            $secret = trim($env);
+            return $secret;
+        }
+
+        $path = function_exists('portal_db_path') ? portal_db_path() : (__DIR__ . '/database/portal.db');
+        $secret = hash('sha256', 'portal-app|' . $path);
+        return $secret;
+    }
+}
+
+if (!function_exists('portal_base_url')) {
+    function portal_base_url(): string
+    {
+        $configured = getenv('PORTAL_BASE_URL');
+        if (is_string($configured) && trim($configured) !== '') {
+            return rtrim(trim($configured), '/');
+        }
+
+        $https = (
+            (($_SERVER['HTTPS'] ?? '') !== '' && strtolower((string) $_SERVER['HTTPS']) !== 'off')
+            || ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443')
+        );
+        $scheme = $https ? 'https' : 'http';
+        $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+        $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+        $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
+
+        return rtrim($scheme . '://' . $host . $dir, '/');
+    }
+}
+
+if (!function_exists('portal_password_reset_hash')) {
+    function portal_password_reset_hash(string $token): string
+    {
+        return hash_hmac('sha256', $token, portal_app_secret());
+    }
+}
+
+if (!function_exists('portal_password_reset_is_locked')) {
+    function portal_password_reset_is_locked(string $ip, int $maxAttempts = 5, int $windowSeconds = 900): bool
+    {
+        try {
+            $stmt = portal_db()->prepare(
+                'SELECT COUNT(*) FROM password_reset_attempts WHERE ip = ? AND attempted_at > ?'
+            );
+            $stmt->execute([$ip, time() - $windowSeconds]);
+            return (int) $stmt->fetchColumn() >= $maxAttempts;
+        } catch (\PDOException $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('portal_password_reset_record_attempt')) {
+    function portal_password_reset_record_attempt(string $ip): void
+    {
+        try {
+            portal_db()
+                ->prepare('INSERT INTO password_reset_attempts (ip, attempted_at) VALUES (?, ?)')
+                ->execute([$ip, time()]);
+        } catch (\PDOException $e) {
+        }
+    }
+}
+
+if (!function_exists('portal_password_reset_find_valid')) {
+    function portal_password_reset_find_valid(string $token): ?array
+    {
+        $token = trim($token);
+        if ($token === '' || strlen($token) < 32) {
+            return null;
+        }
+
+        try {
+            $stmt = portal_db()->prepare(
+                'SELECT t.*, u.email AS user_email, u.name AS user_name
+                 FROM password_reset_tokens t
+                 INNER JOIN users u ON u.id = t.user_id
+                 WHERE t.token_hash = ?
+                 LIMIT 1'
+            );
+            $stmt->execute([portal_password_reset_hash($token)]);
+            $row = $stmt->fetch();
+            if (!$row) {
+                return null;
+            }
+            if ($row['used_at'] !== null && $row['used_at'] !== '') {
+                return null;
+            }
+            if ((int) $row['expires_at'] < time()) {
+                return null;
+            }
+
+            return $row;
+        } catch (\PDOException $e) {
+            return null;
+        }
+    }
+}
+
+if (!function_exists('portal_password_reset_request')) {
+    /**
+     * Always returns without revealing whether the email exists.
+     * Callers should show a neutral success message.
+     */
+    function portal_password_reset_request(string $email, string $ip): void
+    {
+        $email = strtolower(trim($email));
+        portal_password_reset_record_attempt($ip);
+
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            portal_log_security_event('password_reset_requested', 'info', 'Reset requested with invalid email');
+            return;
+        }
+
+        $user = portal_find_user($email);
+        if ($user === null || strtolower((string) ($user['email'] ?? '')) !== $email) {
+            portal_log_security_event('password_reset_requested', 'info', 'Reset requested for unknown email');
+            return;
+        }
+
+        $userId = (int) $user['id'];
+        portal_log_security_event(
+            'password_reset_requested',
+            'info',
+            'Reset requested for user id ' . $userId,
+            $userId
+        );
+
+        if (!portal_mail_configured()) {
+            portal_log_security_event(
+                'password_reset_failed',
+                'medium',
+                'Reset mail skipped: SMTP not configured',
+                $userId
+            );
+            return;
+        }
+
+        $db = portal_db();
+        $now = time();
+        $token = bin2hex(random_bytes(32));
+        $tokenHash = portal_password_reset_hash($token);
+
+        try {
+            $db->prepare(
+                'UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL'
+            )->execute([$now, $userId]);
+
+            $db->prepare(
+                'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used_at, requested_ip, created_at)
+                 VALUES (?, ?, ?, NULL, ?, ?)'
+            )->execute([$userId, $tokenHash, $now + 3600, $ip, $now]);
+        } catch (\PDOException $e) {
+            portal_log_security_event(
+                'password_reset_failed',
+                'medium',
+                'Could not store reset token',
+                $userId
+            );
+            return;
+        }
+
+        $resetUrl = portal_base_url() . '/reset-password.php?token=' . urlencode($token);
+        $school = portal_school_name();
+        $name = trim((string) ($user['name'] ?? '')) ?: 'there';
+        $subject = 'Reset your ' . $school . ' password';
+        $safeName = portal_escape($name);
+        $safeSchool = portal_escape($school);
+        $safeUrl = portal_escape($resetUrl);
+        $html = '<p>Hi ' . $safeName . ',</p>'
+            . '<p>We received a request to reset your ' . $safeSchool . ' portal password.</p>'
+            . '<p><a href="' . $safeUrl . '">Choose a new password</a></p>'
+            . '<p>This link expires in 60 minutes. If you did not ask for a reset, you can ignore this email.</p>';
+        $text = "Hi {$name},\n\n"
+            . "We received a request to reset your {$school} portal password.\n\n"
+            . "Open this link to choose a new password:\n{$resetUrl}\n\n"
+            . "This link expires in 60 minutes. If you did not ask for a reset, you can ignore this email.\n";
+
+        if (!portal_mail_send((string) $user['email'], $subject, $html, $text)) {
+            portal_log_security_event(
+                'password_reset_failed',
+                'medium',
+                'Reset mail could not be sent',
+                $userId
+            );
+        }
+    }
+}
+
+if (!function_exists('portal_password_reset_consume')) {
+    /**
+     * @return string|null Error message, or null on success.
+     */
+    function portal_password_reset_consume(string $token, string $newPassword): ?string
+    {
+        $ruleError = portal_password_validate($newPassword);
+        if ($ruleError !== '') {
+            return $ruleError;
+        }
+
+        $row = portal_password_reset_find_valid($token);
+        if ($row === null) {
+            portal_log_security_event('password_reset_failed', 'medium', 'Invalid or expired reset token');
+            return 'This reset link is invalid or has expired. Request a new one.';
+        }
+
+        $userId = (int) $row['user_id'];
+        $tokenId = (int) $row['id'];
+        $now = time();
+        $db = portal_db();
+
+        try {
+            $db->beginTransaction();
+            $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+                ->execute([password_hash($newPassword, PASSWORD_DEFAULT), $userId]);
+            $db->prepare('UPDATE password_reset_tokens SET used_at = ? WHERE id = ?')
+                ->execute([$now, $tokenId]);
+            $db->prepare(
+                'UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL AND id != ?'
+            )->execute([$now, $userId, $tokenId]);
+            $db->commit();
+        } catch (\PDOException $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            portal_log_security_event(
+                'password_reset_failed',
+                'high',
+                'Could not update password after reset',
+                $userId
+            );
+            return 'Could not update your password. Please try again.';
+        }
+
+        portal_log_security_event(
+            'password_reset_completed',
+            'medium',
+            'Password reset completed',
+            $userId
+        );
+
+        return null;
+    }
+}

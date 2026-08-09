@@ -1,6 +1,11 @@
 node_modules/
+/vendor/
+composer.phar
 playwright-report/
 test-results/
+
+# Secrets / local env
+.env
 
 # Local runtime data
 database/portal.db

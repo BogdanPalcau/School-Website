@@ -83,7 +83,6 @@ test('rejects forged admin POST requests without a CSRF token', async ({ page })
       email: 'csrf_created_user@example.test',
       name: 'CSRF Created User',
       year: 'Year 11',
-      programme: 'Security Test',
       password: fixtures.password,
       role: 'student',
     },

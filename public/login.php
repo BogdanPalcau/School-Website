@@ -16,6 +16,11 @@ $auth_description = 'Sign in to see your lessons, deadlines, school updates, and
 $identifier = '';
 $error = '';
 $loggedOut = isset($_GET['logged_out']) && $_GET['logged_out'] === '1';
+$flash = null;
+if (isset($_SESSION['login_flash']) && is_array($_SESSION['login_flash'])) {
+    $flash = $_SESSION['login_flash'];
+    unset($_SESSION['login_flash']);
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $identifier = trim((string) ($_POST['identifier'] ?? ''));
@@ -45,45 +50,55 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
 ob_start();
 ?>
-<div class="login-intro">
-    <p class="eyebrow">Sign in</p>
-    <h2>Welcome back</h2>
-    <p class="login-copy">Enter your school username and password to open your dashboard.</p>
-</div>
-
-<?php if ($loggedOut): ?>
-    <div class="auth-message success"><span>You have been signed out.</span></div>
-<?php endif; ?>
-
-<?php if ($error !== ''): ?>
-    <div class="auth-message error">
-        <?= portal_icon('lock', 'auth-message-icon') ?>
-        <span><?= portal_escape($error) ?></span>
+<div class="login-stack">
+    <div class="login-intro">
+        <p class="eyebrow">Sign in</p>
+        <h2>Welcome back</h2>
+        <p class="login-copy">Enter your school username and password to open your dashboard.</p>
     </div>
-<?php endif; ?>
 
-<form class="login-form" method="post" action="login.php" novalidate>
-    <label class="login-field">
-        <span>Username or email</span>
-        <span class="login-input">
-            <?= portal_icon('user', 'field-icon') ?>
-            <input type="text" name="identifier" value="<?= portal_escape($identifier) ?>" autocomplete="username" required>
-        </span>
-    </label>
+    <?php if ($loggedOut): ?>
+        <div class="auth-message success"><span>You have been signed out.</span></div>
+    <?php endif; ?>
 
-    <label class="login-field">
-        <span>Password</span>
-        <span class="login-input">
-            <?= portal_icon('lock', 'field-icon') ?>
-            <input type="password" name="password" autocomplete="current-password" required>
-        </span>
-    </label>
+    <?php if ($flash !== null && ($flash[0] ?? '') === 'success'): ?>
+        <div class="auth-message success"><span><?= portal_escape((string) ($flash[1] ?? '')) ?></span></div>
+    <?php endif; ?>
 
-    <button class="login-button" type="submit">
-        <span>Sign in</span>
-        <?= portal_icon('arrow-right', 'button-icon') ?>
-    </button>
-</form>
+    <?php if ($error !== ''): ?>
+        <div class="auth-message error">
+            <?= portal_icon('lock', 'auth-message-icon') ?>
+            <span><?= portal_escape($error) ?></span>
+        </div>
+    <?php endif; ?>
+
+    <form class="login-form" method="post" action="login.php" novalidate>
+        <label class="login-field">
+            <span>Username or email</span>
+            <span class="login-input">
+                <?= portal_icon('user', 'field-icon') ?>
+                <input type="text" name="identifier" value="<?= portal_escape($identifier) ?>" autocomplete="username" required>
+            </span>
+        </label>
+
+        <label class="login-field">
+            <span>Password</span>
+            <span class="login-input">
+                <?= portal_icon('lock', 'field-icon') ?>
+                <input type="password" name="password" autocomplete="current-password" required>
+            </span>
+        </label>
+
+        <button class="login-button" type="submit">
+            <span>Sign in</span>
+            <?= portal_icon('arrow-right', 'button-icon') ?>
+        </button>
+    </form>
+
+    <p class="login-meta">
+        <a href="forgot-password.php">Forgot password?</a>
+    </p>
+</div>
 <?php
 $page_content = ob_get_clean();
 

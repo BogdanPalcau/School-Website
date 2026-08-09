@@ -133,10 +133,13 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
             $sectionId = isset($payload['section_id']) && $payload['section_id'] !== ''
                 ? (int) $payload['section_id'] : null;
             $extra = is_array($payload['extra'] ?? null) ? $payload['extra'] : [];
-            foreach (['points', 'difficulty', 'tags', 'required', 'manual_marking', 'settings', 'options', 'explanation_html', 'hint_html', 'teacher_notes'] as $k) {
+            foreach (['points', 'difficulty', 'tags', 'required', 'manual_marking', 'settings', 'options', 'explanation_html', 'hint_html', 'teacher_notes', 'back'] as $k) {
                 if (array_key_exists($k, $payload) && !array_key_exists($k, $extra)) {
                     $extra[$k] = $payload[$k];
                 }
+            }
+            if (($activity['mode'] ?? '') === 'flashcard') {
+                $type = 'flashcard';
             }
             $respond(portal_activity_add_question($activityId, $type, $prompt, $sectionId, $extra));
 
@@ -596,7 +599,8 @@ ob_start();
          data-csrf="<?= portal_escape($csrfToken) ?>"
          data-revision="<?= (int) ($activity['version'] ?? 1) ?>"
          data-mode="<?= portal_escape((string) $activity['mode']) ?>"
-         data-status="<?= portal_escape((string) $activity['status']) ?>">
+         data-status="<?= portal_escape((string) $activity['status']) ?>"
+         data-flashcard="<?= ($activity['mode'] ?? '') === 'flashcard' ? '1' : '0' ?>">
 
     <header class="ab-header">
         <div class="ab-header-lead">
@@ -669,19 +673,30 @@ ob_start();
     <div class="ab-panels">
         <aside class="ab-left ab-drawer" id="ab-left" data-ab-panel="left">
             <div class="ab-panel-head">
-                <p class="ab-panel-label">Questions</p>
+                <p class="ab-panel-label"><?= ($activity['mode'] ?? '') === 'flashcard' ? 'Cards' : 'Questions' ?></p>
                 <div class="ab-validation" data-ab-validation aria-live="polite"></div>
             </div>
             <div class="ab-toolbar">
+                <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+                <button type="button" class="ab-btn ab-btn--primary ab-btn--block" data-ab-action="add-flashcard">
+                    <?= portal_icon('plus', 'icon-sm') ?> Add card
+                </button>
+                <?php else: ?>
                 <button type="button" class="ab-btn ab-btn--primary ab-btn--block" data-ab-action="open-type-picker">
                     <?= portal_icon('plus', 'icon-sm') ?> Add question
                 </button>
                 <button type="button" class="ab-btn ab-btn--ghost ab-btn--block" data-ab-action="add-section">Add section</button>
+                <?php endif; ?>
             </div>
             <div class="ab-question-list" data-ab-question-list role="list"></div>
             <div class="ab-empty" data-ab-structure-empty hidden>
+                <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+                <p>No cards yet</p>
+                <span>Add a flashcard to start the deck.</span>
+                <?php else: ?>
                 <p>No questions yet</p>
                 <span>Add a question to start building.</span>
+                <?php endif; ?>
             </div>
         </aside>
 
@@ -689,11 +704,19 @@ ob_start();
             <div class="ab-editor" data-ab-editor>
                 <div class="ab-empty ab-empty--centre" data-ab-editor-empty>
                     <div class="ab-empty-icon"><?= portal_icon('activity', 'icon') ?></div>
+                    <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
+                    <p>Select a card</p>
+                    <span>Pick one from the left, or add a new flashcard to edit it here.</span>
+                    <button type="button" class="ab-btn ab-btn--primary" data-ab-action="add-flashcard">
+                        <?= portal_icon('plus', 'icon-sm') ?> Add card
+                    </button>
+                    <?php else: ?>
                     <p>Select a question</p>
                     <span>Pick one from the left, or add a new question to edit it here.</span>
                     <button type="button" class="ab-btn ab-btn--primary" data-ab-action="open-type-picker">
                         <?= portal_icon('plus', 'icon-sm') ?> Add question
                     </button>
+                    <?php endif; ?>
                 </div>
                 <div class="ab-editor-form" data-ab-editor-form hidden></div>
             </div>
@@ -836,7 +859,8 @@ ob_start();
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <label class="ab-check"><input type="checkbox" data-ab-setting-bool="shuffle_questions" value="1"<?= !empty($activity['shuffle_questions']) ? ' checked' : '' ?>><span>Shuffle questions</span></label>
+                <label class="ab-check"><input type="checkbox" data-ab-setting-bool="shuffle_questions" value="1"<?= !empty($activity['shuffle_questions']) ? ' checked' : '' ?>><span><?= ($activity['mode'] ?? '') === 'flashcard' ? 'Shuffle cards in study' : 'Shuffle questions' ?></span></label>
+                <?php if (($activity['mode'] ?? '') !== 'flashcard'): ?>
                 <label class="ab-check"><input type="checkbox" data-ab-setting-bool="shuffle_options" value="1"<?= !empty($activity['shuffle_options']) ? ' checked' : '' ?>><span>Shuffle answer options</span></label>
                 <label class="ab-check"><input type="checkbox" data-ab-setting-bool="include_in_gradebook" value="1"<?= !empty($activity['include_in_gradebook']) ? ' checked' : '' ?>><span>Include in gradebook</span></label>
                 <div class="ab-field-row">
@@ -847,9 +871,10 @@ ob_start();
                         <input type="number" min="0" max="100" step="0.01" data-ab-setting="pass_mark" value="<?= portal_escape((string) ($activity['pass_mark'] ?? '')) ?>">
                     </label>
                 </div>
+                <?php endif; ?>
                 <a class="ab-submissions-link" href="activity-results.php?id=<?= (int) $activityId ?>">
                     <?= portal_icon('users', 'icon-sm') ?>
-                    <span>View student submissions</span>
+                    <span>View study sessions</span>
                     <span aria-hidden="true">→</span>
                 </a>
             </div>
@@ -875,6 +900,7 @@ ob_start();
                 </label>
                 <p class="ab-hint-line" data-ab-assessment-reward-note<?= ($activity['mode'] ?? '') === 'assessment' ? '' : ' hidden' ?>>Assessment XP is held until a teacher releases the result after marking and integrity review.</p>
             </details>
+            <?php if (($activity['mode'] ?? '') !== 'flashcard'): ?>
             <details class="ab-side-section ab-side-section--collapsible" data-ab-integrity-settings<?= ($activity['mode'] ?? '') === 'assessment' ? ' open' : '' ?>>
                 <summary>Integrity options <small>assessments</small></summary>
                 <div class="ab-integrity-callout">
@@ -905,6 +931,7 @@ ob_start();
                     </select>
                 </label>
             </details>
+            <?php endif; ?>
             <details class="ab-side-section ab-side-section--collapsible">
                 <summary>Import / export</summary>
                 <div class="ab-tool-grid">
@@ -976,7 +1003,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260727a"></script>
-<script src="assets/activity-builder.js?v=20260805c"></script>
+<script src="assets/activity-builder.js?v=20260809fc"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';
