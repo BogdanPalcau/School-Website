@@ -191,6 +191,55 @@ expect_true(
     'select_all_matching is checked as exact string "1" (not empty("0") quirk)'
 );
 
+// ── Account-action role hierarchy ────────────────────────────────────────────
+$statusSuffix = substr($tag, -8);
+$statusActorUsername = 'sec_status_actor_' . $statusSuffix;
+$statusTargetUsername = 'sec_status_target_' . $statusSuffix;
+$statusUserIds = [];
+try {
+    $insertUser = $db->prepare(
+        'INSERT INTO users (username, email, password_hash, name, year, programme, initials, role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $insertUser->execute([
+        $statusActorUsername,
+        $statusActorUsername . '@example.test',
+        password_hash('SecurityPass123!', PASSWORD_DEFAULT),
+        'Status Actor',
+        'Year 11',
+        'Security Test',
+        'SA',
+        'admin',
+    ]);
+    $statusActorId = (int) $db->lastInsertId();
+    $statusUserIds[] = $statusActorId;
+
+    $insertUser->execute([
+        $statusTargetUsername,
+        $statusTargetUsername . '@example.test',
+        password_hash('SecurityPass123!', PASSWORD_DEFAULT),
+        'Status Target',
+        'Year 11',
+        'Security Test',
+        'ST',
+        'admin',
+    ]);
+    $statusTargetId = (int) $db->lastInsertId();
+    $statusUserIds[] = $statusTargetId;
+
+    $statusResult = portal_set_user_account_status($statusTargetId, 'banned', $statusActorId, 'role hierarchy check');
+    expect_true(empty($statusResult['ok']), 'non-owner admin cannot ban another admin');
+
+    $statusCheck = $db->prepare('SELECT account_status FROM users WHERE id = ?');
+    $statusCheck->execute([$statusTargetId]);
+    expect_true($statusCheck->fetchColumn() === 'active', 'denied peer-admin ban leaves account active');
+} finally {
+    $deleteStatusUser = $db->prepare('DELETE FROM users WHERE id = ?');
+    foreach (array_reverse($statusUserIds) as $statusUserId) {
+        $deleteStatusUser->execute([$statusUserId]);
+    }
+}
+
 $cleanup();
 
 if ($failures > 0) {

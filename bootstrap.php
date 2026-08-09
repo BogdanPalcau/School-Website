@@ -2243,6 +2243,11 @@ if (!function_exists('portal_set_user_account_status')) {
         if ($userId === $actorId && $status !== 'active') {
             return ['ok' => false, 'error' => 'You cannot restrict your own account.'];
         }
+        $actor = portal_find_user_by_id($actorId);
+        if ((string) ($target['role'] ?? '') === 'admin'
+            && (string) ($actor['role'] ?? '') !== 'owner') {
+            return ['ok' => false, 'error' => 'Only the owner can change admin account restrictions.'];
+        }
 
         try {
             portal_db()->prepare('UPDATE users SET account_status = ? WHERE id = ?')
