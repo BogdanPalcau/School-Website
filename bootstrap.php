@@ -2729,20 +2729,25 @@ if (!function_exists('portal_base_url')) {
     function portal_base_url(): string
     {
         $configured = getenv('PORTAL_BASE_URL');
-        if (is_string($configured) && trim($configured) !== '') {
-            return rtrim(trim($configured), '/');
+        if (!is_string($configured) || trim($configured) === '') {
+            return '';
         }
 
-        $https = (
-            (($_SERVER['HTTPS'] ?? '') !== '' && strtolower((string) $_SERVER['HTTPS']) !== 'off')
-            || ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443')
-        );
-        $scheme = $https ? 'https' : 'http';
-        $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
-        $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
-        $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
+        $url = rtrim(trim($configured), '/');
+        $parts = parse_url($url);
+        if (
+            !is_array($parts)
+            || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])
+        ) {
+            return '';
+        }
 
-        return rtrim($scheme . '://' . $host . $dir, '/');
+        return $url;
     }
 }
 
@@ -2854,6 +2859,17 @@ if (!function_exists('portal_password_reset_request')) {
             return;
         }
 
+        $baseUrl = portal_base_url();
+        if ($baseUrl === '') {
+            portal_log_security_event(
+                'password_reset_failed',
+                'high',
+                'Reset mail skipped: PORTAL_BASE_URL is missing or invalid',
+                $userId
+            );
+            return;
+        }
+
         $db = portal_db();
         $now = time();
         $token = bin2hex(random_bytes(32));
@@ -2878,7 +2894,7 @@ if (!function_exists('portal_password_reset_request')) {
             return;
         }
 
-        $resetUrl = portal_base_url() . '/reset-password.php?token=' . urlencode($token);
+        $resetUrl = $baseUrl . '/reset-password.php?token=' . urlencode($token);
         $school = portal_school_name();
         $name = trim((string) ($user['name'] ?? '')) ?: 'there';
         $subject = 'Reset your ' . $school . ' password';
