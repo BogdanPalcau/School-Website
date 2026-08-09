@@ -80,6 +80,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $db->prepare("UPDATE users SET name = ?, year = ?, initials = ?, email = ? WHERE id = ?")
            ->execute([$name, $year, $initials, $email, $meId]);
 
+        $changes = [];
+        if ($name !== (string) ($me['name'] ?? '')) {
+            $changes[] = 'name';
+        }
+        if ($canEditEmail && strtolower(trim((string) ($me['email'] ?? ''))) !== $email) {
+            $changes[] = 'email';
+        }
+        portal_log_security_event(
+            'profile_updated',
+            'info',
+            'Profile updated' . ($changes !== [] ? ': ' . implode(', ', $changes) : ''),
+            $meId
+        );
+
         $fresh = portal_find_user_by_id($meId);
         if ($fresh) {
             $_SESSION['portal_user'] = [
@@ -114,6 +128,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         } else {
             $db->prepare("UPDATE users SET password_hash = ? WHERE id = ?")
                ->execute([password_hash($newPass, PASSWORD_DEFAULT), $meId]);
+            portal_log_security_event('password_changed', 'medium', 'Password changed from settings', $meId);
             $_SESSION['settings_flash'] = ['success', 'Password changed successfully.'];
         }
         portal_redirect('settings.php#tab-security');

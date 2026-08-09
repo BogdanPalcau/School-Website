@@ -57,6 +57,7 @@ function security_cleanup(PDO $db): void
     }
 
     $db->exec("DELETE FROM login_attempts WHERE ip IN ('127.0.0.1', '::1', 'unknown')");
+    $db->exec("DELETE FROM security_events WHERE details LIKE 'sec_bulk_ui_%'");
 }
 
 function security_insert_user(PDO $db, string $username, string $email, string $name, string $initials, string $role): int
@@ -288,11 +289,36 @@ function security_count(PDO $db, string $kind, string $value): int
         return (int) $stmt->fetchColumn();
     }
 
+    if ($kind === 'security-ip') {
+        $stmt = $db->prepare('SELECT COUNT(*) FROM security_events WHERE ip_address = ?');
+        $stmt->execute([$value]);
+        return (int) $stmt->fetchColumn();
+    }
+
     if ($kind === 'file') {
         return is_file(portal_uploads_base() . DIRECTORY_SEPARATOR . $value) ? 1 : 0;
     }
 
     throw new InvalidArgumentException('Unknown count kind: ' . $kind);
+}
+
+function security_seed_ui_events(PDO $db): array
+{
+    $db->prepare("DELETE FROM security_events WHERE details LIKE 'sec_bulk_ui_%'")->execute();
+    $ip = '198.51.100.77';
+    $now = gmdate('Y-m-d H:i:s');
+    $insert = $db->prepare("
+        INSERT INTO security_events
+            (event_type, severity, user_id, username, ip_address, user_agent, route, method, details, reviewed, created_at)
+        VALUES ('failed_login', 'medium', NULL, ?, ?, 'sec-bulk-ui', '/login.php', 'POST', ?, 0, ?)
+    ");
+    $ids = [];
+    foreach (['bulk_a', 'bulk_b', 'bulk_c'] as $i => $user) {
+        $insert->execute([$user, $ip, 'sec_bulk_ui_' . $user, $now]);
+        $ids[] = (int) $db->lastInsertId();
+    }
+
+    return ['ip' => $ip, 'ids' => $ids];
 }
 
 // Only run CLI when this file is the entry script (safe to require from other fixtures).
@@ -312,6 +338,11 @@ if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === realpath(__FILE__
         if ($command === 'reset-login') {
             $db->exec("DELETE FROM login_attempts WHERE ip IN ('127.0.0.1', '::1', 'unknown')");
             echo "reset\n";
+            exit(0);
+        }
+
+        if ($command === 'seed-security-ui') {
+            echo json_encode(security_seed_ui_events($db), JSON_THROW_ON_ERROR) . PHP_EOL;
             exit(0);
         }
 

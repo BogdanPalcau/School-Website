@@ -1287,6 +1287,21 @@ if (!function_exists('portal_require_login')) {
             portal_store_intended_path();
             portal_redirect('login.php');
         }
+
+        $sessionUser = portal_current_user();
+        $uid = (int) ($sessionUser['id'] ?? 0);
+        if ($uid > 0) {
+            $fresh = portal_find_user_by_id($uid);
+            if ($fresh === null || portal_user_is_banned($fresh)) {
+                portal_logout();
+                if (session_status() !== PHP_SESSION_ACTIVE) {
+                    session_start();
+                }
+                $_SESSION['login_flash'] = ['error', 'This account has been banned. Contact an administrator if you think this is a mistake.'];
+                portal_redirect('login.php');
+            }
+            $_SESSION['portal_user']['account_status'] = portal_user_account_status($fresh);
+        }
     }
 }
 
@@ -1296,6 +1311,16 @@ if (!function_exists('portal_attempt_login')) {
         $user = portal_find_user($identifier);
 
         if ($user === null || !password_verify($password, $user['password_hash'])) {
+            return false;
+        }
+
+        if (portal_user_is_banned($user)) {
+            portal_log_security_event(
+                'failed_login',
+                'medium',
+                'Banned account sign-in blocked: ' . substr((string) $user['username'], 0, 80),
+                (int) $user['id']
+            );
             return false;
         }
 
@@ -1309,6 +1334,7 @@ if (!function_exists('portal_attempt_login')) {
             'year'      => $user['year'],
             'initials'  => $user['initials'],
             'role'      => $user['role'],
+            'account_status' => portal_user_account_status($user),
         ];
         $_SESSION['portal_login_at'] = gmdate('Y-m-d H:i:s');
 
@@ -1399,10 +1425,96 @@ if (!function_exists('portal_can_access_course')) {
 // ── Login brute-force throttling (per client IP) ──────────────────────────────
 
 if (!function_exists('portal_client_ip')) {
+    /**
+     * Returns REMOTE_ADDR by default. Only trusts X-Forwarded-For when the
+     * immediate peer IP is listed in the trusted_proxies site setting.
+     */
     function portal_client_ip(): string
     {
-        $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-        return $ip !== '' ? $ip : 'unknown';
+        $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if ($remote === '') {
+            return 'unknown';
+        }
+
+        $trustedRaw = '';
+        if (function_exists('portal_site_setting_get')) {
+            $trustedRaw = trim((string) portal_site_setting_get('trusted_proxies', ''));
+        }
+        if ($trustedRaw === '') {
+            return $remote;
+        }
+
+        $trusted = array_values(array_filter(array_map('trim', explode(',', $trustedRaw))));
+        if ($trusted === [] || !portal_ip_matches_trusted_list($remote, $trusted)) {
+            return $remote;
+        }
+
+        $forwarded = trim((string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+        if ($forwarded === '') {
+            $forwarded = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''));
+        }
+        if ($forwarded === '') {
+            return $remote;
+        }
+
+        $parts = array_values(array_filter(array_map('trim', explode(',', $forwarded))));
+        $candidate = $parts[0] ?? '';
+        if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP)) {
+            return $candidate;
+        }
+
+        return $remote;
+    }
+}
+
+if (!function_exists('portal_ip_matches_trusted_list')) {
+    /**
+     * @param list<string> $trusted
+     */
+    function portal_ip_matches_trusted_list(string $ip, array $trusted): bool
+    {
+        foreach ($trusted as $entry) {
+            if ($entry === '') {
+                continue;
+            }
+            if (str_contains($entry, '/')) {
+                if (portal_ip_in_cidr($ip, $entry)) {
+                    return true;
+                }
+                continue;
+            }
+            if (strcasecmp($ip, $entry) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
+if (!function_exists('portal_ip_in_cidr')) {
+    function portal_ip_in_cidr(string $ip, string $cidr): bool
+    {
+        [$subnet, $mask] = array_pad(explode('/', $cidr, 2), 2, null);
+        if ($subnet === null || $mask === null) {
+            return false;
+        }
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+            || !filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return false;
+        }
+        $mask = (int) $mask;
+        if ($mask < 0 || $mask > 32) {
+            return false;
+        }
+        $ipLong = ip2long($ip);
+        $subnetLong = ip2long($subnet);
+        if ($ipLong === false || $subnetLong === false) {
+            return false;
+        }
+        $maskLong = $mask === 0 ? 0 : (-1 << (32 - $mask));
+
+        return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
     }
 }
 
@@ -1494,7 +1606,8 @@ if (!function_exists('portal_log_security_event')) {
         string $eventType,
         string $severity = 'info',
         string $details = '',
-        ?int $userId = null
+        ?int $userId = null,
+        ?string $usernameOverride = null
     ): void {
         try {
             $allowedSeverity = ['info', 'low', 'medium', 'high'];
@@ -1510,6 +1623,10 @@ if (!function_exists('portal_log_security_event')) {
             } elseif ($userId !== null && $userId > 0) {
                 $found = portal_find_user_by_id($userId);
                 $username = $found ? (string) $found['username'] : '';
+            }
+
+            if ($usernameOverride !== null) {
+                $username = substr(trim($usernameOverride), 0, 80);
             }
 
             $ip = portal_client_ip();
@@ -1587,8 +1704,13 @@ if (!function_exists('portal_security_event_type_label')) {
             'unsafe_rich_text_removed'   => 'Unsafe content removed',
             'role_changed'               => 'Role changed',
             'user_deleted'               => 'User deleted',
+            'user_updated'               => 'User updated',
             'course_archived'            => 'Course archived',
             'course_restored'            => 'Course restored',
+            'grade_changed'              => 'Grade changed',
+            'profile_updated'            => 'Profile updated',
+            'password_changed'           => 'Password changed',
+            'account_status_changed'     => 'Account status changed',
             default                      => ucwords(str_replace('_', ' ', $eventType)),
         };
     }
@@ -1621,8 +1743,10 @@ if (!function_exists('portal_security_dashboard_stats')) {
                 'blocked_access'     => $countSince("event_type IN ('unauthorised_admin_access', 'unauthorised_course_access', 'forbidden_download')"),
                 'blocked_uploads'    => $countSince("event_type = 'blocked_upload'"),
                 'unsafe_content'     => $countSince("event_type = 'unsafe_rich_text_removed'"),
-                'admin_actions'      => $countSince("event_type IN ('role_changed', 'user_deleted', 'course_archived', 'course_restored')"),
+                'admin_actions'      => $countSince("event_type IN ('role_changed', 'user_deleted', 'user_updated', 'course_archived', 'course_restored', 'account_status_changed')"),
                 'csrf_failures'      => $countSince("event_type = 'csrf_failed'"),
+                'grade_changes'      => $countSince("event_type = 'grade_changed'"),
+                'profile_changes'    => $countSince("event_type IN ('profile_updated', 'password_changed')"),
             ];
         } catch (\Throwable $e) {
             return [
@@ -1633,6 +1757,8 @@ if (!function_exists('portal_security_dashboard_stats')) {
                 'unsafe_content'  => 0,
                 'admin_actions'   => 0,
                 'csrf_failures'   => 0,
+                'grade_changes'   => 0,
+                'profile_changes' => 0,
             ];
         }
     }
@@ -1640,6 +1766,7 @@ if (!function_exists('portal_security_dashboard_stats')) {
 
 if (!function_exists('portal_security_events_filtered')) {
     /**
+     * @param list<int> $ids
      * @return list<array<string, mixed>>
      */
     function portal_security_events_filtered(
@@ -1647,7 +1774,9 @@ if (!function_exists('portal_security_events_filtered')) {
         string $reviewed = 'all',
         string $severity = 'all',
         string $eventType = 'all',
-        int $limit = 100
+        string $ip = '',
+        int $limit = 100,
+        array $ids = []
     ): array {
         try {
             $since = portal_security_period_sql($period);
@@ -1670,8 +1799,25 @@ if (!function_exists('portal_security_events_filtered')) {
                 $params[] = $eventType;
             }
 
+            $ip = trim($ip);
+            if ($ip !== '') {
+                $where[] = 'ip_address = ?';
+                $params[] = substr($ip, 0, 64);
+            }
+
+            $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn(int $id): bool => $id > 0)));
+            if ($ids !== []) {
+                $ids = array_slice($ids, 0, 500);
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $where[] = "id IN ({$placeholders})";
+                foreach ($ids as $id) {
+                    $params[] = $id;
+                }
+            }
+
+            $limit = max(1, min($limit, 500));
             $sql = 'SELECT * FROM security_events WHERE ' . implode(' AND ', $where)
-                . ' ORDER BY created_at DESC LIMIT ' . max(1, min($limit, 250));
+                . ' ORDER BY created_at DESC LIMIT ' . $limit;
 
             $stmt = portal_db()->prepare($sql);
             $stmt->execute($params);
@@ -1734,6 +1880,456 @@ if (!function_exists('portal_mark_security_events_reviewed_by_severity')) {
         } catch (\Throwable $e) {
             return 0;
         }
+    }
+}
+
+if (!function_exists('portal_mark_security_events_reviewed_bulk')) {
+    /**
+     * @param list<int|string> $ids
+     */
+    function portal_mark_security_events_reviewed_bulk(array $ids, int $reviewerId): int
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn(int $id): bool => $id > 0)));
+        if ($ids === [] || $reviewerId <= 0) {
+            return 0;
+        }
+
+        $ids = array_slice($ids, 0, 500);
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = portal_db()->prepare("
+                UPDATE security_events
+                SET reviewed = 1, reviewed_at = datetime('now'), reviewed_by = ?
+                WHERE id IN ({$placeholders}) AND reviewed = 0
+            ");
+            $stmt->execute(array_merge([$reviewerId], $ids));
+
+            return $stmt->rowCount();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('portal_security_ip_summary')) {
+    /**
+     * @return list<array<string, mixed>>
+     */
+    function portal_security_ip_summary(string $period = '24h', int $limit = 15): array
+    {
+        try {
+            $since = portal_security_period_sql($period);
+            $limit = max(1, min($limit, 50));
+            $stmt = portal_db()->prepare("
+                SELECT
+                    ip_address,
+                    COUNT(*) AS event_count,
+                    COUNT(DISTINCT event_type) AS distinct_event_types,
+                    COUNT(DISTINCT NULLIF(username, '')) AS distinct_usernames,
+                    SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high_count,
+                    SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS medium_count,
+                    SUM(CASE WHEN reviewed = 0 THEN 1 ELSE 0 END) AS unreviewed_count,
+                    MAX(created_at) AS last_seen
+                FROM security_events
+                WHERE created_at >= {$since}
+                  AND ip_address != ''
+                  AND ip_address != 'unknown'
+                GROUP BY ip_address
+                ORDER BY event_count DESC
+                LIMIT ?
+            ");
+            $stmt->execute([$limit]);
+
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('portal_security_parse_event_time')) {
+    function portal_security_parse_event_time(string $createdAt): int
+    {
+        $ts = strtotime($createdAt . ' UTC');
+        if ($ts === false) {
+            $ts = strtotime($createdAt);
+        }
+
+        return $ts === false ? 0 : $ts;
+    }
+}
+
+if (!function_exists('portal_security_detect_incidents')) {
+    /**
+     * First-party heuristic incident detection over existing security_events rows.
+     *
+     * @return list<array{
+     *   key: string,
+     *   label: string,
+     *   summary: string,
+     *   severity: string,
+     *   ip: string,
+     *   username: string,
+     *   event_ids: list<int>,
+     *   window: string
+     * }>
+     */
+    function portal_security_detect_incidents(string $period = '24h'): array
+    {
+        try {
+            $since = portal_security_period_sql($period);
+            $stmt = portal_db()->query("
+                SELECT id, event_type, severity, username, ip_address, created_at
+                FROM security_events
+                WHERE created_at >= {$since}
+                ORDER BY created_at ASC
+            ");
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $incidents = [];
+        $seenKeys = [];
+
+        $failedByIp = [];
+        $failedByUser = [];
+        $throttleByIp = [];
+        $probeByIp = [];
+        $probeTypes = [
+            'csrf_failed',
+            'unauthorised_admin_access',
+            'unauthorised_course_access',
+            'forbidden_download',
+            'blocked_upload',
+        ];
+
+        foreach ($rows as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            $type = (string) ($row['event_type'] ?? '');
+            $ip = trim((string) ($row['ip_address'] ?? ''));
+            $username = trim((string) ($row['username'] ?? ''));
+            $ts = portal_security_parse_event_time((string) ($row['created_at'] ?? ''));
+            if ($id <= 0 || $ts <= 0) {
+                continue;
+            }
+
+            if ($type === 'failed_login' && $ip !== '' && $ip !== 'unknown') {
+                $failedByIp[$ip][] = ['id' => $id, 'username' => $username, 'ts' => $ts];
+            }
+            if ($type === 'failed_login' && $username !== '') {
+                $failedByUser[$username][] = ['id' => $id, 'ip' => $ip, 'ts' => $ts];
+            }
+            if ($type === 'login_throttled' && $ip !== '' && $ip !== 'unknown') {
+                $throttleByIp[$ip][] = ['id' => $id, 'ts' => $ts];
+            }
+            if (in_array($type, $probeTypes, true) && $ip !== '' && $ip !== 'unknown') {
+                $probeByIp[$ip][] = ['id' => $id, 'type' => $type, 'ts' => $ts];
+            }
+        }
+
+        // Credential stuffing: one IP, ≥5 failed_login, ≥3 usernames, 60-minute window.
+        foreach ($failedByIp as $ip => $events) {
+            $n = count($events);
+            for ($i = 0; $i < $n; $i++) {
+                $windowIds = [];
+                $usernames = [];
+                for ($j = $i; $j < $n; $j++) {
+                    if ($events[$j]['ts'] - $events[$i]['ts'] > 3600) {
+                        break;
+                    }
+                    $windowIds[] = (int) $events[$j]['id'];
+                    $u = (string) $events[$j]['username'];
+                    if ($u !== '') {
+                        $usernames[$u] = true;
+                    }
+                }
+                if (count($windowIds) >= 5 && count($usernames) >= 3) {
+                    $key = 'stuffing:' . $ip . ':' . $windowIds[0];
+                    if (!isset($seenKeys[$key])) {
+                        $seenKeys[$key] = true;
+                        $incidents[] = [
+                            'key' => $key,
+                            'label' => 'Possible credential stuffing',
+                            'summary' => 'IP ' . $ip . ' failed ' . count($windowIds)
+                                . ' logins across ' . count($usernames) . ' accounts within 60 minutes.',
+                            'severity' => 'high',
+                            'ip' => $ip,
+                            'username' => '',
+                            'event_ids' => $windowIds,
+                            'window' => '60 minutes',
+                        ];
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Account targeting: one username, failed logins from ≥3 IPs within 60 minutes.
+        foreach ($failedByUser as $username => $events) {
+            $n = count($events);
+            for ($i = 0; $i < $n; $i++) {
+                $windowIds = [];
+                $ips = [];
+                for ($j = $i; $j < $n; $j++) {
+                    if ($events[$j]['ts'] - $events[$i]['ts'] > 3600) {
+                        break;
+                    }
+                    $windowIds[] = (int) $events[$j]['id'];
+                    $ip = (string) $events[$j]['ip'];
+                    if ($ip !== '' && $ip !== 'unknown') {
+                        $ips[$ip] = true;
+                    }
+                }
+                if (count($ips) >= 3) {
+                    $key = 'targeting:' . strtolower($username) . ':' . $windowIds[0];
+                    if (!isset($seenKeys[$key])) {
+                        $seenKeys[$key] = true;
+                        $incidents[] = [
+                            'key' => $key,
+                            'label' => 'Possible account targeting',
+                            'summary' => 'Account "' . $username . '" saw failed logins from '
+                                . count($ips) . ' different IPs within 60 minutes.',
+                            'severity' => 'high',
+                            'ip' => '',
+                            'username' => $username,
+                            'event_ids' => $windowIds,
+                            'window' => '60 minutes',
+                        ];
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Repeated lockouts: same IP triggers login_throttled more than once in 24h.
+        foreach ($throttleByIp as $ip => $events) {
+            if (count($events) < 2) {
+                continue;
+            }
+            $ids = array_map(static fn(array $e): int => (int) $e['id'], $events);
+            $key = 'lockouts:' . $ip;
+            if (isset($seenKeys[$key])) {
+                continue;
+            }
+            $seenKeys[$key] = true;
+            $incidents[] = [
+                'key' => $key,
+                'label' => 'Repeated lockouts',
+                'summary' => 'IP ' . $ip . ' was throttled ' . count($events)
+                    . ' times in the selected period.',
+                'severity' => 'medium',
+                'ip' => $ip,
+                'username' => '',
+                'event_ids' => $ids,
+                'window' => '24 hours',
+            ];
+        }
+
+        // Multi-vector probing: ≥3 distinct blocked/denied types within 30 minutes.
+        foreach ($probeByIp as $ip => $events) {
+            $n = count($events);
+            for ($i = 0; $i < $n; $i++) {
+                $windowIds = [];
+                $types = [];
+                for ($j = $i; $j < $n; $j++) {
+                    if ($events[$j]['ts'] - $events[$i]['ts'] > 1800) {
+                        break;
+                    }
+                    $windowIds[] = (int) $events[$j]['id'];
+                    $types[(string) $events[$j]['type']] = true;
+                }
+                if (count($types) >= 3) {
+                    $key = 'probe:' . $ip . ':' . $windowIds[0];
+                    if (!isset($seenKeys[$key])) {
+                        $seenKeys[$key] = true;
+                        $incidents[] = [
+                            'key' => $key,
+                            'label' => 'Multi-vector probing',
+                            'summary' => 'IP ' . $ip . ' hit ' . count($types)
+                                . ' different blocked/denied event types within 30 minutes.',
+                            'severity' => 'high',
+                            'ip' => $ip,
+                            'username' => '',
+                            'event_ids' => $windowIds,
+                            'window' => '30 minutes',
+                        ];
+                    }
+                    break;
+                }
+            }
+        }
+
+        usort(
+            $incidents,
+            static function (array $a, array $b): int {
+                $rank = ['high' => 0, 'medium' => 1, 'low' => 2, 'info' => 3];
+                return ($rank[$a['severity']] ?? 9) <=> ($rank[$b['severity']] ?? 9);
+            }
+        );
+
+        return $incidents;
+    }
+}
+
+if (!function_exists('portal_account_statuses')) {
+    /**
+     * @return list<string>
+     */
+    function portal_account_statuses(): array
+    {
+        return ['active', 'muted', 'restricted', 'banned'];
+    }
+}
+
+if (!function_exists('portal_account_status_label')) {
+    function portal_account_status_label(string $status): string
+    {
+        return match ($status) {
+            'muted' => 'Muted',
+            'restricted' => 'Restricted',
+            'banned' => 'Banned',
+            default => 'Active',
+        };
+    }
+}
+
+if (!function_exists('portal_user_account_status')) {
+    function portal_user_account_status(?array $user): string
+    {
+        if ($user === null) {
+            return 'active';
+        }
+        $status = strtolower(trim((string) ($user['account_status'] ?? 'active')));
+        return in_array($status, portal_account_statuses(), true) ? $status : 'active';
+    }
+}
+
+if (!function_exists('portal_user_is_banned')) {
+    function portal_user_is_banned(?array $user): bool
+    {
+        return portal_user_account_status($user) === 'banned';
+    }
+}
+
+if (!function_exists('portal_user_is_muted')) {
+    function portal_user_is_muted(?array $user): bool
+    {
+        return in_array(portal_user_account_status($user), ['muted', 'banned'], true);
+    }
+}
+
+if (!function_exists('portal_user_is_restricted')) {
+    function portal_user_is_restricted(?array $user): bool
+    {
+        return in_array(portal_user_account_status($user), ['restricted', 'banned'], true);
+    }
+}
+
+if (!function_exists('portal_set_user_account_status')) {
+    function portal_set_user_account_status(int $userId, string $status, int $actorId, string $reason = ''): array
+    {
+        if ($userId <= 0 || !in_array($status, portal_account_statuses(), true)) {
+            return ['ok' => false, 'error' => 'Invalid account status.'];
+        }
+        $target = portal_find_user_by_id($userId);
+        if ($target === null) {
+            return ['ok' => false, 'error' => 'User not found.'];
+        }
+        if ((string) ($target['role'] ?? '') === 'owner') {
+            return ['ok' => false, 'error' => 'Owner accounts cannot be restricted this way.'];
+        }
+        if ($userId === $actorId && $status !== 'active') {
+            return ['ok' => false, 'error' => 'You cannot restrict your own account.'];
+        }
+
+        try {
+            portal_db()->prepare('UPDATE users SET account_status = ? WHERE id = ?')
+                ->execute([$status, $userId]);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'error' => 'Could not update account status.'];
+        }
+
+        $detail = 'Set ' . substr((string) $target['username'], 0, 60) . ' to '
+            . portal_account_status_label($status);
+        if (trim($reason) !== '') {
+            $detail .= ' — ' . substr(trim($reason), 0, 160);
+        }
+        portal_log_security_event('account_status_changed', 'medium', $detail, $actorId);
+
+        return ['ok' => true, 'status' => $status];
+    }
+}
+
+if (!function_exists('portal_security_user_profile')) {
+    /**
+     * Snapshot used by the Security Activity in-page profile panel.
+     *
+     * @return array<string, mixed>|null
+     */
+    function portal_security_user_profile(int $userId, string $period = '24h', int $recentLimit = 8): ?array
+    {
+        $user = portal_find_user_by_id($userId);
+        if ($user === null) {
+            return null;
+        }
+
+        $recentLimit = max(1, min($recentLimit, 20));
+        $status = portal_user_account_status($user);
+        $courseIds = function_exists('portal_enrolled_course_ids')
+            ? portal_enrolled_course_ids($userId)
+            : [];
+        $enrollmentCount = count($courseIds);
+
+        $recent = [];
+        $eventCounts = ['total' => 0, 'unreviewed' => 0, 'high' => 0];
+        try {
+            $since = portal_security_period_sql($period);
+            $countStmt = portal_db()->prepare("
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN reviewed = 0 THEN 1 ELSE 0 END) AS unreviewed,
+                    SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high_count
+                FROM security_events
+                WHERE user_id = ? AND created_at >= {$since}
+            ");
+            $countStmt->execute([$userId]);
+            $counts = $countStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $eventCounts = [
+                'total' => (int) ($counts['total'] ?? 0),
+                'unreviewed' => (int) ($counts['unreviewed'] ?? 0),
+                'high' => (int) ($counts['high_count'] ?? 0),
+            ];
+
+            $recentStmt = portal_db()->prepare("
+                SELECT id, event_type, severity, details, ip_address, reviewed, created_at
+                FROM security_events
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            ");
+            $recentStmt->execute([$userId, $recentLimit]);
+            $recent = $recentStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (\Throwable $e) {
+            // Keep the profile usable even if event queries fail.
+        }
+
+        return [
+            'id' => (int) $user['id'],
+            'username' => (string) ($user['username'] ?? ''),
+            'name' => (string) ($user['name'] ?? ''),
+            'email' => (string) ($user['email'] ?? ''),
+            'role' => (string) ($user['role'] ?? 'student'),
+            'year' => (string) ($user['year'] ?? ''),
+            'programme' => (string) ($user['programme'] ?? ''),
+            'initials' => (string) ($user['initials'] ?? ''),
+            'account_status' => $status,
+            'account_status_label' => portal_account_status_label($status),
+            'enrollment_count' => $enrollmentCount,
+            'event_counts' => $eventCounts,
+            'recent_events' => $recent,
+        ];
     }
 }
 
@@ -2318,6 +2914,16 @@ if (!function_exists('portal_run_migrations')) {
         ");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_security_events_reviewed ON security_events(reviewed, severity)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address, created_at)");
+
+        try {
+            $userCols = array_column($db->query('PRAGMA table_info(users)')->fetchAll(), 'name');
+            if (!in_array('account_status', $userCols, true)) {
+                $db->exec("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'");
+            }
+        } catch (\Throwable $e) {
+            // Ignore if users table is unavailable during early bootstrap.
+        }
 
         // ── Announcement read tracking ─────────────────────────────────────────
         $db->exec("

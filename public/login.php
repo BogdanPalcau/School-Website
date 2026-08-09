@@ -28,18 +28,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $clientIp = portal_client_ip();
 
     if (portal_login_is_locked($clientIp)) {
-        portal_log_security_event('login_throttled', 'medium', 'Too many failed sign-in attempts from this location');
+        $safeId = substr(preg_replace('/\s+/', ' ', $identifier) ?? $identifier, 0, 80);
+        portal_log_security_event(
+            'login_throttled',
+            'medium',
+            'Too many failed sign-in attempts from this location'
+                . ($safeId !== '' ? ' (tried: ' . $safeId . ')' : ''),
+            null,
+            $safeId !== '' ? $safeId : null
+        );
         $error = 'Too many failed sign-in attempts. Please wait about 15 minutes and try again.';
     } elseif ($identifier === '' || $password === '') {
         $error = 'Enter your username or email and your password.';
     } elseif (!portal_attempt_login($identifier, $password)) {
         portal_login_record_failure($clientIp);
         $safeId = substr(preg_replace('/\s+/', ' ', $identifier) ?? $identifier, 0, 80);
+        $matched = $safeId !== '' ? portal_find_user($safeId) : null;
         portal_log_security_event(
             'failed_login',
             'medium',
             'Failed login for username: ' . $safeId,
-            null
+            $matched !== null ? (int) $matched['id'] : null,
+            $matched !== null ? (string) $matched['username'] : $safeId
         );
         $error = 'That username or password does not look right.';
     } else {

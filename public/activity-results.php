@@ -345,6 +345,12 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                 'attempt_id' => $attemptId,
                 'question_id' => $questionId,
             ]);
+            portal_log_security_event(
+                'grade_changed',
+                'info',
+                'Activity answer marked (attempt #' . $attemptId . ', question #' . $questionId . ')',
+                $uid ?: null
+            );
 
             $detail = portal_ar_load_attempt_detail($attemptId, $activityId);
             portal_activity_json_ok(['detail' => $detail]);

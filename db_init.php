@@ -348,6 +348,14 @@ $_pdo->exec("
 ");
 $_pdo->exec("CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at)");
 $_pdo->exec("CREATE INDEX IF NOT EXISTS idx_security_events_reviewed ON security_events(reviewed, severity)");
+$_pdo->exec("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address, created_at)");
+try {
+    $_userCols = array_column($_pdo->query('PRAGMA table_info(users)')->fetchAll(), 'name');
+    if (!in_array('account_status', $_userCols, true)) {
+        $_pdo->exec("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'");
+    }
+} catch (Throwable $e) {
+}
 
 // ── Seed: Bogdan (owner) ─────────────────────────────────────────────────────
 // No credentials are committed to source control. The initial owner password is

@@ -891,11 +891,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk = $db->prepare("SELECT id FROM course_submissions WHERE id = ? AND course_id = ?");
             $chk->execute([$subId, $courseId]);
             if ($chk->fetch()) {
+                $before = $db->prepare(
+                    'SELECT score, feedback, user_id FROM course_submissions WHERE id = ? AND course_id = ?'
+                );
+                $before->execute([$subId, $courseId]);
+                $prev = $before->fetch(PDO::FETCH_ASSOC) ?: [];
                 $db->prepare(
                     "UPDATE course_submissions
                      SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?, grade_seen_at = ''
                      WHERE id = ? AND course_id = ?"
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
+                $prevScore = $prev['score'] ?? null;
+                portal_log_security_event(
+                    'grade_changed',
+                    'medium',
+                    'Marked submission #' . $subId
+                        . ' (course #' . $courseId
+                        . ', student #' . (int) ($prev['user_id'] ?? 0)
+                        . ') score '
+                        . ($prevScore === null || $prevScore === '' ? 'none' : (string) $prevScore)
+                        . '→' . $score
+                );
                 if (portal_is_fetch_request()) {
                     portal_json_response([
                         'ok'            => true,
@@ -1030,12 +1046,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                ->execute([$slotId, $courseId]);
 
         } elseif ($action === 'create_topic') {
+            if (portal_user_is_muted($me)) {
+                $_SESSION['course_flash'] = ['error', 'Your account is muted and cannot start discussions.'];
+            } else {
             $title = substr(trim((string)($_POST['title'] ?? '')), 0, 200);
             $body  = substr(portal_sanitize_rich_text(trim((string)($_POST['body'] ?? ''))), 0, 3000);
             if ($title !== '') {
                 $db->prepare(
                     "INSERT INTO course_discussion_topics (course_id, user_id, title, body) VALUES (?,?,?,?)"
                 )->execute([$courseId, (int)$me['id'], $title, $body]);
+            }
             }
 
         } elseif ($action === 'delete_topic') {
@@ -1074,6 +1094,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Any logged-in user: reply to topic ───────────────────────────────────
     if ($action === 'post_reply') {
+        if (portal_user_is_muted($me)) {
+            $_SESSION['course_flash'] = ['error', 'Your account is muted and cannot reply to discussions.'];
+        } else {
         $topicId = (int)($_POST['topic_id'] ?? 0);
         $body    = substr(portal_sanitize_rich_text(trim((string)($_POST['body'] ?? ''))), 0, 3000);
         // Verify topic belongs to this course
@@ -1163,6 +1186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
+        }
         }
     }
 
@@ -1294,6 +1318,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             portal_log_security_event('unauthorised_course_access', 'medium', 'Blocked submit_work');
             $_SESSION['course_flash'] = ['error', 'You are not allowed to submit work for this course.'];
             $submitJsonExit(false, [], 'You are not allowed to submit work for this course.');
+        }
+
+        if (portal_user_is_restricted($me)) {
+            $_SESSION['course_flash'] = ['error', 'Your account is restricted and cannot submit coursework.'];
+            $submitJsonExit(false, [], 'Your account is restricted and cannot submit coursework.');
         }
 
         $slotChk = $db->prepare(

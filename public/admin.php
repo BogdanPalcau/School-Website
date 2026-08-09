@@ -468,6 +468,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'sec_reviewed' => (string) ($_POST['sec_reviewed'] ?? 'all'),
             'sec_severity' => (string) ($_POST['sec_severity'] ?? 'all'),
             'sec_type'     => (string) ($_POST['sec_type'] ?? 'all'),
+            'sec_ip'       => (string) ($_POST['sec_ip'] ?? ''),
+            'sec_ids'      => (string) ($_POST['sec_ids'] ?? ''),
         ]);
     }
 
@@ -479,7 +481,132 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'sec_reviewed' => (string) ($_POST['sec_reviewed'] ?? 'all'),
             'sec_severity' => (string) ($_POST['sec_severity'] ?? 'all'),
             'sec_type'     => (string) ($_POST['sec_type'] ?? 'all'),
+            'sec_ip'       => (string) ($_POST['sec_ip'] ?? ''),
         ]);
+    }
+
+    if ($action === 'bulk_security_action') {
+        $bulkAction = (string) ($_POST['bulk_action'] ?? '');
+        $filterPeriod = (string) ($_POST['sec_period'] ?? '24h');
+        $filterReviewed = (string) ($_POST['sec_reviewed'] ?? 'all');
+        $filterSeverity = (string) ($_POST['sec_severity'] ?? 'all');
+        $filterType = (string) ($_POST['sec_type'] ?? 'all');
+        $filterIp = trim((string) ($_POST['sec_ip'] ?? ''));
+        $filterIdsRaw = trim((string) ($_POST['sec_ids'] ?? ''));
+        $filterIds = array_values(array_filter(array_map('intval', preg_split('/\s*,\s*/', $filterIdsRaw) ?: [])));
+
+        if ($bulkAction === 'mark_reviewed') {
+            if ((string) ($_POST['select_all_matching'] ?? '') === '1') {
+                $matched = portal_security_events_filtered(
+                    $filterPeriod,
+                    $filterReviewed,
+                    $filterSeverity,
+                    $filterType,
+                    $filterIp,
+                    500,
+                    $filterIds
+                );
+                $ids = array_map(static fn(array $row): int => (int) ($row['id'] ?? 0), $matched);
+            } else {
+                $ids = array_map('intval', (array) ($_POST['event_ids'] ?? []));
+            }
+            $marked = portal_mark_security_events_reviewed_bulk($ids, (int) $currentUser['id']);
+            $_SESSION['admin_flash'] = [
+                'success',
+                $marked . ' event' . ($marked === 1 ? '' : 's') . ' marked reviewed.',
+            ];
+        } else {
+            $_SESSION['admin_flash'] = ['error', 'Choose a bulk action to apply.'];
+        }
+
+        $redirectSection('security', [
+            'sec_period'   => $filterPeriod,
+            'sec_reviewed' => $filterReviewed,
+            'sec_severity' => $filterSeverity,
+            'sec_type'     => $filterType,
+            'sec_ip'       => $filterIp,
+            'sec_ids'      => $filterIdsRaw,
+        ]);
+    }
+
+    if ($action === 'security_account_action') {
+        $targetId = (int) ($_POST['target_user_id'] ?? 0);
+        $accountAction = (string) ($_POST['account_action'] ?? '');
+        $reason = substr(trim((string) ($_POST['reason'] ?? '')), 0, 200);
+        $statusMap = [
+            'ban' => 'banned',
+            'mute' => 'muted',
+            'restrict' => 'restricted',
+            'activate' => 'active',
+        ];
+
+        if ($accountAction === 'delete') {
+            $target = portal_find_user_by_id($targetId);
+            if (!$target) {
+                $_SESSION['admin_flash'] = ['error', 'User not found.'];
+            } elseif ($targetId === (int) $currentUser['id']) {
+                $_SESSION['admin_flash'] = ['error', 'You cannot delete your own account.'];
+            } elseif ($target['role'] === 'owner') {
+                $_SESSION['admin_flash'] = ['error', 'Owner accounts cannot be deleted.'];
+            } elseif ($target['role'] === 'admin' && !$isOwner) {
+                $_SESSION['admin_flash'] = ['error', 'Only the owner can delete admin accounts.'];
+            } else {
+                $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$targetId]);
+                portal_log_security_event(
+                    'user_deleted',
+                    'medium',
+                    'Deleted account from security activity: ' . substr((string) $target['name'], 0, 80)
+                        . ($reason !== '' ? ' — ' . $reason : ''),
+                    (int) $currentUser['id']
+                );
+                $_SESSION['admin_flash'] = ['success', "Account for {$target['name']} deleted."];
+            }
+        } elseif (isset($statusMap[$accountAction])) {
+            $result = portal_set_user_account_status(
+                $targetId,
+                $statusMap[$accountAction],
+                (int) $currentUser['id'],
+                $reason
+            );
+            if (!empty($result['ok'])) {
+                $_SESSION['admin_flash'] = [
+                    'success',
+                    'Account set to ' . portal_account_status_label($statusMap[$accountAction]) . '.',
+                ];
+            } else {
+                $_SESSION['admin_flash'] = ['error', (string) ($result['error'] ?? 'Could not update account.')];
+            }
+        } else {
+            $_SESSION['admin_flash'] = ['error', 'Unknown account action.'];
+        }
+
+        $redirectSection('security', [
+            'sec_period'   => (string) ($_POST['sec_period'] ?? '24h'),
+            'sec_reviewed' => (string) ($_POST['sec_reviewed'] ?? 'all'),
+            'sec_severity' => (string) ($_POST['sec_severity'] ?? 'all'),
+            'sec_type'     => (string) ($_POST['sec_type'] ?? 'all'),
+            'sec_ip'       => (string) ($_POST['sec_ip'] ?? ''),
+            'sec_ids'      => (string) ($_POST['sec_ids'] ?? ''),
+        ]);
+    }
+
+    if ($action === 'save_trusted_proxies') {
+        $raw = trim((string) ($_POST['trusted_proxies'] ?? ''));
+        $parts = array_values(array_filter(array_map('trim', explode(',', $raw))));
+        $clean = [];
+        foreach ($parts as $part) {
+            if (str_contains($part, '/')) {
+                [$subnet, $mask] = array_pad(explode('/', $part, 2), 2, '');
+                if (filter_var($subnet, FILTER_VALIDATE_IP) && ctype_digit((string) $mask)) {
+                    $clean[] = $subnet . '/' . (int) $mask;
+                }
+            } elseif (filter_var($part, FILTER_VALIDATE_IP)) {
+                $clean[] = $part;
+            }
+        }
+        portal_site_setting_set('trusted_proxies', implode(', ', $clean));
+        $_SESSION['admin_flash'] = ['success', 'Trusted proxy list saved.'];
+        $redirectSection('security');
     }
 
     if ($action === 'lookup_submission_receipt') {
@@ -781,16 +908,57 @@ $secPeriod   = (string) ($_GET['sec_period'] ?? '24h');
 $secReviewed = (string) ($_GET['sec_reviewed'] ?? 'all');
 $secSeverity = (string) ($_GET['sec_severity'] ?? 'all');
 $secType     = (string) ($_GET['sec_type'] ?? 'all');
+$secIp       = trim((string) ($_GET['sec_ip'] ?? ''));
+$secIdsRaw   = trim((string) ($_GET['sec_ids'] ?? ''));
+$secIds      = array_values(array_filter(array_map('intval', preg_split('/\s*,\s*/', $secIdsRaw) ?: [])));
 if (!in_array($secPeriod, ['24h', '7d', '30d'], true)) {
     $secPeriod = '24h';
 }
+if (strlen($secIp) > 64) {
+    $secIp = substr($secIp, 0, 64);
+}
 
-$securityStats   = portal_security_dashboard_stats($secPeriod);
-$securityEvents  = portal_security_events_filtered($secPeriod, $secReviewed, $secSeverity, $secType, 100);
+$securityStats     = portal_security_dashboard_stats($secPeriod);
+$securityEvents    = portal_security_events_filtered($secPeriod, $secReviewed, $secSeverity, $secType, $secIp, 100, $secIds);
+$securityIpSummary = portal_security_ip_summary($secPeriod, 15);
+$securityIncidents = portal_security_detect_incidents($secPeriod);
+$trustedProxies    = (string) portal_site_setting_get('trusted_proxies', '');
+$securityFilterParams = [
+    'sec_period'   => $secPeriod,
+    'sec_reviewed' => $secReviewed,
+    'sec_severity' => $secSeverity,
+    'sec_type'     => $secType,
+    'sec_ip'       => $secIp,
+    'sec_ids'      => $secIdsRaw,
+];
+$securityUserProfiles = [];
+foreach ($securityEvents as $profileEvent) {
+    $profileUserId = (int) ($profileEvent['user_id'] ?? 0);
+    if ($profileUserId <= 0) {
+        $profileUsername = trim((string) ($profileEvent['username'] ?? ''));
+        if ($profileUsername !== '') {
+            $resolved = portal_find_user($profileUsername);
+            $profileUserId = $resolved ? (int) $resolved['id'] : 0;
+        }
+    }
+    if ($profileUserId <= 0 || isset($securityUserProfiles[$profileUserId])) {
+        continue;
+    }
+    $snapshot = portal_security_user_profile($profileUserId, $secPeriod);
+    if ($snapshot !== null) {
+        $canAct = $profileUserId !== (int) $currentUser['id']
+            && (string) ($snapshot['role'] ?? '') !== 'owner'
+            && (!in_array((string) ($snapshot['role'] ?? ''), ['admin'], true) || $isOwner);
+        $snapshot['can_act'] = $canAct;
+        $securityUserProfiles[$profileUserId] = $snapshot;
+    }
+}
 $securityTypes   = [
     'failed_login', 'login_throttled', 'csrf_failed', 'unauthorised_admin_access',
     'unauthorised_course_access', 'forbidden_download', 'blocked_upload',
-    'unsafe_rich_text_removed', 'role_changed', 'user_deleted', 'course_archived', 'course_restored',
+    'unsafe_rich_text_removed', 'role_changed', 'user_deleted', 'user_updated',
+    'course_archived', 'course_restored', 'grade_changed', 'profile_updated',
+    'password_changed', 'account_status_changed',
 ];
 
 $sectionTitles = [
@@ -1757,41 +1925,145 @@ ob_start();
                         <p class="admin-stat-caption"><?= $securityStats['blocked_access'] === 0 ? 'No blocked access attempts' : 'Admin, course, or download blocks' ?></p>
                     </article>
                     <article class="admin-stat-card">
-                        <p class="admin-stat-label">Blocked uploads</p>
-                        <strong class="admin-stat-value"><?= (int) $securityStats['blocked_uploads'] ?></strong>
-                        <p class="admin-stat-caption"><?= $securityStats['blocked_uploads'] === 0 ? 'No dangerous uploads detected' : 'Invalid type or content rejected' ?></p>
+                        <p class="admin-stat-label">Grade changes</p>
+                        <strong class="admin-stat-value"><?= (int) ($securityStats['grade_changes'] ?? 0) ?></strong>
+                        <p class="admin-stat-caption">Who marked or changed submission grades</p>
                     </article>
                     <article class="admin-stat-card">
-                        <p class="admin-stat-label">Unsafe content</p>
-                        <strong class="admin-stat-value"><?= (int) $securityStats['unsafe_content'] ?></strong>
-                        <p class="admin-stat-caption"><?= $securityStats['unsafe_content'] === 0 ? 'No unsafe HTML detected' : 'Dangerous markup removed' ?></p>
+                        <p class="admin-stat-label">Profile changes</p>
+                        <strong class="admin-stat-value"><?= (int) ($securityStats['profile_changes'] ?? 0) ?></strong>
+                        <p class="admin-stat-caption">Profile edits and password changes</p>
                     </article>
                     <article class="admin-stat-card">
                         <p class="admin-stat-label">Admin actions</p>
                         <strong class="admin-stat-value"><?= (int) $securityStats['admin_actions'] ?></strong>
-                        <p class="admin-stat-caption">Role changes, deletions, archive/restore</p>
+                        <p class="admin-stat-caption">Role changes, deletions, status changes</p>
                     </article>
                 </div>
 
                 <article class="admin-card">
                     <header class="admin-card-header">
                         <div>
+                            <p class="eyebrow">Detection</p>
+                            <h3>Flagged patterns</h3>
+                            <p class="admin-card-lead">First-party heuristics over existing security events (credential stuffing, account targeting, repeated lockouts, multi-vector probing).</p>
+                        </div>
+                    </header>
+                    <?php if ($securityIncidents === []): ?>
+                        <p class="admin-card-lead" style="margin:0;">No breach patterns matched in this period.</p>
+                    <?php else: ?>
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Severity</th>
+                                    <th>Pattern</th>
+                                    <th>Summary</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($securityIncidents as $incident): ?>
+                                <?php
+                                    $incidentIds = implode(',', array_map('intval', $incident['event_ids'] ?? []));
+                                    $incidentFilter = array_filter([
+                                        'sec_period' => $secPeriod,
+                                        'sec_ids' => $incidentIds,
+                                        'sec_ip' => (string) ($incident['ip'] ?? ''),
+                                    ], static fn($v) => $v !== null && $v !== '');
+                                ?>
+                                <tr>
+                                    <td><span class="admin-severity admin-severity--<?= portal_escape((string) $incident['severity']) ?>"><?= portal_escape(ucfirst((string) $incident['severity'])) ?></span></td>
+                                    <td><strong><?= portal_escape((string) $incident['label']) ?></strong></td>
+                                    <td><?= portal_escape((string) $incident['summary']) ?></td>
+                                    <td>
+                                        <div class="admin-inline-actions">
+                                            <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('security', $incidentFilter)) ?>">View events</a>
+                                            <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="bulk_security_action">
+                                                <input type="hidden" name="bulk_action" value="mark_reviewed">
+                                                <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                                                <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                                                <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                                                <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                                                <input type="hidden" name="sec_ip" value="<?= portal_escape($secIp) ?>">
+                                                <input type="hidden" name="sec_ids" value="<?= portal_escape($secIdsRaw) ?>">
+                                                <?php foreach (($incident['event_ids'] ?? []) as $incidentEventId): ?>
+                                                <input type="hidden" name="event_ids[]" value="<?= (int) $incidentEventId ?>">
+                                                <?php endforeach; ?>
+                                                <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark this incident reviewed</button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <?php endif; ?>
+                </article>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Correlation</p>
+                            <h3>Most active IPs</h3>
+                            <p class="admin-card-lead">Top source addresses in the selected period, ranked by event volume.</p>
+                        </div>
+                    </header>
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>IP</th>
+                                    <th>Events</th>
+                                    <th>Types</th>
+                                    <th>Usernames</th>
+                                    <th>Unreviewed</th>
+                                    <th>Last seen</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($securityIpSummary as $ipRow): ?>
+                                <?php $ipValue = (string) ($ipRow['ip_address'] ?? ''); ?>
+                                <tr>
+                                    <td>
+                                        <a href="<?= portal_escape($adminUrl('security', [
+                                            'sec_period' => $secPeriod,
+                                            'sec_ip' => $ipValue,
+                                        ])) ?>"><?= portal_escape($ipValue) ?></a>
+                                    </td>
+                                    <td><?= (int) ($ipRow['event_count'] ?? 0) ?></td>
+                                    <td><?= (int) ($ipRow['distinct_event_types'] ?? 0) ?></td>
+                                    <td><?= (int) ($ipRow['distinct_usernames'] ?? 0) ?></td>
+                                    <td><?= (int) ($ipRow['unreviewed_count'] ?? 0) ?></td>
+                                    <td><?= portal_escape(date('j M Y H:i', strtotime((string) ($ipRow['last_seen'] ?? 'now')))) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($securityIpSummary === []): ?>
+                                <tr><td colspan="6" class="admin-table-empty">No IP activity in this period.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
                             <p class="eyebrow">Activity log</p>
                             <h3>Recent security events</h3>
-                            <p class="admin-card-lead">Suspicious sign-ins, blocked access, rejected uploads, and important admin actions.</p>
+                            <p class="admin-card-lead">Suspicious sign-ins, blocked access, grade and profile changes, and admin actions. Click a username or <strong>Take action</strong> to review the account without leaving this page.</p>
                         </div>
-                        <form method="post" action="<?= portal_escape($adminUrl('security', [
-                            'sec_period' => $secPeriod,
-                            'sec_reviewed' => $secReviewed,
-                            'sec_severity' => $secSeverity,
-                            'sec_type' => $secType,
-                        ])) ?>" class="admin-inline-form">
+                        <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form">
                             <?= portal_csrf_field() ?>
                             <input type="hidden" name="action" value="mark_security_low_info_reviewed">
                             <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
                             <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
                             <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
                             <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                            <input type="hidden" name="sec_ip" value="<?= portal_escape($secIp) ?>">
                             <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark low/info reviewed</button>
                         </form>
                     </header>
@@ -1833,17 +2105,57 @@ ob_start();
                                 <?php endforeach; ?>
                             </select>
                         </label>
+                        <label class="admin-field admin-field--inline">
+                            <span>IP</span>
+                            <input type="text" name="sec_ip" value="<?= portal_escape($secIp) ?>" placeholder="Exact IP" autocomplete="off" spellcheck="false">
+                        </label>
+                        <?php if ($secIdsRaw !== ''): ?>
+                        <input type="hidden" name="sec_ids" value="<?= portal_escape($secIdsRaw) ?>">
+                        <?php endif; ?>
                         <button type="submit" class="admin-btn admin-btn--secondary">Apply filters</button>
+                        <?php if ($secIp !== '' || $secIdsRaw !== ''): ?>
+                        <a class="admin-btn admin-btn--secondary" href="<?= portal_escape($adminUrl('security', ['sec_period' => $secPeriod])) ?>">Clear IP / incident filter</a>
+                        <?php endif; ?>
+                    </form>
+
+                    <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" id="security-bulk-form" class="admin-bulk-form">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="bulk_security_action">
+                        <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                        <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                        <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                        <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                        <input type="hidden" name="sec_ip" value="<?= portal_escape($secIp) ?>">
+                        <input type="hidden" name="sec_ids" value="<?= portal_escape($secIdsRaw) ?>">
+                        <input type="hidden" name="select_all_matching" id="security-select-all-matching" value="0">
+
+                        <div class="admin-filter-row admin-bulk-bar">
+                            <label class="admin-field admin-field--inline">
+                                <span>Bulk action</span>
+                                <select name="bulk_action">
+                                    <option value="mark_reviewed">Mark reviewed</option>
+                                </select>
+                            </label>
+                            <button type="submit" class="admin-btn admin-btn--primary">Apply</button>
+                            <label class="admin-check-inline" id="security-select-matching-wrap" hidden>
+                                <input type="checkbox" id="security-select-matching-toggle">
+                                <span>Select all matching this filter (up to 500)</span>
+                            </label>
+                        </div>
                     </form>
 
                     <div class="admin-table-wrap">
-                        <table class="admin-table">
+                        <table class="admin-table" id="security-events-table">
                             <thead>
                                 <tr>
+                                    <th>
+                                        <input type="checkbox" id="security-select-page" title="Select all on this page" aria-label="Select all on this page">
+                                    </th>
                                     <th>Date / time</th>
                                     <th>Severity</th>
                                     <th>Event</th>
                                     <th>User</th>
+                                    <th>IP</th>
                                     <th>Route</th>
                                     <th>Details</th>
                                     <th>Status</th>
@@ -1856,18 +2168,74 @@ ob_start();
                                     $evSeverity = (string) $event['severity'];
                                     $isReviewed = (int) ($event['reviewed'] ?? 0) === 1;
                                     $evUser = (string) ($event['username'] ?? '');
-                                    if ($evUser === '' && !empty($event['user_id'])) {
-                                        $evUser = 'User #' . (int) $event['user_id'];
+                                    $evUserId = (int) ($event['user_id'] ?? 0);
+                                    if ($evUser === '' && $evUserId > 0) {
+                                        $evUser = 'User #' . $evUserId;
                                     }
                                     if ($evUser === '') {
                                         $evUser = '—';
                                     }
+                                    $evIp = trim((string) ($event['ip_address'] ?? ''));
+                                    $evType = (string) ($event['event_type'] ?? '');
+                                    // Admin-audit events store the staff actor in user_id — not the account to discipline.
+                                    $adminActorEventTypes = [
+                                        'role_changed', 'user_deleted', 'user_updated',
+                                        'course_archived', 'course_restored', 'account_status_changed',
+                                    ];
+                                    $targetUser = null;
+                                    if ($evUserId > 0) {
+                                        $targetUser = portal_find_user_by_id($evUserId);
+                                    } elseif ($evUser !== '' && $evUser !== '—') {
+                                        $targetUser = portal_find_user($evUser);
+                                        if ($targetUser) {
+                                            $evUserId = (int) $targetUser['id'];
+                                        }
+                                    }
+                                    $canActOnTarget = $targetUser !== null
+                                        && $evUserId > 0
+                                        && $evUserId !== (int) $currentUser['id']
+                                        && (string) ($targetUser['role'] ?? '') !== 'owner'
+                                        && !in_array($evType, $adminActorEventTypes, true)
+                                        && (!in_array((string) ($targetUser['role'] ?? ''), ['admin'], true) || $isOwner);
+                                    $showAccountActions = $canActOnTarget;
+                                    $targetStatus = portal_user_account_status($targetUser);
+                                    if ($targetUser && $evUser === '—') {
+                                        $evUser = (string) ($targetUser['username'] ?: $targetUser['name'] ?: ('User #' . $evUserId));
+                                    }
                                 ?>
                                 <tr>
+                                    <td>
+                                        <input type="checkbox" class="security-event-check" form="security-bulk-form" name="event_ids[]" value="<?= (int) $event['id'] ?>" <?= $isReviewed ? 'disabled' : '' ?>>
+                                    </td>
                                     <td><?= portal_escape(date('j M Y H:i', strtotime((string) $event['created_at']))) ?></td>
                                     <td><span class="admin-severity admin-severity--<?= portal_escape($evSeverity) ?>"><?= portal_escape(ucfirst($evSeverity)) ?></span></td>
-                                    <td><?= portal_escape(portal_security_event_type_label((string) $event['event_type'])) ?></td>
-                                    <td><?= portal_escape($evUser) ?></td>
+                                    <td><?= portal_escape(portal_security_event_type_label($evType)) ?></td>
+                                    <td>
+                                        <?php if ($targetUser && $showAccountActions): ?>
+                                        <button type="button" class="admin-user-link" data-security-profile="<?= (int) $evUserId ?>" data-security-event="<?= (int) $event['id'] ?>">
+                                            <?= portal_escape($evUser) ?>
+                                        </button>
+                                        <?php elseif ($targetUser): ?>
+                                        <button type="button" class="admin-user-link" data-security-profile="<?= (int) $evUserId ?>">
+                                            <?= portal_escape($evUser) ?>
+                                        </button>
+                                        <?php else: ?>
+                                        <?= portal_escape($evUser) ?>
+                                        <?php endif; ?>
+                                        <?php if ($targetUser && $targetStatus !== 'active'): ?>
+                                            <span class="admin-badge admin-badge--draft"><?= portal_escape(portal_account_status_label($targetStatus)) ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php if ($evIp !== '' && $evIp !== 'unknown'): ?>
+                                        <a class="security-ip-link" href="<?= portal_escape($adminUrl('security', [
+                                            'sec_period' => $secPeriod,
+                                            'sec_ip' => $evIp,
+                                        ])) ?>"><?= portal_escape($evIp) ?></a>
+                                        <?php else: ?>
+                                        <span class="admin-table-meta">—</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><code class="admin-route-code"><?= portal_escape((string) $event['route']) ?></code></td>
                                     <td><?= portal_escape((string) $event['details']) ?></td>
                                     <td>
@@ -1878,34 +2246,97 @@ ob_start();
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (!$isReviewed): ?>
-                                        <form method="post" action="<?= portal_escape($adminUrl('security', [
-                                            'sec_period' => $secPeriod,
-                                            'sec_reviewed' => $secReviewed,
-                                            'sec_severity' => $secSeverity,
-                                            'sec_type' => $secType,
-                                        ])) ?>" class="admin-inline-form">
-                                            <?= portal_csrf_field() ?>
-                                            <input type="hidden" name="action" value="mark_security_event_reviewed">
-                                            <input type="hidden" name="event_id" value="<?= (int) $event['id'] ?>">
-                                            <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
-                                            <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
-                                            <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
-                                            <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
-                                            <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark reviewed</button>
-                                        </form>
-                                        <?php else: ?>
-                                        <span class="admin-table-meta">—</span>
-                                        <?php endif; ?>
+                                        <div class="admin-inline-actions">
+                                            <?php if (!$isReviewed): ?>
+                                            <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form">
+                                                <?= portal_csrf_field() ?>
+                                                <input type="hidden" name="action" value="mark_security_event_reviewed">
+                                                <input type="hidden" name="event_id" value="<?= (int) $event['id'] ?>">
+                                                <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                                                <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                                                <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                                                <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                                                <input type="hidden" name="sec_ip" value="<?= portal_escape($secIp) ?>">
+                                                <input type="hidden" name="sec_ids" value="<?= portal_escape($secIdsRaw) ?>">
+                                                <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Mark reviewed</button>
+                                            </form>
+                                            <?php endif; ?>
+                                            <?php if ($showAccountActions && $targetUser): ?>
+                                            <button type="button" class="admin-btn admin-btn--primary admin-btn--sm" data-security-profile="<?= (int) $evUserId ?>" data-security-event="<?= (int) $event['id'] ?>">
+                                                Take action
+                                            </button>
+                                            <?php elseif ($targetUser): ?>
+                                            <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-security-profile="<?= (int) $evUserId ?>">
+                                                View profile
+                                            </button>
+                                            <?php elseif ($isReviewed): ?>
+                                            <span class="admin-table-meta">—</span>
+                                            <?php endif; ?>
+                                        </div>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php if ($securityEvents === []): ?>
-                                <tr><td colspan="8" class="admin-table-empty">No security events found for these filters.</td></tr>
+                                <tr><td colspan="10" class="admin-table-empty">No security events found for these filters.</td></tr>
                                 <?php endif; ?>
                             </tbody>
                         </table>
                     </div>
+                </article>
+
+                <div class="admin-profile-overlay" id="security-profile-overlay" hidden>
+                    <div class="admin-profile-backdrop" data-security-profile-close></div>
+                    <aside class="admin-profile-panel" role="dialog" aria-modal="true" aria-labelledby="security-profile-title" tabindex="-1">
+                        <header class="admin-profile-panel-header">
+                            <div>
+                                <p class="eyebrow">Account review</p>
+                                <h3 id="security-profile-title">User profile</h3>
+                            </div>
+                            <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-security-profile-close>Close</button>
+                        </header>
+                        <div class="admin-profile-panel-body" id="security-profile-body"></div>
+                        <div class="admin-profile-panel-actions" id="security-profile-actions" hidden>
+                            <p class="admin-profile-actions-label">Take action</p>
+                            <div class="admin-profile-action-grid" id="security-profile-action-grid"></div>
+                        </div>
+                    </aside>
+                </div>
+
+                <script type="application/json" id="security-user-profiles-data"><?= json_encode($securityUserProfiles, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?: '{}' ?></script>
+                <template id="security-profile-action-template">
+                    <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form security-profile-action-form">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="security_account_action">
+                        <input type="hidden" name="account_action" value="">
+                        <input type="hidden" name="target_user_id" value="">
+                        <input type="hidden" name="reason" value="">
+                        <input type="hidden" name="sec_period" value="<?= portal_escape($secPeriod) ?>">
+                        <input type="hidden" name="sec_reviewed" value="<?= portal_escape($secReviewed) ?>">
+                        <input type="hidden" name="sec_severity" value="<?= portal_escape($secSeverity) ?>">
+                        <input type="hidden" name="sec_type" value="<?= portal_escape($secType) ?>">
+                        <input type="hidden" name="sec_ip" value="<?= portal_escape($secIp) ?>">
+                        <input type="hidden" name="sec_ids" value="<?= portal_escape($secIdsRaw) ?>">
+                        <button type="submit" class="admin-btn admin-btn--secondary"></button>
+                    </form>
+                </template>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Deployment</p>
+                            <h3>Trusted proxies</h3>
+                            <p class="admin-card-lead">Only needed behind a reverse proxy/load balancer. REMOTE_ADDR must match a listed proxy before X-Forwarded-For is trusted.</p>
+                        </div>
+                    </header>
+                    <form method="post" action="<?= portal_escape($adminUrl('security')) ?>" class="admin-filter-row">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="save_trusted_proxies">
+                        <label class="admin-field admin-field--grow">
+                            <span>Trusted proxy IPs / CIDRs</span>
+                            <input type="text" name="trusted_proxies" value="<?= portal_escape($trustedProxies) ?>" placeholder="10.0.0.1, 192.168.0.0/24">
+                        </label>
+                        <button type="submit" class="admin-btn admin-btn--secondary">Save</button>
+                    </form>
                 </article>
 
                 <?php if ($showDeveloperSecurity): ?>
@@ -2303,6 +2734,178 @@ $canEditOpenedUser = $editUser !== null
             enrollFilter.dispatchEvent(new Event('input'));
         }
     }
+
+    var securityPageCheck = document.getElementById('security-select-page');
+    var securityMatchingWrap = document.getElementById('security-select-matching-wrap');
+    var securityMatchingToggle = document.getElementById('security-select-matching-toggle');
+    var securityMatchingField = document.getElementById('security-select-all-matching');
+    var securityRowChecks = document.querySelectorAll('.security-event-check:not([disabled])');
+    if (securityPageCheck && securityMatchingWrap && securityMatchingField) {
+        securityPageCheck.addEventListener('change', function () {
+            var checked = securityPageCheck.checked;
+            securityRowChecks.forEach(function (box) {
+                box.checked = checked;
+            });
+            securityMatchingWrap.hidden = !checked;
+            if (!checked && securityMatchingToggle) {
+                securityMatchingToggle.checked = false;
+                securityMatchingField.value = '0';
+            }
+        });
+        if (securityMatchingToggle) {
+            securityMatchingToggle.addEventListener('change', function () {
+                securityMatchingField.value = securityMatchingToggle.checked ? '1' : '0';
+            });
+        }
+    }
+
+    var profileDataNode = document.getElementById('security-user-profiles-data');
+    var profileOverlay = document.getElementById('security-profile-overlay');
+    var profileBody = document.getElementById('security-profile-body');
+    var profileTitle = document.getElementById('security-profile-title');
+    var profileActions = document.getElementById('security-profile-actions');
+    var profileActionGrid = document.getElementById('security-profile-action-grid');
+    var profileActionTemplate = document.getElementById('security-profile-action-template');
+    var profileData = {};
+    if (profileDataNode) {
+        try {
+            profileData = JSON.parse(profileDataNode.textContent || '{}') || {};
+        } catch (err) {
+            profileData = {};
+        }
+    }
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function eventTypeLabel(type) {
+        return String(type || '')
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+    }
+
+    function closeSecurityProfile() {
+        if (!profileOverlay) return;
+        profileOverlay.hidden = true;
+        profileOverlay.classList.remove('is-open');
+        document.body.classList.remove('admin-profile-open');
+    }
+
+    function openSecurityProfile(userId, eventId) {
+        if (!profileOverlay || !profileBody || !profileTitle) return;
+        var profile = profileData[String(userId)] || profileData[userId];
+        if (!profile) return;
+
+        profileTitle.textContent = profile.name || profile.username || ('User #' + userId);
+        var counts = profile.event_counts || {};
+        var recent = Array.isArray(profile.recent_events) ? profile.recent_events : [];
+        var recentHtml = recent.length
+            ? '<ul class="admin-profile-event-list">' + recent.map(function (ev) {
+                return '<li><strong>' + escapeHtml(eventTypeLabel(ev.event_type)) + '</strong>'
+                    + ' <span class="admin-severity admin-severity--' + escapeHtml(ev.severity || 'info') + '">'
+                    + escapeHtml((ev.severity || 'info').charAt(0).toUpperCase() + (ev.severity || 'info').slice(1))
+                    + '</span>'
+                    + '<span class="admin-table-meta">' + escapeHtml(ev.created_at || '') + '</span>'
+                    + '<p>' + escapeHtml(ev.details || '') + '</p></li>';
+            }).join('') + '</ul>'
+            : '<p class="admin-card-lead">No recent security events for this account.</p>';
+
+        profileBody.innerHTML = ''
+            + '<div class="admin-profile-identity">'
+            +   '<div class="admin-profile-avatar">' + escapeHtml(profile.initials || '?') + '</div>'
+            +   '<div>'
+            +     '<p class="admin-profile-name">' + escapeHtml(profile.name || profile.username || '') + '</p>'
+            +     '<p class="admin-table-meta">@' + escapeHtml(profile.username || '') + ' · ' + escapeHtml(profile.role || '') + '</p>'
+            +     '<span class="admin-badge admin-badge--' + (profile.account_status === 'active' ? 'open' : 'draft') + '">'
+            +       escapeHtml(profile.account_status_label || 'Active')
+            +     '</span>'
+            +   '</div>'
+            + '</div>'
+            + '<dl class="admin-profile-meta">'
+            +   '<div><dt>Email</dt><dd>' + escapeHtml(profile.email || '—') + '</dd></div>'
+            +   '<div><dt>Year</dt><dd>' + escapeHtml(profile.year || '—') + '</dd></div>'
+            +   '<div><dt>Programme</dt><dd>' + escapeHtml(profile.programme || '—') + '</dd></div>'
+            +   '<div><dt>Enrolments</dt><dd>' + escapeHtml(String(profile.enrollment_count || 0)) + '</dd></div>'
+            +   '<div><dt>Events (' + escapeHtml(String(counts.total || 0)) + ' this period)</dt><dd>'
+            +     escapeHtml(String(counts.unreviewed || 0)) + ' unreviewed · '
+            +     escapeHtml(String(counts.high || 0)) + ' high'
+            +   '</dd></div>'
+            + '</dl>'
+            + '<div class="admin-profile-recent"><h4>Recent security activity</h4>' + recentHtml + '</div>';
+
+        if (profileActions && profileActionGrid && profileActionTemplate) {
+            profileActionGrid.innerHTML = '';
+            if (profile.can_act) {
+                var actions = [
+                    { key: 'mute', label: 'Mute discussions' },
+                    { key: 'restrict', label: 'Restrict submissions' },
+                    { key: 'ban', label: 'Ban account', danger: true },
+                    { key: 'activate', label: 'Clear restrictions' },
+                    { key: 'delete', label: 'Delete account', danger: true }
+                ];
+                actions.forEach(function (action) {
+                    if (action.key === 'activate' && profile.account_status === 'active') return;
+                    var node = profileActionTemplate.content.cloneNode(true);
+                    var form = node.querySelector('form');
+                    var button = node.querySelector('button');
+                    form.querySelector('input[name="account_action"]').value = action.key;
+                    form.querySelector('input[name="target_user_id"]').value = String(profile.id);
+                    form.querySelector('input[name="reason"]').value = eventId
+                        ? ('From security event #' + eventId)
+                        : 'From security profile panel';
+                    button.textContent = action.label;
+                    if (action.danger) button.classList.add('admin-btn--danger');
+                    form.addEventListener('submit', function (ev) {
+                        var msg = action.key === 'delete'
+                            ? 'Delete this account permanently?'
+                            : 'Apply “' + action.label + '” to ' + (profile.username || profile.name) + '?';
+                        if (!window.confirm(msg)) ev.preventDefault();
+                    });
+                    profileActionGrid.appendChild(node);
+                });
+                profileActions.hidden = false;
+            } else {
+                profileActions.hidden = true;
+            }
+        }
+
+        profileOverlay.hidden = false;
+        requestAnimationFrame(function () {
+            profileOverlay.classList.add('is-open');
+        });
+        document.body.classList.add('admin-profile-open');
+        var panel = profileOverlay.querySelector('.admin-profile-panel');
+        if (panel) panel.focus();
+    }
+
+    document.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!(target instanceof Element)) return;
+        var openBtn = target.closest('[data-security-profile]');
+        if (openBtn) {
+            event.preventDefault();
+            openSecurityProfile(
+                openBtn.getAttribute('data-security-profile'),
+                openBtn.getAttribute('data-security-event') || ''
+            );
+            return;
+        }
+        if (target.closest('[data-security-profile-close]')) {
+            closeSecurityProfile();
+        }
+    });
+
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') {
+            closeSecurityProfile();
+        }
+    });
 })();
 </script>
 <?php
