@@ -999,7 +999,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $day   = substr(trim((string)($_POST['day_of_week'] ?? '')), 0, 20);
             $start = substr(trim((string)($_POST['start_time'] ?? '')), 0, 10);
             $end   = substr(trim((string)($_POST['end_time'] ?? '')), 0, 10);
-            $room  = substr(trim((string)($_POST['room'] ?? '')), 0, 100);
+            $room  = substr(trim((string)($_POST['room'] ?? '')), 0, 500);
             $notes = substr(trim((string)($_POST['notes'] ?? '')), 0, 300);
             $days  = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
             if ($day !== '' && in_array($day, $days, true)) {
@@ -1014,7 +1014,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $day    = substr(trim((string)($_POST['day_of_week'] ?? '')), 0, 20);
             $start  = substr(trim((string)($_POST['start_time'] ?? '')), 0, 10);
             $end    = substr(trim((string)($_POST['end_time'] ?? '')), 0, 10);
-            $room   = substr(trim((string)($_POST['room'] ?? '')), 0, 100);
+            $room   = substr(trim((string)($_POST['room'] ?? '')), 0, 500);
             $notes  = substr(trim((string)($_POST['notes'] ?? '')), 0, 300);
             $days   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
             if ($slotId > 0 && $day !== '' && in_array($day, $days, true)) {
@@ -1707,25 +1707,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (in_array($action, ['mark_submission'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
-        // Rebuild courses.meeting from current slots so the hero banner stays in sync
-        $meetingStmt = $db->prepare(
-            "SELECT day_of_week, start_time, end_time FROM course_schedule WHERE course_id = ? ORDER BY sort_order ASC, id ASC"
-        );
-        $meetingStmt->execute([$courseId]);
-        $meetingSlots = $meetingStmt->fetchAll();
-        if (empty($meetingSlots)) {
-            $meetingText = 'TBA';
-        } else {
-            $meetingParts = [];
-            foreach ($meetingSlots as $ms) {
-                $d = substr($ms['day_of_week'], 0, 3);
-                $t = $ms['start_time'] !== '' ? $ms['start_time'] : '';
-                if ($ms['end_time'] !== '') $t .= '–' . $ms['end_time'];
-                $meetingParts[] = $d . ($t !== '' ? ' ' . $t : '');
-            }
-            $meetingText = implode(', ', $meetingParts);
-        }
-        $db->prepare("UPDATE courses SET meeting = ? WHERE id = ?")->execute([$meetingText, $courseId]);
+        // Keep courses.meeting / courses.room aligned with live calendar slots.
+        portal_sync_course_meeting_from_schedule($courseId);
         portal_redirect($rBase . '&section=calendar');
     } elseif ($action === 'update_course_description') {
         $retSec = (string)($_POST['return_section'] ?? 'content');
@@ -1961,6 +1944,10 @@ $_schStmt = $_db->prepare(
 );
 $_schStmt->execute([$courseId]);
 $courseSchedule = $_schStmt->fetchAll();
+$courseScheduleSummary = portal_format_course_schedule_summary($courseSchedule);
+$course['meeting'] = $courseScheduleSummary['meeting'];
+$course['room'] = $courseScheduleSummary['room'];
+$course['location_mode'] = $courseScheduleSummary['mode'];
 $courseUpcomingEvents = portal_events_for_course($courseId, 20, true);
 
 // Discussion topics (with reply count)
@@ -2203,16 +2190,16 @@ ob_start();
             $heroMetaLine = array_values(array_filter([
                 trim((string) ($course['term'] ?? '')),
                 trim((string) ($course['meeting'] ?? '')),
-                'Online',
+                trim((string) ($course['room'] ?? '')),
                 ((int) ($course['student_count'] ?? 0)) . ' students',
-            ]));
+            ], static fn(string $part): bool => $part !== ''));
         ?>
         <p class="course-hero-meta-line"><?= portal_escape(implode(' · ', $heroMetaLine)) ?></p>
         <div class="course-hero-meta">
             <span><?= portal_escape($currentSection['label']) ?></span>
             <span><?= portal_escape($course['term']) ?></span>
             <span><?= portal_escape($course['meeting']) ?></span>
-            <span>Online</span>
+            <span><?= portal_escape($course['room']) ?></span>
             <span><?= (int) $course['student_count'] ?> students</span>
         </div>
     </article>
@@ -3178,8 +3165,8 @@ ob_start();
                                 <input type="time" name="end_time">
                             </label>
                             <label class="folder-form-label">
-                                <span>Join link <small>(optional)</small></span>
-                                <input type="text" inputmode="url" autocomplete="url" name="room" maxlength="500" placeholder="https://zoom.us/j/...">
+                                <span>Location / join link <small>(optional)</small></span>
+                                <input type="text" name="room" maxlength="500" placeholder="Room 12 or https://zoom.us/j/...">
                             </label>
                         </div>
                         <label class="folder-form-label">
@@ -3209,14 +3196,20 @@ ob_start();
                                 <div class="slot-day-badge"><?= portal_escape(substr($slot['day_of_week'], 0, 3)) ?></div>
                                 <div class="slot-detail">
                                     <strong><?= portal_escape($slot['start_time']) ?><?= $slot['end_time'] ? ' – ' . portal_escape($slot['end_time']) : '' ?></strong>
-                                    <span class="slot-online-label">Online</span>
+                                    <?php
+                                        $joinUrl = trim((string) ($slot['room'] ?? ''));
+                                        $isValidUrl = portal_schedule_slot_is_online($joinUrl);
+                                    ?>
+                                    <?php if ($isValidUrl): ?>
+                                        <span class="slot-online-label">Online</span>
+                                    <?php elseif ($joinUrl !== ''): ?>
+                                        <span class="slot-online-label"><?= portal_escape($joinUrl) ?></span>
+                                    <?php else: ?>
+                                        <span class="slot-online-label">Location TBA</span>
+                                    <?php endif; ?>
                                     <?php if ($slot['notes'] !== ''): ?>
                                         <em><?= portal_escape($slot['notes']) ?></em>
                                     <?php endif; ?>
-                                    <?php
-                                        $joinUrl = (string)($slot['room'] ?? '');
-                                        $isValidUrl = $joinUrl !== '' && preg_match('/^https?:\/\//i', $joinUrl);
-                                    ?>
                                     <?php if ($isValidUrl): ?>
                                         <a class="slot-join-link" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">
                                             Join session →
@@ -3265,8 +3258,8 @@ ob_start();
                                             <input type="time" name="end_time" value="<?= portal_escape($slot['end_time']) ?>">
                                         </label>
                                         <label class="folder-form-label">
-                                            <span>Join link <small>(optional)</small></span>
-                                            <input type="text" inputmode="url" autocomplete="url" name="room" maxlength="500" value="<?= portal_escape($slot['room']) ?>" placeholder="https://zoom.us/j/...">
+                                            <span>Location / join link <small>(optional)</small></span>
+                                            <input type="text" name="room" maxlength="500" value="<?= portal_escape($slot['room']) ?>" placeholder="Room 12 or https://zoom.us/j/...">
                                         </label>
                                     </div>
                                     <label class="folder-form-label">

@@ -25,6 +25,136 @@ if (!function_exists('portal_staff_initials')) {
     }
 }
 
+if (!function_exists('portal_schedule_slot_is_online')) {
+    function portal_schedule_slot_is_online(string $roomOrLink): bool
+    {
+        $value = trim($roomOrLink);
+        return $value !== '' && (bool) preg_match('#^https?://#i', $value);
+    }
+}
+
+if (!function_exists('portal_format_course_schedule_summary')) {
+    /**
+     * Build courses-list / hero copy from live calendar slots.
+     *
+     * @param list<array<string, mixed>> $slots
+     * @return array{meeting: string, room: string, mode: string}
+     */
+    function portal_format_course_schedule_summary(array $slots): array
+    {
+        if ($slots === []) {
+            return [
+                'meeting' => 'No schedule yet',
+                'room' => 'Location TBA',
+                'mode' => 'TBA',
+            ];
+        }
+
+        $meetingParts = [];
+        $places = [];
+        $hasOnline = false;
+        $hasPhysical = false;
+
+        foreach ($slots as $slot) {
+            $day = substr(trim((string) ($slot['day_of_week'] ?? '')), 0, 3);
+            $start = trim((string) ($slot['start_time'] ?? ''));
+            $end = trim((string) ($slot['end_time'] ?? ''));
+            $time = $start;
+            if ($end !== '') {
+                $time .= ($time !== '' ? '–' : '') . $end;
+            }
+            $part = trim($day . ($time !== '' ? ' ' . $time : ''));
+            if ($part !== '') {
+                $meetingParts[] = $part;
+            }
+
+            $location = trim((string) ($slot['room'] ?? ''));
+            if ($location === '') {
+                continue;
+            }
+            if (portal_schedule_slot_is_online($location)) {
+                $hasOnline = true;
+                continue;
+            }
+            $hasPhysical = true;
+            $places[$location] = $location;
+        }
+
+        $meeting = $meetingParts !== [] ? implode(', ', $meetingParts) : 'Schedule set';
+
+        if ($hasOnline && $hasPhysical) {
+            $room = 'Online / ' . implode(', ', array_values($places));
+            $mode = 'Hybrid';
+        } elseif ($hasOnline) {
+            $room = 'Online';
+            $mode = 'Online';
+        } elseif ($places !== []) {
+            $room = implode(', ', array_values($places));
+            $mode = 'On campus';
+        } else {
+            // Slots exist but no location/link entered yet — still prefer this over seed placeholders.
+            $room = 'Location TBA';
+            $mode = 'TBA';
+        }
+
+        return [
+            'meeting' => $meeting,
+            'room' => $room,
+            'mode' => $mode,
+        ];
+    }
+}
+
+if (!function_exists('portal_course_schedules_by_course_id')) {
+    /**
+     * @return array<int, list<array<string, mixed>>>
+     */
+    function portal_course_schedules_by_course_id(): array
+    {
+        $rows = portal_db()->query(
+            "SELECT course_id, day_of_week, start_time, end_time, room, notes, sort_order, id
+             FROM course_schedule
+             ORDER BY sort_order ASC, id ASC"
+        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $byCourse = [];
+        foreach ($rows as $row) {
+            $cid = (int) ($row['course_id'] ?? 0);
+            if ($cid <= 0) {
+                continue;
+            }
+            $byCourse[$cid][] = $row;
+        }
+
+        return $byCourse;
+    }
+}
+
+if (!function_exists('portal_sync_course_meeting_from_schedule')) {
+    /**
+     * Persist courses.meeting / courses.room from current calendar slots.
+     *
+     * @return array{meeting: string, room: string, mode: string}
+     */
+    function portal_sync_course_meeting_from_schedule(int $courseId): array
+    {
+        $stmt = portal_db()->prepare(
+            "SELECT day_of_week, start_time, end_time, room, notes
+             FROM course_schedule
+             WHERE course_id = ?
+             ORDER BY sort_order ASC, id ASC"
+        );
+        $stmt->execute([$courseId]);
+        $slots = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $summary = portal_format_course_schedule_summary($slots);
+        portal_db()->prepare(
+            'UPDATE courses SET meeting = ?, room = ? WHERE id = ?'
+        )->execute([$summary['meeting'], $summary['room'], $courseId]);
+
+        return $summary;
+    }
+}
+
 if (!function_exists('portal_default_course_sections')) {
     function portal_default_course_sections(array $course): array
     {
@@ -355,6 +485,7 @@ if (!function_exists('portal_course_catalog')) {
         }
 
         $courses = [];
+        $schedulesByCourse = portal_course_schedules_by_course_id();
         foreach ($rows as $row) {
             $course            = $row;
             $course['id']      = (int) $row['id'];
@@ -364,6 +495,13 @@ if (!function_exists('portal_course_catalog')) {
                 'Check the latest class notice for upcoming tasks and reminders.',
                 'Review weekly materials before the next lesson.',
             ];
+
+            $summary = portal_format_course_schedule_summary($schedulesByCourse[$course['id']] ?? []);
+            // Prefer live calendar slots over seed/placeholder meeting + room columns.
+            $course['meeting'] = $summary['meeting'];
+            $course['room'] = $summary['room'];
+            $course['location_mode'] = $summary['mode'];
+            $course['schedule_slots'] = $schedulesByCourse[$course['id']] ?? [];
 
             $course['sections']        = portal_default_course_sections($course);
             $course['calendar_items']  = portal_default_course_calendar_items($course);
