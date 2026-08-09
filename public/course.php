@@ -1707,8 +1707,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (in_array($action, ['mark_submission'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
-        // Keep courses.meeting / courses.room aligned with live calendar slots.
-        portal_sync_course_meeting_from_schedule($courseId);
         portal_redirect($rBase . '&section=calendar');
     } elseif ($action === 'update_course_description') {
         $retSec = (string)($_POST['return_section'] ?? 'content');
@@ -1944,7 +1942,11 @@ $_schStmt = $_db->prepare(
 );
 $_schStmt->execute([$courseId]);
 $courseSchedule = $_schStmt->fetchAll();
-$courseScheduleSummary = portal_format_course_schedule_summary($courseSchedule);
+$courseScheduleSummary = portal_format_course_schedule_summary(
+    $courseSchedule,
+    (string) ($course['meeting'] ?? ''),
+    (string) ($course['room'] ?? '')
+);
 $course['meeting'] = $courseScheduleSummary['meeting'];
 $course['room'] = $courseScheduleSummary['room'];
 $course['location_mode'] = $courseScheduleSummary['mode'];
