@@ -304,6 +304,18 @@ try {
     // ── Attempts ─────────────────────────────────────────────────────────────
     echo "\n=== Attempts ===\n";
 
+    $db->prepare("UPDATE users SET account_status = 'restricted' WHERE id = ?")
+        ->execute([$studentUser['id']]);
+    $restrictedStart = portal_activity_start_attempt($assessId, $studentUser['id'], 'ack while restricted');
+    expect_true(empty($restrictedStart['ok']), 'restricted student cannot start or resume an activity attempt');
+    $restrictedSubmit = portal_activity_submit_attempt($attemptId, $studentUser['id'], $token);
+    expect_true(empty($restrictedSubmit['ok']), 'restricted student cannot submit an in-progress activity attempt');
+    $restrictedAttemptStmt = $db->prepare('SELECT status FROM activity_attempts WHERE id = ?');
+    $restrictedAttemptStmt->execute([$attemptId]);
+    expect_eq((string) $restrictedAttemptStmt->fetchColumn(), 'in_progress', 'denied restricted submit leaves attempt in progress');
+    $db->prepare("UPDATE users SET account_status = 'active' WHERE id = ?")
+        ->execute([$studentUser['id']]);
+
     // Submit first attempt so max_attempts=1 blocks a new start.
     $submit = portal_activity_submit_attempt($attemptId, $studentUser['id'], $token);
     expect_true(!empty($submit['ok']), 'submit first attempt');
