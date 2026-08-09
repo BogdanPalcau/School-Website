@@ -597,8 +597,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($parts as $part) {
             if (str_contains($part, '/')) {
                 [$subnet, $mask] = array_pad(explode('/', $part, 2), 2, '');
-                if (filter_var($subnet, FILTER_VALIDATE_IP) && ctype_digit((string) $mask)) {
-                    $clean[] = $subnet . '/' . (int) $mask;
+                $prefix = ctype_digit((string) $mask) ? (int) $mask : 0;
+                if (filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                    && $prefix >= 1
+                    && $prefix <= 32) {
+                    $clean[] = $subnet . '/' . $prefix;
                 }
             } elseif (filter_var($part, FILTER_VALIDATE_IP)) {
                 $clean[] = $part;

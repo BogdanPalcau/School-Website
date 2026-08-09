@@ -1513,7 +1513,7 @@ if (!function_exists('portal_ip_in_cidr')) {
             return false;
         }
         $mask = (int) $mask;
-        if ($mask < 0 || $mask > 32) {
+        if ($mask < 1 || $mask > 32) {
             return false;
         }
         $ipLong = ip2long($ip);
@@ -1521,7 +1521,7 @@ if (!function_exists('portal_ip_in_cidr')) {
         if ($ipLong === false || $subnetLong === false) {
             return false;
         }
-        $maskLong = $mask === 0 ? 0 : (-1 << (32 - $mask));
+        $maskLong = -1 << (32 - $mask);
 
         return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
     }

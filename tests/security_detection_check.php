@@ -222,6 +222,15 @@ try {
         portal_client_ip() === '203.0.113.24',
         'trusted proxy chain skips trusted internal hops from the right'
     );
+
+    portal_site_setting_set('trusted_proxies', '0.0.0.0/0');
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.24';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '2001:db8::77';
+    expect_true(
+        !portal_ip_in_cidr('203.0.113.24', '0.0.0.0/0')
+            && portal_client_ip() === '203.0.113.24',
+        'universal CIDR cannot make direct clients trusted or enable IPv6 spoofing'
+    );
 } finally {
     if ($trustedSettingExisted) {
         portal_site_setting_set('trusted_proxies', (string) $trustedSettingValue);
