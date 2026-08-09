@@ -76,7 +76,7 @@ test('failed-login victims cannot be disciplined from attacker events', async ({
 
   await victimRow.getByRole('button', { name: /view profile/i }).click();
   await expect(page.locator('#security-profile-overlay')).toBeVisible();
-  await expect(page.locator('#security-profile-actions')).toBeHidden();
+  await expect(page.locator('#security-profile-action-grid button')).toHaveCount(0);
 });
 
 test('bulk checkboxes support select-all on page and select-all matching', async ({ page }) => {
