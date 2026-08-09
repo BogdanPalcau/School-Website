@@ -199,6 +199,9 @@ if (
     if (!$canAsk) {
         portal_json_response(['ok' => false, 'error' => 'Only students can ask questions on lesson videos.'], 403);
     }
+    if (portal_user_is_muted($me)) {
+        portal_json_response(['ok' => false, 'error' => 'Your account is muted and cannot ask lesson questions.'], 403);
+    }
 
     $question = substr(trim((string) ($_POST['question'] ?? '')), 0, 1000);
     $videoSeconds = (int) ($_POST['video_seconds'] ?? 0);
@@ -262,7 +265,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['action'] ?? '');
 
     if ($action === 'ask_question') {
-        if (!$canAsk) {
+        if (portal_user_is_muted($me)) {
+            $_SESSION['lesson_flash'] = ['error', 'Your account is muted and cannot ask lesson questions.'];
+        } elseif (!$canAsk) {
             $_SESSION['lesson_flash'] = ['error', 'Only students can ask questions on lesson videos.'];
         } else {
             $question = substr(trim((string) ($_POST['question'] ?? '')), 0, 1000);
