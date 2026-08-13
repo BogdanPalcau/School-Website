@@ -56,7 +56,13 @@ if (!function_exists('portal_soffice_converter')) {
         }
 
         if (PHP_OS_FAMILY === 'Windows') {
-            foreach (array_filter([getenv('ProgramFiles') ?: '', getenv('ProgramFiles(x86)') ?: '']) as $base) {
+            $programFiles = array_filter([
+                getenv('ProgramFiles') ?: '',
+                getenv('ProgramFiles(x86)') ?: '',
+                'C:\\Program Files',
+                'C:\\Program Files (x86)',
+            ]);
+            foreach (array_unique($programFiles) as $base) {
                 $candidates[] = $base . DIRECTORY_SEPARATOR . 'LibreOffice' . DIRECTORY_SEPARATOR . 'program' . DIRECTORY_SEPARATOR . 'soffice.com';
                 $candidates[] = $base . DIRECTORY_SEPARATOR . 'LibreOffice' . DIRECTORY_SEPARATOR . 'program' . DIRECTORY_SEPARATOR . 'soffice.exe';
             }
@@ -64,11 +70,23 @@ if (!function_exists('portal_soffice_converter')) {
             $candidates[] = '/usr/bin/soffice';
             $candidates[] = '/usr/local/bin/soffice';
             $candidates[] = '/usr/bin/libreoffice';
+            $candidates[] = '/usr/local/bin/libreoffice';
         }
 
         foreach ($candidates as $candidate) {
             if ($candidate !== '' && is_file($candidate)) {
                 return $candidate;
+            }
+        }
+
+        if (is_callable('shell_exec')) {
+            $lookup = PHP_OS_FAMILY === 'Windows' ? 'where soffice 2>NUL' : 'command -v soffice 2>/dev/null';
+            $found = trim((string) @shell_exec($lookup));
+            if ($found !== '') {
+                $first = strtok($found, "\r\n");
+                if ($first !== false && $first !== '') {
+                    return $first;
+                }
             }
         }
 

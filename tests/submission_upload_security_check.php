@@ -92,11 +92,30 @@ expect_true(portal_submission_signature_ok($tmpTxt, 'txt')['ok'] === false, 'NUL
 @unlink($tmpTxt);
 
 // Plain ZIP renamed as docx should fail structure check
+require_once __DIR__ . '/../scripts/demo_penguin_files.php';
+
+$writeZip = static function (string $path, array $entries): bool {
+    if (class_exists('ZipArchive')) {
+        $zip = new ZipArchive();
+        if ($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            return false;
+        }
+        foreach ($entries as $name => $data) {
+            $zip->addFromString((string) $name, (string) $data);
+        }
+        $zip->close();
+        return true;
+    }
+    try {
+        demo_zip_store($path, $entries);
+        return true;
+    } catch (Throwable $e) {
+        return false;
+    }
+};
+
 $tmpZip = tempnam(sys_get_temp_dir(), 'zip') . '.zip';
-$zip = new ZipArchive();
-if ($zip->open($tmpZip, ZipArchive::CREATE) === true) {
-    $zip->addFromString('readme.txt', 'hello');
-    $zip->close();
+if ($writeZip($tmpZip, ['readme.txt' => 'hello'])) {
     $docx = portal_docx_structure_ok($tmpZip);
     expect_true($docx['ok'] === false, 'ordinary zip is not a docx');
     @unlink($tmpZip);
@@ -106,26 +125,25 @@ if ($zip->open($tmpZip, ZipArchive::CREATE) === true) {
 
 // Minimal fake docx structure
 $tmpDocx = tempnam(sys_get_temp_dir(), 'docx') . '.docx';
-$zip = new ZipArchive();
-if ($zip->open($tmpDocx, ZipArchive::CREATE) === true) {
-    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types></Types>');
-    $zip->addFromString('_rels/.rels', '<?xml version="1.0"?><Relationships></Relationships>');
-    $zip->addFromString('word/document.xml', '<?xml version="1.0"?><w:document></w:document>');
-    $zip->close();
+if ($writeZip($tmpDocx, [
+    '[Content_Types].xml' => '<?xml version="1.0"?><Types></Types>',
+    '_rels/.rels' => '<?xml version="1.0"?><Relationships></Relationships>',
+    'word/document.xml' => '<?xml version="1.0"?><w:document></w:document>',
+])) {
     $docx = portal_docx_structure_ok($tmpDocx);
     expect_true($docx['ok'] === true, 'minimal OOXML structure accepted');
 
     // Traversal entry
     $tmpTrav = tempnam(sys_get_temp_dir(), 'trav') . '.docx';
-    $z2 = new ZipArchive();
-    $z2->open($tmpTrav, ZipArchive::CREATE);
-    $z2->addFromString('[Content_Types].xml', 'x');
-    $z2->addFromString('_rels/.rels', 'x');
-    $z2->addFromString('word/document.xml', 'x');
-    $z2->addFromString('../evil.txt', 'x');
-    $z2->close();
-    expect_true(portal_docx_structure_ok($tmpTrav)['ok'] === false, 'docx traversal entry rejected');
-    @unlink($tmpTrav);
+    if ($writeZip($tmpTrav, [
+        '[Content_Types].xml' => 'x',
+        '_rels/.rels' => 'x',
+        'word/document.xml' => 'x',
+        '../evil.txt' => 'x',
+    ])) {
+        expect_true(portal_docx_structure_ok($tmpTrav)['ok'] === false, 'docx traversal entry rejected');
+        @unlink($tmpTrav);
+    }
     @unlink($tmpDocx);
 } else {
     echo "SKIP  could not create docx fixtures\n";
@@ -133,24 +151,25 @@ if ($zip->open($tmpDocx, ZipArchive::CREATE) === true) {
 
 // PPTX package + text extract (presentation-only path)
 $tmpPptx = tempnam(sys_get_temp_dir(), 'pptx') . '.pptx';
-$zip = new ZipArchive();
-if ($zip->open($tmpPptx, ZipArchive::CREATE) === true) {
-    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types></Types>');
-    $zip->addFromString('_rels/.rels', '<?xml version="1.0"?><Relationships></Relationships>');
-    $zip->addFromString('ppt/presentation.xml', '<?xml version="1.0"?><p:presentation></p:presentation>');
-    $zip->addFromString(
-        'ppt/slides/slide1.xml',
+if ($writeZip($tmpPptx, [
+    '[Content_Types].xml' => '<?xml version="1.0"?><Types></Types>',
+    '_rels/.rels' => '<?xml version="1.0"?><Relationships></Relationships>',
+    'ppt/presentation.xml' => '<?xml version="1.0"?><p:presentation></p:presentation>',
+    'ppt/slides/slide1.xml' =>
         '<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
-        . '<a:p><a:t>Hello deck</a:t></a:p><a:p><a:t>Bullet one</a:t></a:p></p:sld>'
-    );
-    $zip->close();
+        . '<a:p><a:t>Hello deck</a:t></a:p><a:p><a:t>Bullet one</a:t></a:p></p:sld>',
+])) {
     expect_true(portal_pptx_structure_ok($tmpPptx)['ok'] === true, 'minimal pptx structure accepted');
-    $pptxText = portal_extract_pptx_text($tmpPptx);
-    expect_true(str_contains($pptxText, 'Hello deck'), 'pptx text extract finds title text');
-    expect_true(str_contains($pptxText, 'Bullet one'), 'pptx text extract finds body text');
-    $detail = portal_extract_submission_text_detailed($tmpPptx, 'demo.pptx');
-    expect_true(($detail['extractor'] ?? '') === 'pptx', 'pptx detailed extract uses pptx extractor');
-    expect_true(in_array($detail['confidence'] ?? '', ['low', 'medium'], true), 'pptx confidence is provisional');
+    if (class_exists('ZipArchive')) {
+        $pptxText = portal_extract_pptx_text($tmpPptx);
+        expect_true(str_contains($pptxText, 'Hello deck'), 'pptx text extract finds title text');
+        expect_true(str_contains($pptxText, 'Bullet one'), 'pptx text extract finds body text');
+        $detail = portal_extract_submission_text_detailed($tmpPptx, 'demo.pptx');
+        expect_true(($detail['extractor'] ?? '') === 'pptx', 'pptx detailed extract uses pptx extractor');
+        expect_true(in_array($detail['confidence'] ?? '', ['low', 'medium'], true), 'pptx confidence is provisional');
+    } else {
+        echo "SKIP  pptx text extract requires ZipArchive\n";
+    }
     @unlink($tmpPptx);
 } else {
     echo "SKIP  could not create pptx fixtures\n";
@@ -158,6 +177,20 @@ if ($zip->open($tmpPptx, ZipArchive::CREATE) === true) {
 
 // MIME fail-closed for missing file
 expect_true(portal_upload_mime_ok('', 'pdf') === false, 'mime_ok fails closed on missing path');
+
+// PPTX accepted when libmagic would only see a zip (structure still required)
+$tmpPptxMime = tempnam(sys_get_temp_dir(), 'pptxm') . '.pptx';
+if ($writeZip($tmpPptxMime, [
+    '[Content_Types].xml' => '<?xml version="1.0"?><Types></Types>',
+    '_rels/.rels' => '<?xml version="1.0"?><Relationships></Relationships>',
+    'ppt/presentation.xml' => '<?xml version="1.0"?><p:presentation></p:presentation>',
+])) {
+    expect_true(portal_upload_mime_ok($tmpPptxMime, 'pptx') === true, 'pptx zip package passes mime_ok');
+    expect_true(portal_upload_mime_ok($tmpPptxMime, 'docx') === false, 'pptx package rejected as docx');
+    @unlink($tmpPptxMime);
+} else {
+    echo "SKIP  could not create pptx mime fixture\n";
+}
 
 // Generic mismatch message
 expect_eq(

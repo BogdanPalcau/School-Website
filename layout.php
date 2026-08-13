@@ -71,7 +71,7 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260813adminfix';
+$asset_version = '20260813uploaddnd12';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $customizationPrefs = portal_is_logged_in()
     ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))

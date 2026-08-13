@@ -358,6 +358,7 @@ if (!function_exists('portal_icon')) {
             'mic'           => '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>',
             'copy'          => '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
             'eye'           => '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+            'eye-off'       => '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-8-10-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
             'save'          => '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
             'history'       => '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
             'chevron-up'    => '<polyline points="18 15 12 9 6 15"/>',
@@ -2612,6 +2613,24 @@ if (!function_exists('portal_run_migrations')) {
             // Non-fatal during migration.
         }
 
+        // Teachers were sometimes given course access via enrollments (student table).
+        // Courses page / manage rights use course_teachers — migrate those rows.
+        try {
+            $db->exec("
+                INSERT OR IGNORE INTO course_teachers (course_id, user_id, assignment_role)
+                SELECT e.course_id, e.user_id, 'teacher'
+                FROM enrollments e
+                INNER JOIN users u ON u.id = e.user_id
+                WHERE u.role = 'teacher'
+            ");
+            $db->exec("
+                DELETE FROM enrollments
+                WHERE user_id IN (SELECT id FROM users WHERE role = 'teacher')
+            ");
+        } catch (\PDOException $e) {
+            // Non-fatal during migration.
+        }
+
         // Remove supervisor from global users.role CHECK (course-level only now)
         $usersTableSQL = (string) ($db->query(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
@@ -3376,6 +3395,105 @@ if (!function_exists('portal_assigned_course_ids')) {
         );
         $stmt->execute([(int) $user['id']]);
         return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+}
+
+if (!function_exists('portal_assigned_course_ids_for_user')) {
+    /** @return int[] */
+    function portal_assigned_course_ids_for_user(int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+        $stmt = portal_db()->prepare(
+            'SELECT course_id FROM course_teachers WHERE user_id = ?'
+        );
+        $stmt->execute([$userId]);
+
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+}
+
+if (!function_exists('portal_user_course_access_ids')) {
+    /**
+     * Course IDs a user should appear against in admin "course access" UI:
+     * enrollments for students, course_teachers for teachers.
+     * Admins/owners see every course in the catalog separately.
+     *
+     * @return int[]
+     */
+    function portal_user_course_access_ids(int $userId): array
+    {
+        $user = portal_find_user_by_id($userId);
+        if ($user === null) {
+            return [];
+        }
+
+        $role = (string) ($user['role'] ?? 'student');
+        if ($role === 'teacher') {
+            return portal_assigned_course_ids_for_user($userId);
+        }
+
+        return portal_enrolled_course_ids($userId);
+    }
+}
+
+if (!function_exists('portal_set_user_course_access')) {
+    /**
+     * Replace a user's module access. Teachers are stored in course_teachers;
+     * students in enrollments. Clears the other table so counts stay correct.
+     *
+     * @param int[] $courseIds
+     */
+    function portal_set_user_course_access(int $userId, array $courseIds): bool
+    {
+        $user = portal_find_user_by_id($userId);
+        if ($user === null) {
+            return false;
+        }
+
+        $courseIds = array_values(array_unique(array_filter(
+            array_map('intval', $courseIds),
+            static fn(int $id): bool => $id > 0
+        )));
+
+        $pdo = portal_db();
+        $role = (string) ($user['role'] ?? 'student');
+
+        if ($role === 'teacher') {
+            $pdo->prepare('DELETE FROM course_teachers WHERE user_id = ?')->execute([$userId]);
+            $pdo->prepare('DELETE FROM enrollments WHERE user_id = ?')->execute([$userId]);
+            $ins = $pdo->prepare(
+                "INSERT OR IGNORE INTO course_teachers (course_id, user_id, assignment_role)
+                 VALUES (?, ?, 'teacher')"
+            );
+            foreach ($courseIds as $cid) {
+                $ins->execute([$cid, $userId]);
+            }
+
+            return true;
+        }
+
+        if (in_array($role, ['owner', 'admin'], true)) {
+            // Site-wide staff already see every module; keep optional enrollments
+            // for calendar/comms edge cases without creating teacher assignments.
+            $pdo->prepare('DELETE FROM enrollments WHERE user_id = ?')->execute([$userId]);
+            $ins = $pdo->prepare('INSERT OR IGNORE INTO enrollments (user_id, course_id) VALUES (?, ?)');
+            foreach ($courseIds as $cid) {
+                $ins->execute([$userId, $cid]);
+            }
+
+            return true;
+        }
+
+        $pdo->prepare('DELETE FROM enrollments WHERE user_id = ?')->execute([$userId]);
+        $pdo->prepare('DELETE FROM course_teachers WHERE user_id = ?')->execute([$userId]);
+        $ins = $pdo->prepare('INSERT OR IGNORE INTO enrollments (user_id, course_id) VALUES (?, ?)');
+        foreach ($courseIds as $cid) {
+            $ins->execute([$userId, $cid]);
+        }
+
+        return true;
     }
 }
 

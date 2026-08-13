@@ -162,6 +162,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare('UPDATE users SET username = ?, email = ?, name = ?, year = ?, initials = ?, role = ? WHERE id = ?')
             ->execute([$username, $email, $name, $year, $initials, $newRole, $targetId]);
 
+        $oldRole = (string) ($target['role'] ?? '');
+        if ($oldRole === 'student' && $newRole === 'teacher') {
+            portal_set_user_course_access($targetId, portal_enrolled_course_ids($targetId));
+        } elseif ($oldRole === 'teacher' && $newRole === 'student') {
+            portal_set_user_course_access($targetId, portal_assigned_course_ids_for_user($targetId));
+        }
+
         $notes = [];
         if ($passwordChanged) {
             $notes[] = 'password reset';
@@ -224,7 +231,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!$isOwner && !in_array($newRole, ['teacher', 'student'], true)) {
             $_SESSION['admin_flash'] = ['error', 'Admins can only set Student or Teacher roles.'];
         } else {
+            $oldRole = (string) ($target['role'] ?? '');
             $pdo->prepare('UPDATE users SET role = ? WHERE id = ?')->execute([$newRole, $targetId]);
+            // Student → teacher: move enrolments into course assignments so Courses lists them.
+            if ($oldRole === 'student' && $newRole === 'teacher') {
+                portal_set_user_course_access($targetId, portal_enrolled_course_ids($targetId));
+            } elseif ($oldRole === 'teacher' && $newRole === 'student') {
+                portal_set_user_course_access($targetId, portal_assigned_course_ids_for_user($targetId));
+            }
             portal_log_security_event(
                 'role_changed',
                 'medium',
@@ -243,15 +257,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$target) {
             $_SESSION['admin_flash'] = ['error', 'User not found.'];
+        } elseif (!portal_set_user_course_access($targetId, $courseIds)) {
+            $_SESSION['admin_flash'] = ['error', 'Could not save course access.'];
         } else {
-            $pdo->prepare('DELETE FROM enrollments WHERE user_id = ?')->execute([$targetId]);
-            $stmtE = $pdo->prepare('INSERT OR IGNORE INTO enrollments (user_id, course_id) VALUES (?,?)');
-            foreach ($courseIds as $cid) {
-                if ($cid > 0) {
-                    $stmtE->execute([$targetId, $cid]);
-                }
-            }
-            $_SESSION['admin_flash'] = ['success', "Enrolments for {$target['name']} saved."];
+            $label = ((string) ($target['role'] ?? '')) === 'teacher'
+                ? 'Course assignments'
+                : 'Enrolments';
+            $_SESSION['admin_flash'] = ['success', "{$label} for {$target['name']} saved."];
         }
         $redirectSection('enrollments', ['enroll' => $targetId > 0 ? $targetId : null]);
     }
@@ -803,7 +815,8 @@ $adminCourses       = portal_admin_course_rows();
 $allCourses         = portal_course_catalog();
 $enrollmentCounts   = portal_user_enrollment_counts();
 $enrollTarget       = $enrollTargetId > 0 ? portal_find_user_by_id($enrollTargetId) : null;
-$enrolledIds        = $enrollTarget ? portal_enrolled_course_ids($enrollTargetId) : [];
+$enrolledIds        = $enrollTarget ? portal_user_course_access_ids($enrollTargetId) : [];
+$enrollTargetIsTeacher = $enrollTarget && ((string) ($enrollTarget['role'] ?? '')) === 'teacher';
 $editCourse         = $editCourseId > 0 ? portal_find_course_by_id($editCourseId) : null;
 $duplicateCourse    = $duplicateCourseId > 0 ? portal_find_course_by_id($duplicateCourseId) : null;
 $editUser           = $editUserId > 0 ? portal_find_user_by_id($editUserId) : null;
@@ -1321,7 +1334,13 @@ ob_start();
                         </label>
                         <label class="admin-field">
                             <span>Password</span>
-                            <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters, letter + number">
+                            <span class="admin-password-wrap">
+                                <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters, letter + number" autocomplete="new-password">
+                                <button type="button" class="admin-toggle-pass" data-toggle-password aria-label="Show password" aria-pressed="false">
+                                    <span class="admin-toggle-pass__icon admin-toggle-pass__icon--show" aria-hidden="true"><?= portal_icon('eye', 'icon-sm') ?></span>
+                                    <span class="admin-toggle-pass__icon admin-toggle-pass__icon--hide" aria-hidden="true" hidden><?= portal_icon('eye-off', 'icon-sm') ?></span>
+                                </button>
+                            </span>
                         </label>
                         <?php if ($isOwner): ?>
                         <label class="admin-field">
@@ -1723,7 +1742,7 @@ ob_start();
                         <div>
                             <p class="eyebrow">Course access</p>
                             <h3>Manage enrolments</h3>
-                            <p class="admin-card-lead">Select a user, then tick the modules they should access.</p>
+                            <p class="admin-card-lead">Select a user, then tick the modules they should access. Teachers are saved as course assignments (not student enrolments).</p>
                         </div>
                     </header>
 
@@ -1748,7 +1767,7 @@ ob_start();
                             <div class="admin-avatar"><?= portal_escape($enrollTarget['initials']) ?></div>
                             <div>
                                 <strong><?= portal_escape($enrollTarget['name']) ?></strong>
-                                <span class="admin-table-meta"><?= portal_escape($enrollTarget['email']) ?> · <?= count($enrolledIds) ?> of <?= count($allCourses) ?> courses</span>
+                                <span class="admin-table-meta"><?= portal_escape($enrollTarget['email']) ?> · <?= count($enrolledIds) ?> of <?= count($allCourses) ?> courses<?= $enrollTargetIsTeacher ? ' · teacher assignments' : '' ?></span>
                             </div>
                         </div>
                     </div>
@@ -1786,7 +1805,7 @@ ob_start();
                         </div>
 
                         <div class="admin-form-actions">
-                            <button type="submit" class="admin-btn admin-btn--primary">Save enrolments</button>
+                            <button type="submit" class="admin-btn admin-btn--primary"><?= $enrollTargetIsTeacher ? 'Save course assignments' : 'Save enrolments' ?></button>
                             <a href="<?= portal_escape($adminUrl('enrollments')) ?>" class="admin-btn admin-btn--secondary">Clear selection</a>
                         </div>
                     </form>
@@ -2710,11 +2729,23 @@ $canEditOpenedUser = $editUser !== null
             </label>
             <label class="admin-field admin-field--full">
                 <span>New password <em class="admin-field-hint-inline">(optional — leave blank to keep current)</em></span>
-                <input type="password" name="new_password" minlength="8" autocomplete="new-password" placeholder="Min. 8 characters, letter + number">
+                <span class="admin-password-wrap">
+                    <input type="password" name="new_password" minlength="8" autocomplete="new-password" placeholder="Min. 8 characters, letter + number">
+                    <button type="button" class="admin-toggle-pass" data-toggle-password aria-label="Show password" aria-pressed="false">
+                        <span class="admin-toggle-pass__icon admin-toggle-pass__icon--show" aria-hidden="true"><?= portal_icon('eye', 'icon-sm') ?></span>
+                        <span class="admin-toggle-pass__icon admin-toggle-pass__icon--hide" aria-hidden="true" hidden><?= portal_icon('eye-off', 'icon-sm') ?></span>
+                    </button>
+                </span>
             </label>
             <label class="admin-field admin-field--full">
                 <span>Confirm new password</span>
-                <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" placeholder="Repeat new password">
+                <span class="admin-password-wrap">
+                    <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" placeholder="Repeat new password">
+                    <button type="button" class="admin-toggle-pass" data-toggle-password aria-label="Show password" aria-pressed="false">
+                        <span class="admin-toggle-pass__icon admin-toggle-pass__icon--show" aria-hidden="true"><?= portal_icon('eye', 'icon-sm') ?></span>
+                        <span class="admin-toggle-pass__icon admin-toggle-pass__icon--hide" aria-hidden="true" hidden><?= portal_icon('eye-off', 'icon-sm') ?></span>
+                    </button>
+                </span>
             </label>
         </div>
         <p class="admin-field-hint admin-field-hint--panel">
@@ -2831,6 +2862,22 @@ $canEditOpenedUser = $editUser !== null
 
 <script>
 (function () {
+    document.querySelectorAll('[data-toggle-password]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var wrap = btn.closest('.admin-password-wrap');
+            var input = wrap ? wrap.querySelector('input') : null;
+            if (!input) return;
+            var show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+            var iconShow = btn.querySelector('.admin-toggle-pass__icon--show');
+            var iconHide = btn.querySelector('.admin-toggle-pass__icon--hide');
+            if (iconShow) iconShow.hidden = show;
+            if (iconHide) iconHide.hidden = !show;
+        });
+    });
+
     document.querySelectorAll('[data-admin-open]').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-admin-open');

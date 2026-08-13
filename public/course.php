@@ -4,6 +4,12 @@ declare(strict_types=1);
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../course_catalog.php';
 
+// Stop Chrome from reusing a stale HTML/JS bundle for this page.
+if (!headers_sent()) {
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+}
+
 portal_require_login();
 
 $slug = (string) ($_GET['course'] ?? '');
@@ -2794,8 +2800,14 @@ ob_start();
                                                              hidden
                                                              role="dialog"
                                                              aria-modal="true"
-                                                             aria-labelledby="<?= portal_escape($modalId) ?>-title">
-                                                            <div class="sub-slot-dialog">
+                                                             aria-labelledby="<?= portal_escape($modalId) ?>-title"
+                                                             ondragenter="if(window.portalUploadDragOver){window.portalUploadDragOver(event);}else{event.preventDefault();}"
+                                                             ondragover="if(window.portalUploadDragOver){window.portalUploadDragOver(event);}else{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';}"
+                                                             ondrop="if(window.portalUploadDrop){window.portalUploadDrop(event);}else{event.preventDefault();}">
+                                                            <div class="sub-slot-dialog"
+                                                                 ondragenter="event.preventDefault();"
+                                                                 ondragover="event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';"
+                                                                 ondrop="if(window.portalUploadDrop){window.portalUploadDrop(event);}else{event.preventDefault();}">
                                                                 <header class="sub-slot-dialog-header">
                                                                     <div class="sub-slot-dialog-heading">
                                                                         <p class="eyebrow">Submission</p>
@@ -2958,14 +2970,20 @@ ob_start();
                                                                                 <strong>PowerPoint note:</strong>
                                                                                 Teachers review presentations by downloading the file and opening it in PowerPoint (or similar). There is no in-browser slide preview. AI detection is disabled for this file type.
                                                                             </p>
-                                                                            <label class="submit-file-label">
-                                                                                <span class="submit-hint">2. Drop or choose a file (max 40 MB)</span>
-                                                                                <div class="upload-dropzone" data-upload-dropzone data-upload-autodetect-type>
-                                                                                    <input type="file" name="submission_file" data-sub-file-input data-upload-input
-                                                                                           accept=".pdf,.docx,.doc,.pptx,.txt,.png,.jpg,.jpeg,.gif,.webp">
+                                                                            <div class="submit-file-label">
+                                                                                <span class="submit-hint" id="sub-file-hint-<?= (int) $item['id'] ?>">2. Drop or choose a file (max 40 MB)</span>
+                                                                                <div class="upload-dropzone" data-upload-dropzone data-upload-autodetect-type
+                                                                                     aria-labelledby="sub-file-hint-<?= (int) $item['id'] ?>"
+                                                                                     ondragenter="event.preventDefault(); this.classList.add('is-dragover');"
+                                                                                     ondragover="event.preventDefault(); event.stopPropagation(); if(event.dataTransfer)event.dataTransfer.dropEffect='copy'; this.classList.add('is-dragover');"
+                                                                                     ondragleave="this.classList.remove('is-dragover');"
+                                                                                     ondrop="event.preventDefault(); event.stopPropagation(); this.classList.remove('is-dragover'); if(window.portalUploadDrop)window.portalUploadDrop(event);">
+                                                                                    <input type="file" name="submission_file" id="sub-file-<?= (int) $item['id'] ?>"
+                                                                                           data-sub-file-input data-upload-input>
                                                                                     <div class="upload-dropzone-ui">
                                                                                         <strong class="upload-dropzone-title">Drop a file here</strong>
-                                                                                        <span class="upload-dropzone-sub">or click to browse — type is filled in automatically if empty</span>
+                                                                                        <span class="upload-dropzone-sub">Type is filled in automatically if empty</span>
+                                                                                        <label class="upload-dropzone-browse" for="sub-file-<?= (int) $item['id'] ?>">Browse files</label>
                                                                                         <div class="upload-dropzone-file-row is-hidden" data-upload-file-row>
                                                                                             <span class="upload-dropzone-file" data-upload-filename></span>
                                                                                             <button type="button" class="upload-dropzone-clear" data-upload-clear title="Remove file" aria-label="Remove file">
@@ -2981,7 +2999,7 @@ ob_start();
                                                                                     </div>
                                                                                     <p class="upload-dropzone-error is-hidden" data-upload-error role="alert"></p>
                                                                                 </div>
-                                                                            </label>
+                                                                            </div>
                                                                             <label class="submit-file-label">
                                                                                 <span class="submit-hint">Or paste your text</span>
                                                                                 <textarea name="submission_text" rows="6" maxlength="200000" placeholder="Paste your work here if you are not uploading a file." data-sub-text-counter data-min-words="<?= (int) portal_submission_min_words() ?>"></textarea>
@@ -3147,10 +3165,10 @@ ob_start();
                                                 </label>
                                             </div>
                                             <div class="folder-form-row item-file-group">
-                                                <label class="folder-form-label" style="grid-column:1/-1;">
+                                                <div class="folder-form-label" style="grid-column:1/-1;">
                                                     <span class="item-file-label">Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small></span>
                                                     <div class="upload-dropzone" data-upload-dropzone>
-                                                        <input type="file" name="file" class="item-file-input" data-upload-input
+                                                        <input type="file" name="file" id="item-file-input" class="item-file-input" data-upload-input
                                                                accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
                                                                data-doc-accept=".doc,.docx,.xlsx,.pdf,.txt,.ppt,.pptx,.pps,.ppsx,.pot,.potx,.odp"
                                                                data-doc-hint="Upload file <small>(<?= portal_escape(portal_supported_upload_hint()) ?> - max 40 MB)</small>"
@@ -3158,7 +3176,8 @@ ob_start();
                                                                data-video-hint="Upload a video file <small>(<?= portal_escape(portal_supported_video_upload_hint()) ?>) — or paste a link below</small>">
                                                         <div class="upload-dropzone-ui">
                                                             <strong class="upload-dropzone-title">Drop a file here</strong>
-                                                            <span class="upload-dropzone-sub">or click to browse</span>
+                                                            <span class="upload-dropzone-sub">or use Browse</span>
+                                                            <label class="upload-dropzone-browse" for="item-file-input">Browse files</label>
                                                             <div class="upload-dropzone-file-row is-hidden" data-upload-file-row>
                                                                 <span class="upload-dropzone-file" data-upload-filename></span>
                                                                 <button type="button" class="upload-dropzone-clear" data-upload-clear title="Remove file" aria-label="Remove file">
@@ -3174,7 +3193,7 @@ ob_start();
                                                         </div>
                                                         <p class="upload-dropzone-error is-hidden" data-upload-error role="alert"></p>
                                                     </div>
-                                                </label>
+                                                </div>
                                             </div>
                                             <div class="folder-form-row item-url-group">
                                                 <label class="folder-form-label" style="grid-column:1/-1;">
@@ -4137,6 +4156,17 @@ ob_start();
     </div>
 </div>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
+<script>
+/* Inlined so Chrome cannot serve a stale/missing assets/upload-dropzone.js */
+<?php
+$portalUploadDndJs = __DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'upload-dropzone.js';
+if (is_file($portalUploadDndJs)) {
+    readfile($portalUploadDndJs);
+} else {
+    echo 'console.error("upload-dropzone.js missing");';
+}
+?>
+</script>
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260713m"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
@@ -4657,10 +4687,19 @@ ob_start();
     // ── File upload dropzones + progress (desktop DnD, not folder reorder) ──
     function uploadHasFiles(dt) {
         if (!dt) return false;
-        if (dt.types && typeof dt.types.includes === 'function') {
-            return dt.types.includes('Files');
+        if (dt.files && dt.files.length > 0) return true;
+        const types = dt.types;
+        if (!types) return true; // some Windows sources omit types until drop
+        if (typeof types.contains === 'function') {
+            return types.contains('Files')
+                || types.contains('application/x-moz-file')
+                || types.length === 0;
         }
-        return Array.from(dt.types || []).indexOf('Files') !== -1;
+        const list = Array.from(types);
+        if (list.length === 0) return true;
+        return list.includes('Files')
+            || list.includes('application/x-moz-file')
+            || list.some(t => /file/i.test(String(t)));
     }
 
     function setUploadFilename(zone, name) {
@@ -4721,11 +4760,24 @@ ob_start();
             const dt = new DataTransfer();
             dt.items.add(file);
             input.files = dt.files;
+            if (!input.files || input.files.length === 0) return false;
             input.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
         } catch (_) {
             return false;
         }
+    }
+
+    function assignFileListToInput(input, fileList) {
+        if (!input || !fileList || !fileList.length) return false;
+        try {
+            input.files = fileList;
+            if (input.files && input.files.length) {
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+        } catch (_) { /* fall through */ }
+        return assignFileToInput(input, fileList[0]);
     }
 
     function syncUploadDropzoneState(zone) {
@@ -4743,45 +4795,10 @@ ob_start();
             const input = zone.querySelector('[data-upload-input]');
             if (!input) return;
 
-            let dragDepth = 0;
-            const onDragEnter = e => {
-                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
-                e.preventDefault();
-                e.stopPropagation();
-                dragDepth += 1;
-                zone.classList.add('is-dragover');
-            };
-            const onDragOver = e => {
-                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-            };
-            const onDragLeave = e => {
-                if (!uploadHasFiles(e.dataTransfer)) return;
-                e.preventDefault();
-                e.stopPropagation();
-                dragDepth = Math.max(0, dragDepth - 1);
-                if (dragDepth === 0) zone.classList.remove('is-dragover');
-            };
-            const onDrop = e => {
-                if (!uploadHasFiles(e.dataTransfer) || input.disabled) return;
-                e.preventDefault();
-                e.stopPropagation();
-                dragDepth = 0;
-                zone.classList.remove('is-dragover');
-                const file = e.dataTransfer?.files?.[0];
-                if (!file) return;
-                setUploadError(zone, '');
-                if (!assignFileToInput(input, file)) {
-                    setUploadError(zone, 'Could not attach that file. Use Browse instead.');
-                }
-            };
+            // accept= makes Chrome show the X cursor on OS file drags.
+            input.removeAttribute('accept');
+            delete input.dataset.uploadAcceptAll;
 
-            zone.addEventListener('dragenter', onDragEnter);
-            zone.addEventListener('dragover', onDragOver);
-            zone.addEventListener('dragleave', onDragLeave);
-            zone.addEventListener('drop', onDrop);
             zone.querySelector('[data-upload-clear]')?.addEventListener('click', e => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -4793,6 +4810,12 @@ ob_start();
             });
             syncUploadDropzoneState(zone);
         });
+    }
+
+    // OS file DnD lives in assets/upload-dropzone.js (loaded earlier) so a later
+    // script error in this file cannot disable drag-and-drop.
+    if (!window.__portalUploadDnd) {
+      console.warn('upload-dropzone.js did not load — drag-and-drop may not work');
     }
 
     function xhrFormUpload(url, formData, onProgress) {
@@ -4957,9 +4980,9 @@ ob_start();
         if (!overlay) return;
         if (openSubSlotModal && openSubSlotModal !== overlay) closeSubSlot(openSubSlotModal);
         overlay.hidden = false;
+        overlay.classList.add('sub-slot-overlay--in');
         document.body.classList.add('sub-slot-body-lock');
         openSubSlotModal = overlay;
-        requestAnimationFrame(() => overlay.classList.add('sub-slot-overlay--in'));
     }
 
     function closeSubSlot(overlay) {
@@ -5042,7 +5065,6 @@ ob_start();
             const allowedTypes = Array.from(typeSelect.options)
                 .map(o => (o.value || '').toLowerCase())
                 .filter(Boolean);
-            const allAccept = allowedTypes.map(t => '.' + t).join(',');
 
             const fileExt = (file) => {
                 const name = String(file?.name || '');
@@ -5057,7 +5079,9 @@ ob_start();
                     syncUploadDropzoneState(zone);
                     return true;
                 }
-                const ext = fileExt(file);
+                let ext = fileExt(file);
+                // Normalize common aliases
+                if (ext === 'jpeg') ext = allowedTypes.includes('jpeg') ? 'jpeg' : 'jpg';
                 if (!allowedTypes.includes(ext)) {
                     fileInput.value = '';
                     setUploadError(zone, 'Unsupported file type. Use PDF, Word, PowerPoint, text, or an image.');
@@ -5065,11 +5089,13 @@ ob_start();
                     return false;
                 }
                 setUploadError(zone, '');
-                if (typeSelect.value !== ext) {
-                    typeSelect.value = ext;
-                }
-                fileInput.accept = '.' + ext;
+                // Always force the dropdown to the real extension (do not leave a
+                // previously chosen type like PDF selected for a .docx file).
+                typeSelect.value = ext;
+                fileInput.removeAttribute('accept');
                 syncUploadDropzoneState(zone);
+                const pptxNote = form.querySelector('[data-sub-pptx-note]');
+                if (pptxNote) pptxNote.classList.toggle('is-hidden', ext !== 'pptx');
                 return true;
             };
 
@@ -5079,18 +5105,21 @@ ob_start();
                 const file = fileInput.files?.[0];
                 if (file && type) {
                     const ext = fileExt(file);
-                    if (ext !== type) {
+                    // File wins: if the chosen type disagrees with the file, fix the type.
+                    if (ext !== type && allowedTypes.includes(ext)) {
+                        typeSelect.value = ext;
+                    } else if (ext !== type) {
                         fileInput.value = '';
                         setUploadError(form.querySelector('[data-upload-dropzone]'),
                             'Selected type does not match the file. Drop the file again or pick a matching type.');
                     }
                 }
-                fileInput.accept = type ? ('.' + type) : allAccept;
+                fileInput.removeAttribute('accept');
                 const zone = form.querySelector('[data-upload-dropzone]');
                 syncUploadDropzoneState(zone);
                 setUploadProgress(zone, 0, false);
                 const pptxNote = form.querySelector('[data-sub-pptx-note]');
-                if (pptxNote) pptxNote.classList.toggle('is-hidden', type !== 'pptx');
+                if (pptxNote) pptxNote.classList.toggle('is-hidden', (typeSelect.value || '') !== 'pptx');
             };
 
             typeSelect.addEventListener('change', syncType);
@@ -5359,7 +5388,9 @@ ob_start();
             }
             if (fileInput) {
                 fileInput.value = '';
-                fileInput.disabled = true;
+                fileInput.disabled = false;
+                const zone = form.querySelector('[data-upload-dropzone]');
+                syncUploadDropzoneState(zone);
             }
             void keptType;
             const section = form.closest('[data-sub-submit-section]');

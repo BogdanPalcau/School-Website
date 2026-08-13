@@ -534,12 +534,19 @@ if (!function_exists('portal_user_course_catalog')) {
         }
 
         if ($role === 'teacher') {
-            $assigned = $pdo->prepare(
-                "SELECT course_id FROM course_teachers WHERE user_id = ?"
+            $ids = function_exists('portal_assigned_course_ids_for_user')
+                ? portal_assigned_course_ids_for_user($user_id)
+                : [];
+            // Legacy safety: include any leftover enrollments until migration runs.
+            $enrolled = $pdo->prepare(
+                'SELECT course_id FROM enrollments WHERE user_id = ?'
             );
-            $assigned->execute([$user_id]);
-            $ids = array_map('intval', $assigned->fetchAll(PDO::FETCH_COLUMN));
-            if (empty($ids)) {
+            $enrolled->execute([$user_id]);
+            $ids = array_values(array_unique(array_merge(
+                $ids,
+                array_map('intval', $enrolled->fetchAll(PDO::FETCH_COLUMN))
+            )));
+            if ($ids === []) {
                 return [];
             }
             return array_values(
@@ -983,13 +990,21 @@ if (!function_exists('portal_course_deletion_blockers')) {
 
 if (!function_exists('portal_user_enrollment_counts')) {
     /**
+     * Course-access counts for the admin users table: student enrolments plus
+     * teacher course assignments.
+     *
      * @return array<int, int>
      */
     function portal_user_enrollment_counts(): array
     {
         $counts = [];
-        foreach (portal_db()->query('SELECT user_id, COUNT(*) AS cnt FROM enrollments GROUP BY user_id') as $row) {
+        $db = portal_db();
+        foreach ($db->query('SELECT user_id, COUNT(*) AS cnt FROM enrollments GROUP BY user_id') as $row) {
             $counts[(int) $row['user_id']] = (int) $row['cnt'];
+        }
+        foreach ($db->query('SELECT user_id, COUNT(*) AS cnt FROM course_teachers GROUP BY user_id') as $row) {
+            $uid = (int) $row['user_id'];
+            $counts[$uid] = max($counts[$uid] ?? 0, (int) $row['cnt']);
         }
 
         return $counts;

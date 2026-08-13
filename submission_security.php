@@ -32,9 +32,9 @@ if (!function_exists('portal_submission_type_labels')) {
     function portal_submission_type_labels(): array
     {
         return [
-            'pdf'  => 'PDF (.pdf)',
             'docx' => 'Word (.docx)',
             'doc'  => 'Word (.doc)',
+            'pdf'  => 'PDF (.pdf)',
             'pptx' => 'PowerPoint (.pptx) — download to view',
             'txt'  => 'Text (.txt)',
             'png'  => 'Image PNG (.png)',
@@ -126,6 +126,23 @@ if (!function_exists('portal_validate_submission_filename')) {
     }
 }
 
+if (!function_exists('portal_file_looks_like_zip')) {
+    function portal_file_looks_like_zip(string $tmpPath): bool
+    {
+        if ($tmpPath === '' || !is_file($tmpPath) || !is_readable($tmpPath)) {
+            return false;
+        }
+        $fh = @fopen($tmpPath, 'rb');
+        if ($fh === false) {
+            return false;
+        }
+        $magic = (string) fread($fh, 4);
+        fclose($fh);
+
+        return $magic === "PK\x03\x04" || $magic === "PK\x05\x06";
+    }
+}
+
 if (!function_exists('portal_upload_mime_ok')) {
     function portal_upload_mime_ok(string $tmpPath, string $ext): bool
     {
@@ -139,16 +156,19 @@ if (!function_exists('portal_upload_mime_ok')) {
 
         $finfo = new finfo(FILEINFO_MIME_TYPE);
         $mime  = (string) $finfo->file($tmpPath);
-        if ($mime === '' || $mime === 'application/octet-stream') {
-            // octet-stream is too vague for fail-open; treat as fail for submissions
-            // except we still map explicitly below — reject here if empty.
-            if ($mime === '') {
-                return false;
-            }
+        if ($mime === '') {
+            return false;
         }
 
-        $zip = 'application/zip';
+        // Windows / libmagic often report OOXML as generic zip (or octet-stream).
+        $zipMimes = [
+            'application/zip',
+            'application/x-zip-compressed',
+            'application/x-zip',
+            'multipart/x-zip',
+        ];
         $ole = ['application/x-ole-storage', 'application/vnd.ms-office', 'application/CDFV2'];
+        $ooxmlZipExts = ['docx', 'xlsx', 'pptx', 'ppsx', 'potx', 'odp'];
 
         $allowed = [
             'pdf'  => ['application/pdf'],
@@ -159,16 +179,30 @@ if (!function_exists('portal_upload_mime_ok')) {
             'gif'  => ['image/gif'],
             'webp' => ['image/webp'],
             'doc'  => array_merge(['application/msword'], $ole),
-            'docx' => [
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                $zip,
-                'application/x-zip-compressed',
-            ],
-            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $zip],
-            'pptx' => ['application/vnd.openxmlformats-officedocument.presentationml.presentation', $zip],
-            'ppsx' => ['application/vnd.openxmlformats-officedocument.presentationml.slideshow', $zip],
-            'potx' => ['application/vnd.openxmlformats-officedocument.presentationml.template', $zip],
-            'odp'  => ['application/vnd.oasis.opendocument.presentation', $zip],
+            'docx' => array_merge(
+                ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+                $zipMimes
+            ),
+            'xlsx' => array_merge(
+                ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+                $zipMimes
+            ),
+            'pptx' => array_merge(
+                ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+                $zipMimes
+            ),
+            'ppsx' => array_merge(
+                ['application/vnd.openxmlformats-officedocument.presentationml.slideshow'],
+                $zipMimes
+            ),
+            'potx' => array_merge(
+                ['application/vnd.openxmlformats-officedocument.presentationml.template'],
+                $zipMimes
+            ),
+            'odp'  => array_merge(
+                ['application/vnd.oasis.opendocument.presentation'],
+                $zipMimes
+            ),
             'ppt'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
             'pps'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
             'pot'  => array_merge(['application/vnd.ms-powerpoint'], $ole),
@@ -189,7 +223,33 @@ if (!function_exists('portal_upload_mime_ok')) {
             return false;
         }
 
-        return in_array($mime, $allowed[$ext], true);
+        $mimeListed = in_array($mime, $allowed[$ext], true);
+        $ambiguousZip = in_array($mime, $zipMimes, true)
+            || ($mime === 'application/octet-stream' && in_array($ext, $ooxmlZipExts, true));
+
+        if (!$mimeListed && !($mime === 'application/octet-stream' && in_array($ext, $ooxmlZipExts, true))) {
+            return false;
+        }
+
+        // When libmagic only sees "zip" / octet-stream, confirm OOXML package shape.
+        if (in_array($ext, $ooxmlZipExts, true) && $ambiguousZip) {
+            if (!portal_file_looks_like_zip($tmpPath)) {
+                return false;
+            }
+            if ($ext === 'docx') {
+                return !empty(portal_docx_structure_ok($tmpPath)['ok']);
+            }
+            if (in_array($ext, ['pptx', 'ppsx', 'potx'], true)) {
+                return !empty(portal_pptx_structure_ok($tmpPath)['ok']);
+            }
+            if ($ext === 'xlsx') {
+                return !empty(portal_xlsx_structure_ok($tmpPath)['ok']);
+            }
+            // ODP: zip magic is enough (package layout varies by producer).
+            return true;
+        }
+
+        return $mimeListed;
     }
 }
 
@@ -274,6 +334,187 @@ if (!function_exists('portal_submission_signature_ok')) {
     }
 }
 
+if (!function_exists('portal_zip_read_central_directory')) {
+    /**
+     * Parse ZIP central-directory entries without ext-zip / ZipArchive.
+     * Used when php_zip is disabled (common on stock XAMPP).
+     *
+     * @return list<array{name: string, flags: int, comp_size: int, size: int}>|null
+     */
+    function portal_zip_read_central_directory(string $path): ?array
+    {
+        $size = @filesize($path);
+        if ($size === false || $size < 22) {
+            return null;
+        }
+        $size = (int) $size;
+
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return null;
+        }
+
+        $magic = fread($fh, 4);
+        if ($magic !== "PK\x03\x04" && $magic !== "PK\x05\x06") {
+            fclose($fh);
+            return null;
+        }
+
+        // EOCD is at the end; allow for a short comment (max 64 KiB + 22).
+        $tailLen = min($size, 65535 + 22);
+        if (fseek($fh, $size - $tailLen) !== 0) {
+            fclose($fh);
+            return null;
+        }
+        $tail = fread($fh, $tailLen);
+        if ($tail === false || $tail === '') {
+            fclose($fh);
+            return null;
+        }
+
+        $eocdRel = strrpos($tail, "PK\x05\x06");
+        if ($eocdRel === false || ($eocdRel + 22) > strlen($tail)) {
+            fclose($fh);
+            return null;
+        }
+        $eocd = substr($tail, $eocdRel, 22);
+        $diskEntries = unpack('v', substr($eocd, 8, 2));
+        $totalEntries = unpack('v', substr($eocd, 10, 2));
+        $cdSize = unpack('V', substr($eocd, 12, 4));
+        $cdOffset = unpack('V', substr($eocd, 16, 4));
+        if ($diskEntries === false || $totalEntries === false || $cdSize === false || $cdOffset === false) {
+            fclose($fh);
+            return null;
+        }
+        $entryCount = (int) $totalEntries[1];
+        $centralSize = (int) $cdSize[1];
+        $centralOffset = (int) $cdOffset[1];
+        if ($entryCount < 0 || $centralSize < 0 || $centralOffset < 0) {
+            fclose($fh);
+            return null;
+        }
+        if ($centralOffset + $centralSize > $size) {
+            fclose($fh);
+            return null;
+        }
+        if ($entryCount === 0) {
+            fclose($fh);
+            return [];
+        }
+
+        if (fseek($fh, $centralOffset) !== 0) {
+            fclose($fh);
+            return null;
+        }
+        $central = fread($fh, $centralSize);
+        fclose($fh);
+        if ($central === false || strlen($central) !== $centralSize) {
+            return null;
+        }
+
+        $entries = [];
+        $pos = 0;
+        for ($i = 0; $i < $entryCount; $i++) {
+            if ($pos + 46 > strlen($central)) {
+                return null;
+            }
+            if (substr($central, $pos, 4) !== "PK\x01\x02") {
+                return null;
+            }
+            $flags = unpack('v', substr($central, $pos + 8, 2));
+            $comp = unpack('V', substr($central, $pos + 20, 4));
+            $uncomp = unpack('V', substr($central, $pos + 24, 4));
+            $nameLen = unpack('v', substr($central, $pos + 28, 2));
+            $extraLen = unpack('v', substr($central, $pos + 30, 2));
+            $commentLen = unpack('v', substr($central, $pos + 32, 2));
+            if ($flags === false || $comp === false || $uncomp === false
+                || $nameLen === false || $extraLen === false || $commentLen === false) {
+                return null;
+            }
+            $nLen = (int) $nameLen[1];
+            $eLen = (int) $extraLen[1];
+            $cLen = (int) $commentLen[1];
+            $nameStart = $pos + 46;
+            if ($nameStart + $nLen + $eLen + $cLen > strlen($central)) {
+                return null;
+            }
+            $name = substr($central, $nameStart, $nLen);
+            $entries[] = [
+                'name' => $name,
+                'flags' => (int) $flags[1],
+                'comp_size' => (int) $comp[1],
+                'size' => (int) $uncomp[1],
+            ];
+            $pos = $nameStart + $nLen + $eLen + $cLen;
+        }
+
+        return $entries;
+    }
+}
+
+if (!function_exists('portal_ooxml_entries_safe')) {
+    /**
+     * Shared safety checks over ZIP/OOXML central-directory entries.
+     *
+     * @param list<array{name: string, flags: int, comp_size: int, size: int}> $entries
+     * @param list<string> $required
+     * @return array{ok: bool, reason?: string}
+     */
+    function portal_ooxml_entries_safe(array $entries, array $required, string $structureReason): array
+    {
+        $maxEntries = 10000; // media-heavy PPTX decks can exceed a few thousand entries
+        $maxUncompressed = 120 * 1024 * 1024; // 120 MB uncompressed total
+        $maxRatio = 100.0;
+        $entryCount = count($entries);
+        if ($entryCount <= 0 || $entryCount > $maxEntries) {
+            return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
+        }
+
+        $names = [];
+        $totalUncompressed = 0;
+        foreach ($entries as $stat) {
+            $name = (string) ($stat['name'] ?? '');
+            if ($name === '' || str_contains($name, "\0")) {
+                return ['ok' => false, 'reason' => $structureReason];
+            }
+            $norm = str_replace('\\', '/', $name);
+            if (str_starts_with($norm, '/') || preg_match('#^[A-Za-z]:/#', $norm) || str_contains($norm, '../')) {
+                return ['ok' => false, 'reason' => $structureReason];
+            }
+            $names[$norm] = true;
+
+            if ((((int) ($stat['flags'] ?? 0)) & 0x1) === 0x1) {
+                return ['ok' => false, 'reason' => $structureReason];
+            }
+
+            $comp = (int) ($stat['comp_size'] ?? 0);
+            $uncomp = (int) ($stat['size'] ?? 0);
+            if ($uncomp < 0 || $comp < 0) {
+                return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
+            }
+            $totalUncompressed += $uncomp;
+            if ($totalUncompressed > $maxUncompressed) {
+                return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
+            }
+            if ($comp > 0 && $uncomp > 0) {
+                $ratio = $uncomp / max(1, $comp);
+                if ($ratio > $maxRatio && $uncomp > 1024 * 1024) {
+                    return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
+                }
+            }
+        }
+
+        foreach ($required as $need) {
+            $needNorm = str_replace('\\', '/', $need);
+            if (!isset($names[$needNorm])) {
+                return ['ok' => false, 'reason' => $structureReason];
+            }
+        }
+
+        return ['ok' => true];
+    }
+}
+
 if (!function_exists('portal_ooxml_package_ok')) {
     /**
      * Shared ZIP/OOXML safety checks (path traversal, encryption, zip bombs).
@@ -283,82 +524,44 @@ if (!function_exists('portal_ooxml_package_ok')) {
      */
     function portal_ooxml_package_ok(string $tmpPath, array $required, string $structureReason): array
     {
-        if (!class_exists('ZipArchive')) {
-            return ['ok' => false, 'reason' => 'mime_unavailable'];
+        if (class_exists('ZipArchive')) {
+            $zip = new ZipArchive();
+            $opened = @$zip->open($tmpPath);
+            if ($opened !== true) {
+                return ['ok' => false, 'reason' => $structureReason];
+            }
+
+            $entries = [];
+            $entryCount = $zip->numFiles;
+            for ($i = 0; $i < $entryCount; $i++) {
+                $stat = $zip->statIndex($i);
+                if ($stat === false) {
+                    $zip->close();
+                    return ['ok' => false, 'reason' => $structureReason];
+                }
+                $encryption = (int) ($stat['encryption_method'] ?? 0);
+                if ($encryption !== 0) {
+                    $zip->close();
+                    return ['ok' => false, 'reason' => $structureReason];
+                }
+                $entries[] = [
+                    'name' => (string) ($stat['name'] ?? ''),
+                    'flags' => (int) ($stat['flags'] ?? 0),
+                    'comp_size' => (int) ($stat['comp_size'] ?? 0),
+                    'size' => (int) ($stat['size'] ?? 0),
+                ];
+            }
+            $zip->close();
+
+            return portal_ooxml_entries_safe($entries, $required, $structureReason);
         }
 
-        $zip = new ZipArchive();
-        $opened = @$zip->open($tmpPath);
-        if ($opened !== true) {
+        $entries = portal_zip_read_central_directory($tmpPath);
+        if ($entries === null) {
             return ['ok' => false, 'reason' => $structureReason];
         }
 
-        foreach ($required as $need) {
-            if ($zip->locateName($need) === false) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-        }
-
-        $maxEntries = 2500;
-        $maxUncompressed = 80 * 1024 * 1024; // 80 MB uncompressed total
-        $maxRatio = 100.0;
-        $entryCount = $zip->numFiles;
-        if ($entryCount <= 0 || $entryCount > $maxEntries) {
-            $zip->close();
-            return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
-        }
-
-        $totalUncompressed = 0;
-        for ($i = 0; $i < $entryCount; $i++) {
-            $stat = $zip->statIndex($i);
-            if ($stat === false) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-            $name = (string) ($stat['name'] ?? '');
-            if ($name === '' || str_contains($name, "\0")) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-            $norm = str_replace('\\', '/', $name);
-            if (str_starts_with($norm, '/') || preg_match('#^[A-Za-z]:/#', $norm) || str_contains($norm, '../')) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-
-            $encryption = (int) ($stat['encryption_method'] ?? 0);
-            if ($encryption !== 0) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-            if (isset($stat['flags']) && (((int) $stat['flags']) & 0x1) === 0x1) {
-                $zip->close();
-                return ['ok' => false, 'reason' => $structureReason];
-            }
-
-            $comp = (int) ($stat['comp_size'] ?? 0);
-            $uncomp = (int) ($stat['size'] ?? 0);
-            if ($uncomp < 0 || $comp < 0) {
-                $zip->close();
-                return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
-            }
-            $totalUncompressed += $uncomp;
-            if ($totalUncompressed > $maxUncompressed) {
-                $zip->close();
-                return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
-            }
-            if ($comp > 0 && $uncomp > 0) {
-                $ratio = $uncomp / max(1, $comp);
-                if ($ratio > $maxRatio && $uncomp > 1024 * 1024) {
-                    $zip->close();
-                    return ['ok' => false, 'reason' => 'archive_limit_exceeded'];
-                }
-            }
-        }
-
-        $zip->close();
-        return ['ok' => true];
+        return portal_ooxml_entries_safe($entries, $required, $structureReason);
     }
 }
 
@@ -388,6 +591,21 @@ if (!function_exists('portal_pptx_structure_ok')) {
             $tmpPath,
             ['[Content_Types].xml', '_rels/.rels', 'ppt/presentation.xml'],
             'invalid_pptx_structure'
+        );
+    }
+}
+
+if (!function_exists('portal_xlsx_structure_ok')) {
+    /**
+     * Validate OOXML Excel structure without extracting to disk.
+     * @return array{ok: bool, reason?: string}
+     */
+    function portal_xlsx_structure_ok(string $tmpPath): array
+    {
+        return portal_ooxml_package_ok(
+            $tmpPath,
+            ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml'],
+            'invalid_xlsx_structure'
         );
     }
 }

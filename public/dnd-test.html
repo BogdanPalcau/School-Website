@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Drag-and-drop test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px; }
+    #zone {
+      border: 2px dashed #8b3a3a;
+      border-radius: 10px;
+      padding: 40px 16px;
+      text-align: center;
+      background: #faf6f4;
+      position: relative;
+      min-height: 120px;
+    }
+    #zone.is-over { background: #f3e4e0; border-color: #6b1f1f; }
+    #zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    #log { margin-top: 16px; white-space: pre-wrap; font-size: 13px; color: #333; }
+    .ok { color: #166534; font-weight: 700; }
+    .bad { color: #991b1b; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Chrome drag-and-drop test</h1>
+  <p>Drag any file from Explorer onto the box below. If this works but the course page does not, the bug is in the course page. If this also fails, Chrome on this PC is blocking OS file drops.</p>
+  <div id="zone">
+    <input type="file" id="file">
+    <strong>Drop a file here</strong>
+    <div id="name"></div>
+  </div>
+  <div id="log">Waiting for drag…</div>
+  <script>
+    const zone = document.getElementById('zone');
+    const input = document.getElementById('file');
+    const log = document.getElementById('log');
+    const nameEl = document.getElementById('name');
+    const lines = [];
+    function say(msg, cls) {
+      lines.push(msg);
+      log.innerHTML = lines.slice(-12).join('\n');
+      if (cls) log.className = cls;
+    }
+
+    // Same strategy as the course page: always preventDefault on dragover.
+    function onOver(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch (_) {}
+      zone.classList.add('is-over');
+      say('dragover @ ' + e.clientX + ',' + e.clientY + ' types=' + (e.dataTransfer && e.dataTransfer.types ? Array.from(e.dataTransfer.types).join(',') : '?'));
+    }
+    function onDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove('is-over');
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) {
+        say('DROP fired but files list empty', 'bad');
+        return;
+      }
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(f);
+        input.files = dt.files;
+      } catch (_) {}
+      nameEl.textContent = f.name + ' (' + f.size + ' bytes)';
+      say('OK: got ' + f.name, 'ok');
+    }
+    document.addEventListener('dragenter', onOver, true);
+    document.addEventListener('dragover', onOver, true);
+    document.addEventListener('drop', onDrop, true);
+    document.addEventListener('dragleave', () => zone.classList.remove('is-over'), true);
+    input.addEventListener('change', () => {
+      if (input.files[0]) {
+        nameEl.textContent = input.files[0].name;
+        say('OK via browse: ' + input.files[0].name, 'ok');
+      }
+    });
+  </script>
+</body>
+</html>

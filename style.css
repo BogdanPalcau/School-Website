@@ -4503,6 +4503,46 @@ select.is-validation-shaking {
     box-shadow: 0 0 0 3px rgba(166, 23, 43, 0.08);
 }
 
+.admin-password-wrap {
+    position: relative;
+    display: block;
+}
+
+.admin-password-wrap input {
+    padding-right: 44px;
+}
+
+.admin-toggle-pass {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 140ms ease, background 140ms ease;
+}
+
+.admin-toggle-pass:hover,
+.admin-toggle-pass:focus-visible {
+    color: var(--primary-strong);
+    background: rgba(193, 32, 47, 0.06);
+    outline: none;
+}
+
+.admin-toggle-pass .icon-sm {
+    width: 18px;
+    height: 18px;
+}
+
 .admin-user-list {
     display: grid;
     gap: 10px;
@@ -9509,6 +9549,7 @@ body.sub-slot-body-lock {
     background:
         linear-gradient(180deg, color-mix(in srgb, var(--primary) 4%, var(--surface)) 0%, var(--surface-muted) 100%);
     transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+    cursor: pointer;
 }
 
 .upload-dropzone.is-dragover {
@@ -9526,6 +9567,12 @@ body.sub-slot-body-lock {
     pointer-events: none;
 }
 
+/*
+ * Full-size transparent file input is the drop + click target.
+ * Do NOT set an accept= filter on the input — Chrome shows the X cursor and
+ * rejects OS file drops that don't match accept, before our JS can help.
+ * Type checks happen in JS after a file is chosen.
+ */
 .upload-dropzone input[type="file"],
 .folder-form-label .upload-dropzone input[type="file"],
 .submit-file-label .upload-dropzone input[type="file"] {
@@ -9540,17 +9587,42 @@ body.sub-slot-body-lock {
     border-radius: inherit;
     opacity: 0;
     cursor: pointer;
+    font-size: 16px; /* iOS zoom prevention; also keeps input "real" for DnD */
     background: transparent;
-    font-size: 0;
 }
 
 .upload-dropzone-ui {
     display: grid;
-    gap: 2px;
+    gap: 6px;
     justify-items: center;
     text-align: center;
     pointer-events: none;
     padding: 4px 0 2px;
+    position: relative;
+    z-index: 1;
+}
+
+.upload-dropzone-browse {
+    pointer-events: auto;
+    position: relative;
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.upload-dropzone-browse:hover {
+    border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+    background: color-mix(in srgb, var(--primary) 8%, var(--surface));
 }
 
 .upload-dropzone-title {
