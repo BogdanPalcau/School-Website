@@ -11,6 +11,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../bootstrap.php';
+require_once __DIR__ . '/demo_penguin_files.php';
 
 const TARGET_COURSE_SLUG = 'accounting-2526';
 const DEMO_FOLDER_TITLE = 'Demo — Penguins unit';
@@ -173,7 +174,7 @@ $db->prepare(
 )->execute([
     $courseId,
     DEMO_FOLDER_TITLE,
-    'Local test content: penguin video, flashcards, practice, and quiz.',
+    'Local test content: penguin video plus uploaded Word, PowerPoint, Excel, and PDF materials, then flashcards, practice, and quiz.',
     $nextSort,
 ]);
 $folderId = (int) $db->lastInsertId();
@@ -189,27 +190,51 @@ $db->prepare(
     $videoUrl, 1,
 ]);
 
-$db->prepare(
-    "INSERT INTO course_folder_items
-        (folder_id, course_id, type, title, description, url, sort_order)
-     VALUES (?,?,?,?,?,?,?)"
-)->execute([
-    $folderId, $courseId, 'link',
-    'BBC — Penguins overview',
-    'Extra reading about penguin species and habitats.',
-    'https://www.bbc.co.uk/bitesize', 2,
-]);
-
-$db->prepare(
-    "INSERT INTO course_folder_items
-        (folder_id, course_id, type, title, description, url, sort_order)
-     VALUES (?,?,?,?,?,?,?)"
-)->execute([
-    $folderId, $courseId, 'link',
-    'WWF — Why penguins matter',
-    'Conservation context for class discussion.',
-    'https://www.worldwildlife.org/species/penguin', 3,
-]);
+demo_attach_course_document(
+    $db,
+    $courseId,
+    $folderId,
+    'Penguins — Class notes (Word)',
+    'Uploaded Word notes for the unit (habitat, adaptations, diet).',
+    'unit-penguins-class-notes.docx',
+    demo_penguin_docx_bytes(),
+    2,
+    1
+);
+demo_attach_course_document(
+    $db,
+    $courseId,
+    $folderId,
+    'Penguins — Lesson slides (PowerPoint)',
+    'Uploaded PowerPoint slides for class discussion.',
+    'unit-penguins-lesson-slides.pptx',
+    demo_penguin_pptx_bytes(),
+    3,
+    1
+);
+demo_attach_course_document(
+    $db,
+    $courseId,
+    $folderId,
+    'Penguins — Species table (Excel)',
+    'Uploaded spreadsheet of species, regions, and diet.',
+    'unit-penguins-species-table.xlsx',
+    demo_penguin_xlsx_bytes(),
+    4,
+    1
+);
+demo_attach_course_document(
+    $db,
+    $courseId,
+    $folderId,
+    'Penguins — Fact sheet (PDF)',
+    'Uploaded printable PDF fact sheet.',
+    'unit-penguins-fact-sheet.pdf',
+    demo_penguin_pdf_bytes(),
+    5,
+    1
+);
+penguin_ok('Added penguin Word / PowerPoint / Excel / PDF materials');
 
 $db->prepare(
     "INSERT INTO course_announcements (course_id, user_id, title, body)
@@ -218,7 +243,7 @@ $db->prepare(
     $courseId,
     $ownerId,
     DEMO_ANNOUNCE_TITLE,
-    "Demo content for portal testing.\n\n1) Watch the penguin video in “Demo — Penguins unit”.\n2) Complete the flashcards.\n3) Try practice, then the quiz.\n\nReply in the demo discussion with one penguin fact.",
+    "Demo content for portal testing.\n\n1) Watch the penguin video in “Demo — Penguins unit”.\n2) Open the uploaded Word / PowerPoint / Excel / PDF materials.\n3) Complete the flashcards.\n4) Try practice, then the quiz.\n\nReply in the demo discussion with one penguin fact.",
 ]);
 
 $db->prepare(

@@ -117,6 +117,20 @@ Copy `.env.example` to `.env` and set `SMTP_*`, `PORTAL_BASE_URL`, and `PORTAL_A
 
 ---
 
+LOCAL DEMO DATA (Accounting walkthrough)
+
+After the portal DB exists, seed rich Accounting content for manual testing (idempotent — skips features already present):
+
+```
+C:\xampp\php\php.exe scripts/seed_accounting_demo.php
+```
+
+This fills gaps on `accounting-2526` (roles, materials, challenge/survey/assessment, graded submission, schedule, events, groups, discussions, video Q&A, site announcement, invite). It reuses the existing penguin unit when already seeded (`scripts/seed_penguin_demo.php`).
+
+Demo logins printed by the script include `accadmin` / `accteacher` / `acctsupervisor` / `bogdanstudent` / `accstudent2` (passwords shown in script output). Owner remains `bogdan` (password in `database/INITIAL_OWNER_PASSWORD.txt` if auto-generated).
+
+---
+
 DATABASE / MIGRATION NOTES
 
 Activity tables are created and upgraded through `portal_activity_run_migrations()` in `activity.php`, which runs as part of normal bootstrap/migration flow. New installs and existing SQLite databases pick up:
@@ -206,6 +220,8 @@ School-Website/
 ├── activity.php              Activities domain helpers (scoring, attempts, integrity, media)
 ├── composer.json             PHP dependencies (PHPMailer)
 ├── db_init.php               Database setup and seed data
+├── scripts/seed_accounting_demo.php  Human walkthrough demo for Accounting
+├── scripts/seed_penguin_demo.php     Penguin unit content (used by accounting demo)
 ├── course_catalog.php        Course data/helpers
 ├── integrity.php             Academic integrity and review helpers
 ├── submission_security.php   Submission upload validation helpers
