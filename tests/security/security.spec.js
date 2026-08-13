@@ -3,9 +3,11 @@ const {
   cleanupSecurityFixtures,
   countFixtureRecord,
   csrfTokenFromPage,
+  lookupFixture,
   resetLoginAttempts,
   setupSecurityFixtures,
   signIn,
+  signInAs,
   signOut,
 } = require('./helpers');
 
@@ -262,4 +264,264 @@ test('clears failed login attempts after a successful sign-in', async ({ page })
   await page.getByLabel(/password/i).fill(fixtures.password);
   await page.getByRole('button', { name: /sign in/i }).click();
   await expect(page).toHaveURL(/dashboard\.php/);
+});
+
+test('admin can switch student ↔ teacher but cannot promote to owner or touch owner accounts', async ({ page }) => {
+  const targetId = String(fixtures.userIds.roleTarget);
+  const ownerId = String(fixtures.userIds.owner);
+
+  expect(countFixtureRecord('user-role', `${fixtures.users.roleTarget}|student`)).toBe(1);
+  expect(countFixtureRecord('user-role', `${fixtures.users.owner}|owner`)).toBe(1);
+
+  await signInAs(page, fixtures, 'admin');
+  await page.goto('/admin.php?section=users');
+  const token = await csrfTokenFromPage(page);
+
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token,
+      action: 'change_role',
+      user_id: targetId,
+      role: 'teacher',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user-role', `${fixtures.users.roleTarget}|teacher`)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  const token2 = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token2,
+      action: 'change_role',
+      user_id: targetId,
+      role: 'student',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user-role', `${fixtures.users.roleTarget}|student`)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  const token3 = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token3,
+      action: 'change_role',
+      user_id: targetId,
+      role: 'owner',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user-role', `${fixtures.users.roleTarget}|owner`)).toBe(0);
+  expect(countFixtureRecord('user-role', `${fixtures.users.roleTarget}|student`)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  const token4 = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token4,
+      action: 'change_role',
+      user_id: ownerId,
+      role: 'student',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user-role', `${fixtures.users.owner}|owner`)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  const token5 = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token5,
+      action: 'delete_user',
+      user_id: ownerId,
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user', fixtures.users.owner)).toBe(1);
+  expect(countFixtureRecord('user-role', `${fixtures.users.owner}|owner`)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  const token6 = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token6,
+      action: 'update_user',
+      user_id: ownerId,
+      username: fixtures.users.owner,
+      email: fixtures.emails.owner,
+      name: 'Hacked Owner Name',
+      year: 'Year 11',
+      role: 'student',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user-role', `${fixtures.users.owner}|owner`)).toBe(1);
+  expect(countFixtureRecord('user-email', `${fixtures.users.owner}|${fixtures.emails.owner}`)).toBe(1);
+});
+
+test('admin user/course/enrolment CRUD happy paths and archive boundary', async ({ page }) => {
+  const slug = 'security-crud-course';
+  const dupSlug = 'security-crud-course-copy';
+  const username = 'sec_crud_student';
+
+  await signInAs(page, fixtures, 'admin');
+  await page.goto('/admin.php?section=users');
+  let token = await csrfTokenFromPage(page);
+
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token,
+      action: 'create_user',
+      username,
+      email: 'sec_crud_student@example.test',
+      name: 'Security CRUD Student',
+      year: 'Year 11',
+      password: fixtures.password,
+      role: 'student',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user', username)).toBe(1);
+  const userId = lookupFixture('user-id', username).id;
+  expect(userId).toBeTruthy();
+
+  await page.goto(`/admin.php?section=users&edit_user=${userId}`);
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token,
+      action: 'update_user',
+      user_id: String(userId),
+      username,
+      email: 'sec_crud_student@example.test',
+      name: 'Security CRUD Student Updated',
+      year: 'Year 12',
+      role: 'student',
+    },
+    maxRedirects: 0,
+  });
+
+  await page.goto('/admin.php?section=courses');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=courses', {
+    form: {
+      _token: token,
+      action: 'create_course',
+      title: 'CRUD Course',
+      full_title: 'Security CRUD Course',
+      code: 'SEC-CRUD',
+      slug,
+      summary: 'Created by admin CRUD test',
+      year_group: '25/26',
+      term: 'Test',
+      status: 'open',
+      status_label: 'Open',
+      accent: '#c1202f',
+      meeting: 'TBA',
+      room: 'TBA',
+      notice: '',
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('course', slug)).toBe(1);
+  const courseId = lookupFixture('course-id', slug).id;
+  expect(courseId).toBeTruthy();
+
+  await page.goto('/admin.php?section=courses');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=courses', {
+    form: {
+      _token: token,
+      action: 'update_course',
+      course_id: String(courseId),
+      title: 'CRUD Course Renamed',
+      full_title: 'Security CRUD Course Renamed',
+      code: 'SEC-CRUD',
+      summary: 'Updated',
+      year_group: '25/26',
+      term: 'Test',
+      status: 'open',
+      status_label: 'Open',
+      accent: '#c1202f',
+      meeting: 'Mon | 10:00',
+      room: 'Lab',
+      notice: '',
+    },
+    maxRedirects: 0,
+  });
+
+  await page.goto('/admin.php?section=enrollments');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=enrollments', {
+    form: {
+      _token: token,
+      action: 'save_enrollments',
+      user_id: String(userId),
+      'course_ids[]': String(courseId),
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('enrollment', `${username}|${slug}`)).toBe(1);
+
+  await page.goto('/admin.php?section=courses');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=courses', {
+    form: {
+      _token: token,
+      action: 'archive_course',
+      course_id: String(courseId),
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('course-status', `${slug}|archived`)).toBe(1);
+
+  await signOut(page);
+  await signIn(page, username, fixtures.password);
+  await page.goto('/courses.php?status=open');
+  await expect(page.getByText(/CRUD Course Renamed/i)).toHaveCount(0);
+  await page.goto('/courses.php?status=archived');
+  await expect(page.getByText(/CRUD Course Renamed/i)).toBeVisible();
+  await signOut(page);
+
+  await signInAs(page, fixtures, 'admin');
+  await page.goto('/admin.php?section=courses');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=courses', {
+    form: {
+      _token: token,
+      action: 'restore_course',
+      course_id: String(courseId),
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('course-status', `${slug}|open`)).toBe(1);
+
+  await page.goto('/admin.php?section=courses');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=courses', {
+    form: {
+      _token: token,
+      action: 'duplicate_course',
+      source_course_id: String(courseId),
+      title: 'CRUD Course Copy',
+      full_title: 'Security CRUD Course Copy',
+      code: 'SEC-CRUD-2',
+      slug: dupSlug,
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('course', dupSlug)).toBe(1);
+
+  await page.goto('/admin.php?section=users');
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post('/admin.php?section=users', {
+    form: {
+      _token: token,
+      action: 'delete_user',
+      user_id: String(userId),
+    },
+    maxRedirects: 0,
+  });
+  expect(countFixtureRecord('user', username)).toBe(0);
 });

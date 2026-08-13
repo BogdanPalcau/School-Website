@@ -513,8 +513,31 @@ html[data-show-bulletin="0"] #dashboard-bulletin {
     position: absolute;
     z-index: 2;
     top: 18px;
-    right: 124px;
+    right: 124px; /* clears list-view "Open course" + status pill */
     margin: 0;
+}
+
+/* Mobile course rows hide "Open course" and keep the status pill.
+   Pin the star to the far right and leave padding on the right column
+   so the pill sits clear to the left of it. */
+@media (max-width: 900px) {
+    .course-list-item-shell .course-list-copy {
+        padding-right: 12px;
+    }
+
+    .course-list-item-shell .course-list-right {
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: flex-end;
+        gap: 0;
+        padding: 10px 48px 10px 0 !important; /* room for 36px star + gap */
+    }
+
+    .course-favorite-form,
+    html[data-course-view="grid"] .course-favorite-form {
+        top: 10px;
+        right: 8px;
+    }
 }
 
 .course-favorite-button {
@@ -1552,10 +1575,8 @@ html[data-motion="reduced"] *::after {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .course-favorite-form {
-        top: 14px;
-        right: 14px;
-    }
+    /* Favorite spacing is handled in the 900px rule above — do not
+       pin the star to the far right or it covers the status pill. */
 }
 
 @media (max-width: 520px) {

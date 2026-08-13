@@ -626,6 +626,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $submissionMaxAttempts = 0;
                     }
                     $submissionWeight = portal_normalize_submission_weight($_POST['submission_weight'] ?? 100);
+                    $weightFit = portal_course_gradebook_weight_fits($courseId, $submissionWeight);
+                    if (empty($weightFit['ok'])) {
+                        $createItemError = (string) ($weightFit['error'] ?? 'Gradebook weights cannot exceed 100%.');
+                    }
                     $url = '';
                 }
             }
@@ -708,6 +712,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $maxAttempts = 0;
                         }
                         $submissionWeight = portal_normalize_submission_weight($_POST['submission_weight'] ?? 100);
+                        $weightFit = portal_course_gradebook_weight_fits(
+                            $courseId,
+                            $submissionWeight,
+                            ['exclude_item_id' => $itemId]
+                        );
+                        if (empty($weightFit['ok'])) {
+                            $error = (string) ($weightFit['error'] ?? 'Gradebook weights cannot exceed 100%.');
+                        }
                     }
                 }
 
@@ -1326,15 +1338,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $slotChk = $db->prepare(
-            "SELECT id, title, submission_deadline, submission_ai_detection, submission_max_attempts, description
-             FROM course_folder_items
-             WHERE id = ? AND course_id = ? AND type = 'submission'"
+            "SELECT cfi.id, cfi.title, cfi.submission_deadline, cfi.submission_ai_detection,
+                    cfi.submission_max_attempts, cfi.description, cfi.locked,
+                    COALESCE(cf.locked, 0) AS folder_locked
+             FROM course_folder_items cfi
+             LEFT JOIN course_folders cf ON cf.id = cfi.folder_id
+             WHERE cfi.id = ? AND cfi.course_id = ? AND cfi.type = 'submission'"
         );
         $slotChk->execute([$itemId, $courseId]);
         $slot = $slotChk->fetch();
         if (!$slot) {
             $_SESSION['course_flash'] = ['error', 'Submission slot not found.'];
             $submitJsonExit(false, [], 'Submission slot not found.');
+        }
+
+        if (portal_folder_item_content_locked($slot)) {
+            portal_log_security_event(
+                'unauthorised_course_access',
+                'medium',
+                'Blocked submit_work on locked item ' . $itemId
+            );
+            $_SESSION['course_flash'] = ['error', 'This submission is locked by your teacher.'];
+            $submitJsonExit(false, [], 'This submission is locked by your teacher.');
         }
 
         $maxAttempts = (int) ($slot['submission_max_attempts'] ?? 0);

@@ -42,6 +42,19 @@ if (($activity['status'] ?? '') !== 'published' && !$canManage) {
     exit('Activity not found.');
 }
 
+if (!$canManage && portal_activity_content_locked($activity)) {
+    portal_log_security_event(
+        'forbidden_download',
+        'medium',
+        'Blocked access to locked activity ' . $activityId
+    );
+    if (portal_is_fetch_request() || strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
+        portal_activity_json_error('This activity is locked by your teacher.', 403);
+    }
+    http_response_code(403);
+    exit('This activity is locked by your teacher.');
+}
+
 $courseStmt = $db->prepare('SELECT id, slug, full_title, title, code, accent FROM courses WHERE id = ?');
 $courseStmt->execute([$courseId]);
 $course = $courseStmt->fetch(PDO::FETCH_ASSOC) ?: [];

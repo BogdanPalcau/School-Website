@@ -9,6 +9,7 @@ test-results/
 
 # Local runtime data
 database/portal.db
+database/sess_*
 database/INITIAL_OWNER_PASSWORD.txt
 uploads/cache/
 uploads/courses/

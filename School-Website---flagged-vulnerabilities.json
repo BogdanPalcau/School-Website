@@ -1,0 +1,49 @@
+{
+    "findings": [
+        {
+            "title": "Non-owner admin can ban, mute, or restrict another admin via security_account_action",
+            "status": "active",
+            "severity": "high",
+            "commit_hash": "a4761ef4c28b11638aad93ca238fb511dcbe8190",
+            "detected_at_pst": "2026-08-13T04:43:01-07:00",
+            "reported_link": "",
+            "location": "bootstrap.php",
+            "attacker": "Authenticated non-owner admin with a valid CSRF token",
+            "controlled_input": "POST target_user_id, account_action (ban|mute|restrict|activate), and reason on admin.php",
+            "reach_path": "Sign in as admin A, obtain CSRF from admin.php, POST action=security_account_action with account_action=ban and target_user_id of admin B. UI hides the control for peer admins, but portal_set_user_account_status only blocks owners and self-changes, so the UPDATE succeeds and admin B cannot sign in.",
+            "impact": "Peer-admin account lockout / admin availability DoS; intended owner-only control is UI-only for status changes while delete already enforces owner-only for admin targets.",
+            "evidence": "portal_set_user_account_status rejects owner targets and self-restriction only. admin.php security_account_action delete branch checks admin && !isOwner; the statusMap branch calls portal_set_user_account_status without that check. can_act for peer admins is set false in PHP rendering only.",
+            "remediation": "Reject status changes when the target role is admin unless the actor role is owner, inside portal_set_user_account_status (same rule as delete)."
+        },
+        {
+            "title": "Password reset emails build links from attacker-controlled HTTP_HOST when PORTAL_BASE_URL is unset",
+            "status": "active",
+            "severity": "critical",
+            "commit_hash": "a4761ef4c28b11638aad93ca238fb511dcbe8190",
+            "detected_at_pst": "2026-08-13T04:43:01-07:00",
+            "reported_link": "",
+            "location": "bootstrap.php",
+            "attacker": "Unauthenticated attacker who knows a victim email address, when SMTP is configured and PORTAL_BASE_URL is empty",
+            "controlled_input": "HTTP Host header on forgot-password.php and the victim email in the POST body",
+            "reach_path": "POST forgot-password.php for the victim with Host set to an attacker domain. portal_password_reset_request emails a link built by portal_base_url() from HTTP_HOST containing a real reset token. Victim click or referrer/log capture yields the token; attacker completes reset-password.php on the real origin.",
+            "impact": "Account takeover of any user who follows the emailed link, including owner and admin accounts.",
+            "evidence": "portal_base_url falls back to scheme://HTTP_HOST+dirname(SCRIPT_NAME) when getenv(PORTAL_BASE_URL) is empty. .env.example ships PORTAL_BASE_URL empty. portal_password_reset_request concatenates that base with /reset-password.php?token= without Host allowlisting.",
+            "remediation": "Require a configured PORTAL_BASE_URL before sending reset mail; never construct password-reset URLs from HTTP_HOST or X-Forwarded-Host."
+        },
+        {
+            "title": "Locked course activities remain playable because activity.php never checks folder or item locks",
+            "status": "active",
+            "severity": "high",
+            "commit_hash": "a4761ef4c28b11638aad93ca238fb511dcbe8190",
+            "detected_at_pst": "2026-08-13T04:43:01-07:00",
+            "reported_link": "",
+            "location": "public/activity.php",
+            "attacker": "Enrolled student who knows or previously observed an activity id",
+            "controlled_input": "activity.php id or item query parameters (and subsequent activity player POSTs)",
+            "reach_path": "Teacher locks the folder or activity item so the course UI hides the link. Student opens activity.php?id=N directly. Access checks only portal_can_access_course and published status; portal_folder_item_content_locked is never called, so the published activity still starts.",
+            "impact": "Bypass of teacher lock as access control for assessments (early attempts while content is meant to be unavailable). File view/download remain locked separately.",
+            "evidence": "public/activity.php gates on portal_can_access_course and status published. portal_activity_can_start has no lock check. view.php/download.php/lesson-viewer.php call portal_folder_item_content_locked; tests/security_material_lock_check.php covers those paths only. Related gap: course.php submit_work selects submission slots without locked/folder_locked columns.",
+            "remediation": "Before starting or serving an activity for non-managers, resolve the linked course_folder_items row and deny when portal_folder_item_content_locked is true; apply the same check in submit_work."
+        }
+    ]
+}

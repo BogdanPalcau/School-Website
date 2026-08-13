@@ -45,6 +45,9 @@ expect_true(
 $viewSrc = file_get_contents(__DIR__ . '/../public/view.php') ?: '';
 $downloadSrc = file_get_contents(__DIR__ . '/../public/download.php') ?: '';
 $lessonSrc = file_get_contents(__DIR__ . '/../public/lesson-viewer.php') ?: '';
+$activitySrc = file_get_contents(__DIR__ . '/../public/activity.php') ?: '';
+$activityLibSrc = file_get_contents(__DIR__ . '/../activity.php') ?: '';
+$courseSrc = file_get_contents(__DIR__ . '/../public/course.php') ?: '';
 
 expect_true(
     str_contains($viewSrc, 'portal_folder_item_content_locked')
@@ -60,6 +63,26 @@ expect_true(
     str_contains($lessonSrc, 'portal_folder_item_content_locked')
         && str_contains($lessonSrc, 'folder_locked'),
     'lesson-viewer.php enforces material locks'
+);
+expect_true(
+    str_contains($activitySrc, 'portal_activity_content_locked'),
+    'activity.php enforces activity content locks'
+);
+expect_true(
+    str_contains($activityLibSrc, 'portal_activity_content_locked'),
+    'portal_activity_can_start checks activity content locks'
+);
+expect_true(
+    str_contains($courseSrc, 'portal_folder_item_content_locked')
+        && str_contains($courseSrc, "action === 'submit_work'"),
+    'course.php submit_work enforces material locks'
+);
+expect_true(
+    preg_match(
+        '/action === \'submit_work\'.*?portal_folder_item_content_locked\(\$slot\)/s',
+        $courseSrc
+    ) === 1,
+    'submit_work lock check runs on the loaded submission slot'
 );
 expect_true(
     str_contains($viewSrc, 'DOMPurify') && str_contains($viewSrc, 'sanitizeDocHtml'),

@@ -749,6 +749,84 @@ if (!function_exists('portal_format_submission_weight')) {
     }
 }
 
+if (!function_exists('portal_course_gradebook_weight_total')) {
+    /**
+     * Sum of gradebook weights already committed on a course.
+     * Counts gradebook activities and submission slots (each 0–100).
+     *
+     * @param array{exclude_activity_id?:int,exclude_item_id?:int} $opts
+     */
+    function portal_course_gradebook_weight_total(int $courseId, array $opts = []): float
+    {
+        if ($courseId <= 0) {
+            return 0.0;
+        }
+
+        $excludeActivityId = (int) ($opts['exclude_activity_id'] ?? 0);
+        $excludeItemId = (int) ($opts['exclude_item_id'] ?? 0);
+        $db = portal_db();
+
+        $actSql = 'SELECT COALESCE(SUM(grade_weight), 0)
+                   FROM course_activities
+                   WHERE course_id = ? AND include_in_gradebook = 1';
+        $actParams = [$courseId];
+        if ($excludeActivityId > 0) {
+            $actSql .= ' AND id <> ?';
+            $actParams[] = $excludeActivityId;
+        }
+        $actStmt = $db->prepare($actSql);
+        $actStmt->execute($actParams);
+        $activityTotal = (float) $actStmt->fetchColumn();
+
+        $itemSql = "SELECT COALESCE(SUM(submission_weight), 0)
+                    FROM course_folder_items
+                    WHERE course_id = ? AND type = 'submission'";
+        $itemParams = [$courseId];
+        if ($excludeItemId > 0) {
+            $itemSql .= ' AND id <> ?';
+            $itemParams[] = $excludeItemId;
+        }
+        $itemStmt = $db->prepare($itemSql);
+        $itemStmt->execute($itemParams);
+        $submissionTotal = (float) $itemStmt->fetchColumn();
+
+        return round($activityTotal + $submissionTotal, 2);
+    }
+}
+
+if (!function_exists('portal_course_gradebook_weight_fits')) {
+    /**
+     * Whether adding/replacing a weight keeps the course gradebook at or under 100%.
+     *
+     * @param array{exclude_activity_id?:int,exclude_item_id?:int} $opts
+     * @return array{ok:bool,error?:string,used:float,remaining:float,proposed:float}
+     */
+    function portal_course_gradebook_weight_fits(int $courseId, float $proposedWeight, array $opts = []): array
+    {
+        $proposed = portal_normalize_submission_weight($proposedWeight, 0.0);
+        $used = portal_course_gradebook_weight_total($courseId, $opts);
+        $remaining = round(max(0.0, 100.0 - $used), 2);
+        if ($proposed > $remaining + 0.0001) {
+            return [
+                'ok' => false,
+                'error' => 'Gradebook weights for this course cannot add up to more than 100%. '
+                    . portal_format_submission_weight($used) . ' already allocated; '
+                    . portal_format_submission_weight($remaining) . ' remaining.',
+                'used' => $used,
+                'remaining' => $remaining,
+                'proposed' => $proposed,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'used' => $used,
+            'remaining' => $remaining,
+            'proposed' => $proposed,
+        ];
+    }
+}
+
 if (!function_exists('portal_weighted_grade_average')) {
     function portal_weighted_grade_average(array $grades): ?int
     {
@@ -2244,6 +2322,15 @@ if (!function_exists('portal_set_user_account_status')) {
             return ['ok' => false, 'error' => 'You cannot restrict your own account.'];
         }
 
+        // Mirror security panel can_act / delete rules: only the owner may
+        // mute, restrict, ban, or reactivate peer admin accounts. Without this,
+        // any admin can POST security_account_action and lock out another admin.
+        $actor = portal_find_user_by_id($actorId);
+        $actorRole = (string) ($actor['role'] ?? '');
+        if ((string) ($target['role'] ?? '') === 'admin' && $actorRole !== 'owner') {
+            return ['ok' => false, 'error' => 'Only the owner can change admin account status.'];
+        }
+
         try {
             portal_db()->prepare('UPDATE users SET account_status = ? WHERE id = ?')
                 ->execute([$status, $userId]);
@@ -3303,6 +3390,46 @@ if (!function_exists('portal_folder_item_content_locked')) {
     }
 }
 
+if (!function_exists('portal_folder_item_lock_state')) {
+    /**
+     * @return array{id:int,locked:mixed,folder_locked:mixed}|null
+     */
+    function portal_folder_item_lock_state(int $itemId): ?array
+    {
+        if ($itemId <= 0) {
+            return null;
+        }
+
+        $stmt = portal_db()->prepare(
+            "SELECT cfi.id, cfi.locked, COALESCE(cf.locked, 0) AS folder_locked
+             FROM course_folder_items cfi
+             LEFT JOIN course_folders cf ON cf.id = cfi.folder_id
+             WHERE cfi.id = ?
+             LIMIT 1"
+        );
+        $stmt->execute([$itemId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+}
+
+if (!function_exists('portal_activity_content_locked')) {
+    /**
+     * True when the activity's linked course item (or its folder) is locked.
+     */
+    function portal_activity_content_locked(array $activity): bool
+    {
+        $itemId = (int) ($activity['course_item_id'] ?? 0);
+        $state = portal_folder_item_lock_state($itemId);
+        if ($state === null) {
+            return false;
+        }
+
+        return portal_folder_item_content_locked($state);
+    }
+}
+
 require_once __DIR__ . '/integrity.php';
 require_once __DIR__ . '/submission_security.php';
 require_once __DIR__ . '/events.php';
@@ -3331,14 +3458,32 @@ if (!function_exists('portal_app_secret')) {
     }
 }
 
-if (!function_exists('portal_base_url')) {
-    function portal_base_url(): string
+if (!function_exists('portal_configured_base_url')) {
+    /**
+     * Explicit public origin from PORTAL_BASE_URL, or empty when unset.
+     * Password-reset mail must use this only — never HTTP_HOST.
+     */
+    function portal_configured_base_url(): string
     {
         $configured = getenv('PORTAL_BASE_URL');
         if (is_string($configured) && trim($configured) !== '') {
             return rtrim(trim($configured), '/');
         }
 
+        return '';
+    }
+}
+
+if (!function_exists('portal_base_url')) {
+    function portal_base_url(): string
+    {
+        $configured = portal_configured_base_url();
+        if ($configured !== '') {
+            return $configured;
+        }
+
+        // Dev/local fallback for non-security link building only. Password reset
+        // refuses to send mail when PORTAL_BASE_URL is unset (see below).
         $https = (
             (($_SERVER['HTTPS'] ?? '') !== '' && strtolower((string) $_SERVER['HTTPS']) !== 'off')
             || ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443')
@@ -3460,6 +3605,18 @@ if (!function_exists('portal_password_reset_request')) {
             return;
         }
 
+        $baseUrl = portal_configured_base_url();
+        if ($baseUrl === '') {
+            // Fail closed: never email a reset link built from HTTP_HOST.
+            portal_log_security_event(
+                'password_reset_failed',
+                'high',
+                'Reset mail skipped: PORTAL_BASE_URL not configured',
+                $userId
+            );
+            return;
+        }
+
         $db = portal_db();
         $now = time();
         $token = bin2hex(random_bytes(32));
@@ -3484,7 +3641,7 @@ if (!function_exists('portal_password_reset_request')) {
             return;
         }
 
-        $resetUrl = portal_base_url() . '/reset-password.php?token=' . urlencode($token);
+        $resetUrl = $baseUrl . '/reset-password.php?token=' . urlencode($token);
         $school = portal_school_name();
         $name = trim((string) ($user['name'] ?? '')) ?: 'there';
         $subject = 'Reset your ' . $school . ' password';

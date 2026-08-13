@@ -164,7 +164,9 @@
         setSaveState(state.dirty ? 'More changes to save…' : 'Saved');
         const titleEl = root.querySelector('[data-ab-title]');
         const titleInput = root.querySelector('[data-ab-setting="title"]');
-        if (titleEl && titleInput) titleEl.textContent = titleInput.value || 'Untitled activity';
+        if (titleInput && titleEl && !titleEl.isContentEditable) {
+          titleEl.textContent = titleInput.value || 'Untitled activity';
+        }
         if (!state.dirty) {
           try { localStorage.removeItem(recoveryKey); } catch (_) { /* ignore */ }
         } else {
@@ -690,6 +692,7 @@
 
     els.editor.querySelector('[data-ab-dup-question]')?.addEventListener('click', async () => {
       try {
+        if (!await flushCurrentQuestion(q)) return;
         const data = await api('duplicate_question', { question_id: q.id });
         renderAll();
         if (data.question_id) selectQuestion(data.question_id);
@@ -707,6 +710,7 @@
 
     els.editor.querySelector('[data-ab-bank-question]')?.addEventListener('click', async () => {
       try {
+        if (!await flushCurrentQuestion(q)) return;
         await api('save_to_bank', { question_id: q.id, visibility: 'private' });
         setSaveState('Saved to question bank');
       } catch (err) { alert(err.message); }
@@ -714,7 +718,8 @@
 
     els.editor.querySelector('[data-ab-add-option]')?.addEventListener('click', async () => {
       try {
-        await api('add_option', { question_id: q.id, option: { option_text_html: 'New option', is_correct: 0 } });
+        if (!await flushCurrentQuestion(q)) return;
+        await api('add_option', { question_id: q.id, option: { option_text_html: '', is_correct: 0 } });
         renderAll();
         selectQuestion(q.id);
       } catch (err) { alert(err.message); }
@@ -725,6 +730,7 @@
         const row = btn.closest('[data-option-id]');
         const oid = Number(row?.dataset.optionId || 0);
         try {
+          if (!await flushCurrentQuestion(q)) return;
           await api('delete_option', { option_id: oid });
           renderAll();
           selectQuestion(q.id);
@@ -844,6 +850,30 @@
         const file = e.dataTransfer?.files?.[0];
         if (file) uploadMedia(file, q.id);
       });
+    }
+  }
+
+  function syncQuestionQuills() {
+    if (!els.editor) return;
+    els.editor.querySelectorAll('[data-ab-q-quill]').forEach(node => {
+      const key = node.getAttribute('data-ab-q-quill');
+      const field = key === 'prompt' ? 'prompt_html' : 'explanation_html';
+      const ta = els.editor.querySelector('[data-ab-q-field="' + field + '"]');
+      if (ta && node._quill) ta.value = node._quill.root.innerHTML;
+    });
+  }
+
+  /** Persist the open question editor before tree-refreshing actions (add/delete option). */
+  async function flushCurrentQuestion(q) {
+    if (!q || !els.editor || els.editor.hasAttribute('hidden')) return true;
+    syncQuestionQuills();
+    try {
+      const fields = collectQuestionFields(q);
+      await api('update_question', { question_id: q.id, fields });
+      return true;
+    } catch (err) {
+      setSaveState(err.message || 'Could not save question', true);
+      return false;
     }
   }
 
@@ -1094,6 +1124,90 @@
     el.addEventListener('change', markDirty);
     el.addEventListener('input', markDirty);
   });
+
+  const settingsTitleInput = root.querySelector('[data-ab-setting="title"]');
+  let titleEditBaseline = '';
+  let titleEditBusy = false;
+
+  settingsTitleInput?.addEventListener('input', () => {
+    const titleEl = root.querySelector('[data-ab-title]');
+    if (titleEl && !titleEl.isContentEditable) {
+      titleEl.textContent = settingsTitleInput.value || 'Untitled activity';
+    }
+  });
+
+  function selectTitleContents(el) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  function endTitleEdit(commit) {
+    const titleEl = root.querySelector('[data-ab-title]');
+    if (!titleEl || !titleEl.isContentEditable || titleEditBusy) return;
+    titleEditBusy = true;
+    try {
+      const raw = (titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+      const next = commit ? raw : titleEditBaseline;
+      const safe = next || titleEditBaseline || 'Untitled activity';
+      titleEl.textContent = safe;
+      titleEl.contentEditable = 'false';
+      titleEl.classList.remove('is-editing');
+      if (commit && settingsTitleInput && settingsTitleInput.value !== safe) {
+        settingsTitleInput.value = safe;
+        markDirty();
+      } else if (!commit) {
+        titleEl.textContent = titleEditBaseline || settingsTitleInput?.value || 'Untitled activity';
+      }
+    } finally {
+      titleEditBusy = false;
+    }
+  }
+
+  function startTitleEdit() {
+    const titleEl = root.querySelector('[data-ab-title]');
+    if (!titleEl || titleEl.isContentEditable) return;
+    titleEditBaseline = (settingsTitleInput?.value || titleEl.textContent || '').trim();
+    titleEl.contentEditable = 'true';
+    titleEl.classList.add('is-editing');
+    titleEl.focus();
+    selectTitleContents(titleEl);
+  }
+
+  root.querySelector('[data-ab-rename-title]')?.addEventListener('mousedown', (e) => {
+    // Keep focus from leaving before we enter edit mode.
+    e.preventDefault();
+  });
+  root.querySelector('[data-ab-rename-title]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startTitleEdit();
+  });
+  root.querySelector('[data-ab-title]')?.addEventListener('click', () => {
+    startTitleEdit();
+  });
+  root.querySelector('[data-ab-title]')?.addEventListener('keydown', (e) => {
+    const titleEl = e.currentTarget;
+    if (!titleEl.isContentEditable) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        startTitleEdit();
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      endTitleEdit(true);
+      titleEl.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      endTitleEdit(false);
+      titleEl.blur();
+    }
+  });
+  root.querySelector('[data-ab-title]')?.addEventListener('blur', () => endTitleEdit(true));
 
   const xpToggle = root.querySelector('[data-ab-setting-bool="xp_enabled"]');
   const leaderboardToggle = root.querySelector('[data-ab-setting-bool="leaderboard_enabled"]');

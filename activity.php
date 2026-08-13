@@ -840,10 +840,10 @@ if (!function_exists('portal_activity_seed_templates')) {
                             'prompt_html' => '<p>Question ' . $i . '</p>',
                             'points' => 1,
                             'options' => [
-                                ['option_text_html' => 'Option A', 'is_correct' => 1, 'credit' => 1],
-                                ['option_text_html' => 'Option B', 'is_correct' => 0, 'credit' => 0],
-                                ['option_text_html' => 'Option C', 'is_correct' => 0, 'credit' => 0],
-                                ['option_text_html' => 'Option D', 'is_correct' => 0, 'credit' => 0],
+                                ['option_text_html' => '', 'is_correct' => 1, 'credit' => 1],
+                                ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                                ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                                ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
                             ],
                         ],
                         range(1, 5)
@@ -1464,6 +1464,28 @@ if (!function_exists('portal_activity_save_settings')) {
             $params[] = $value;
         }
 
+        // Course gradebook weights (activities + submission slots) must not exceed 100%.
+        $nextInclude = array_key_exists('include_in_gradebook', $fields)
+            ? (int) $fields['include_in_gradebook']
+            : (int) ($activity['include_in_gradebook'] ?? 0);
+        $nextWeight = array_key_exists('grade_weight', $fields)
+            ? (float) ($fields['grade_weight'] ?? 0)
+            : (float) ($activity['grade_weight'] ?? 100);
+        if ($nextInclude === 1) {
+            $fit = portal_course_gradebook_weight_fits(
+                (int) ($activity['course_id'] ?? 0),
+                $nextWeight,
+                ['exclude_activity_id' => $activityId]
+            );
+            if (empty($fit['ok'])) {
+                return [
+                    'ok' => false,
+                    'error' => (string) ($fit['error'] ?? 'Gradebook weights cannot exceed 100%.'),
+                    'revision' => $current,
+                ];
+            }
+        }
+
         if ($updates === []) {
             return ['ok' => true, 'revision' => $current, 'activity' => $activity];
         }
@@ -1564,11 +1586,17 @@ if (!function_exists('portal_activity_validate_for_publish')) {
                     $errors[] = 'Choice questions need at least two options.';
                 }
                 $hasCorrect = false;
+                $blankOptions = 0;
                 foreach ($options as $opt) {
+                    if (trim(strip_tags((string) ($opt['option_text_html'] ?? ''))) === '') {
+                        $blankOptions++;
+                    }
                     if (!empty($opt['is_correct']) || (float) ($opt['credit'] ?? 0) > 0) {
                         $hasCorrect = true;
-                        break;
                     }
+                }
+                if ($blankOptions > 0 && in_array($type, ['single_choice', 'multiple_choice'], true)) {
+                    $errors[] = 'Fill in every answer option before publishing.';
                 }
                 if (!$hasCorrect && $activity['mode'] !== 'survey') {
                     $errors[] = 'This question needs a correct answer.';
@@ -1590,8 +1618,16 @@ if (!function_exists('portal_activity_validate_for_publish')) {
                 $errors[] = 'Written responses must be teacher-marked (they have no automatic correct answer).';
             }
 
-            if ($type === 'ordering' && count($options) < 2) {
-                $errors[] = 'Ordering questions need at least two items.';
+            if ($type === 'ordering') {
+                if (count($options) < 2) {
+                    $errors[] = 'Ordering questions need at least two items.';
+                }
+                foreach ($options as $opt) {
+                    if (trim(strip_tags((string) ($opt['option_text_html'] ?? ''))) === '') {
+                        $errors[] = 'Fill in every ordering item before publishing.';
+                        break;
+                    }
+                }
             }
 
             if ($type === 'matching') {
@@ -2148,7 +2184,11 @@ if (!function_exists('portal_activity_add_question')) {
         ]);
         $qid = (int) $db->lastInsertId();
 
-        if ($questionType === 'true_false') {
+        $skipDefaultOptions = !empty($extra['skip_default_options']);
+        $providedOptions = $extra['options'] ?? null;
+        $hasProvidedOptions = is_array($providedOptions) && $providedOptions !== [];
+
+        if ($questionType === 'true_false' && !$skipDefaultOptions) {
             $db->prepare(
                 'INSERT INTO activity_question_options
                     (question_id, option_text_html, is_correct, credit, sort_order)
@@ -2158,26 +2198,28 @@ if (!function_exists('portal_activity_add_question')) {
                 $qid, 'False', 0, 0, 1,
             ]);
         } elseif (in_array($questionType, ['single_choice', 'multiple_choice'], true)) {
-            $seed = $extra['options'] ?? null;
-            if (!is_array($seed) || $seed === []) {
-                $seed = [
-                    ['option_text_html' => 'Option A', 'is_correct' => 1, 'credit' => 1],
-                    ['option_text_html' => 'Option B', 'is_correct' => 0, 'credit' => 0],
-                    ['option_text_html' => 'Option C', 'is_correct' => 0, 'credit' => 0],
-                    ['option_text_html' => 'Option D', 'is_correct' => 0, 'credit' => 0],
-                ];
-            }
+            // Keep empty option slots so the builder can show placeholders instead of filler text.
+            $seed = $hasProvidedOptions ? $providedOptions : (
+                $skipDefaultOptions ? [] : [
+                    ['option_text_html' => '', 'is_correct' => 1, 'credit' => 1],
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                ]
+            );
             foreach ($seed as $i => $opt) {
                 if (is_array($opt)) {
                     portal_activity_add_option($activityId, $qid, $opt, (int) $i);
                 }
             }
         } elseif ($questionType === 'ordering') {
-            $seed = $extra['options'] ?? [
-                ['option_text_html' => 'First', 'is_correct' => 0, 'credit' => 0],
-                ['option_text_html' => 'Second', 'is_correct' => 0, 'credit' => 0],
-                ['option_text_html' => 'Third', 'is_correct' => 0, 'credit' => 0],
-            ];
+            $seed = $hasProvidedOptions ? $providedOptions : (
+                $skipDefaultOptions ? [] : [
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                    ['option_text_html' => '', 'is_correct' => 0, 'credit' => 0],
+                ]
+            );
             $orderIds = [];
             foreach ($seed as $i => $opt) {
                 if (!is_array($opt)) {
@@ -3602,6 +3644,11 @@ if (!function_exists('portal_activity_can_start')) {
         }
         if (($activity['status'] ?? '') !== 'published' && !portal_can_manage_course($courseId)) {
             return ['ok' => false, 'error' => 'This activity is not available yet.'];
+        }
+
+        if (!portal_can_manage_course($courseId) && function_exists('portal_activity_content_locked')
+            && portal_activity_content_locked($activity)) {
+            return ['ok' => false, 'error' => 'This activity is locked by your teacher.'];
         }
 
         $pub = portal_activity_published_version_id((int) $activity['id']);

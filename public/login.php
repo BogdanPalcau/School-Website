@@ -61,8 +61,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 ob_start();
 ?>
 <div class="login-stack">
+    <span class="login-access-pill">
+        <?= portal_icon('lock') ?>
+        <span>Invitation-only portal</span>
+    </span>
+
     <div class="login-intro">
-        <p class="eyebrow">Sign in</p>
         <h2>Welcome back</h2>
         <p class="login-copy">Enter your school username and password to open your dashboard.</p>
     </div>
@@ -108,6 +112,8 @@ ob_start();
     <p class="login-meta">
         <a href="forgot-password.php">Forgot password?</a>
     </p>
+
+    <p class="login-note">Don't have login details? Accounts are set up by <?= portal_escape(portal_school_short_name()) ?> &mdash; ask your teacher or the school office.</p>
 </div>
 <?php
 $page_content = ob_get_clean();

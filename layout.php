@@ -71,7 +71,7 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260805i';
+$asset_version = '20260813courses';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $customizationPrefs = portal_is_logged_in()
     ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))
@@ -136,16 +136,41 @@ if ($publicPos !== false) {
 
     <?php if ($layout_variant === 'auth'): ?>
         <main class="login-shell">
-            <section class="login-panel">
-                <div class="login-brand">
-                    <img class="auth-main-logo" src="<?= portal_escape($logo_src) ?>" width="56" height="56" alt="<?= portal_escape(portal_school_name()) ?> crest">
-                    <div>
-                        <strong><?= portal_escape(portal_school_short_name()) ?></strong>
-                        <span><?= portal_escape($auth_heading) ?></span>
+            <section class="login-showcase" aria-hidden="true">
+                <div class="login-showcase-glow"></div>
+                <div class="login-showcase-inner">
+                    <div class="login-showcase-brand">
+                        <img src="<?= portal_escape($logo_src) ?>" width="48" height="48" alt="">
+                        <div>
+                            <strong><?= portal_escape(portal_school_short_name()) ?></strong>
+                            <span><?= portal_escape(portal_school_name()) ?></span>
+                        </div>
                     </div>
-                </div>
 
-                <?= $page_content ?>
+                    <blockquote class="login-quote">
+                        <p>&ldquo;Education is the most powerful weapon which you can use to change the world.&rdquo;</p>
+                        <footer>Nelson Mandela</footer>
+                    </blockquote>
+
+                    <ul class="login-highlights">
+                        <li><?= portal_icon('book-open') ?><span>Lessons, resources, and coursework in one workspace</span></li>
+                        <li><?= portal_icon('award') ?><span>Grades and feedback the moment they're released</span></li>
+                        <li><?= portal_icon('calendar') ?><span>A timetable that keeps every deadline in view</span></li>
+                    </ul>
+
+                    <p class="login-showcase-footnote">Built for <?= portal_escape(portal_school_short_name()) ?> students, teachers, and families. Every account is set up by the school &mdash; there is no public sign-up.</p>
+                </div>
+            </section>
+
+            <section class="login-panel">
+                <div class="login-panel-inner">
+                    <div class="login-panel-brand">
+                        <img src="<?= portal_escape($logo_src) ?>" width="34" height="34" alt="<?= portal_escape(portal_school_name()) ?> crest">
+                        <strong><?= portal_escape(portal_school_short_name()) ?></strong>
+                    </div>
+
+                    <?= $page_content ?>
+                </div>
             </section>
         </main>
     <?php else: ?>

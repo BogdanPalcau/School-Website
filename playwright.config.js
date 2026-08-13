@@ -33,6 +33,14 @@ module.exports = defineConfig({
         timeout: 15_000,
         stdout: 'ignore',
         stderr: 'ignore',
+        // Owner developer diagnostics (admin.php) also need this flag on the
+        // PHP built-in server process. Flag-off behaviour is asserted via the
+        // fixture CLI (`check-dev-security`) because this process cannot flip
+        // mid-suite without restarting the server.
+        env: {
+          ...process.env,
+          PORTAL_SHOW_DEVELOPER_SECURITY: '1',
+        },
       },
   projects: [
     {

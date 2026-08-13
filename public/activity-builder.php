@@ -610,7 +610,10 @@ ob_start();
             </a>
             <div class="ab-header-title">
                 <div class="ab-title-row">
-                    <h1 class="ab-title" data-ab-title><?= portal_escape((string) $activity['title']) ?></h1>
+                    <h1 class="ab-title" data-ab-title tabindex="0" title="Click to rename"><?= portal_escape((string) $activity['title']) ?></h1>
+                    <button type="button" class="btn-icon ab-title-edit" data-ab-rename-title title="Rename activity" aria-label="Rename activity">
+                        <?= portal_icon('edit', 'icon-sm') ?>
+                    </button>
                     <span class="activity-mode-pill activity-mode-pill--<?= portal_escape((string) $activity['mode']) ?>">
                         <?= portal_escape(portal_activity_mode_label((string) $activity['mode'])) ?>
                     </span>
@@ -1003,7 +1006,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260727a"></script>
-<script src="assets/activity-builder.js?v=20260809fc"></script>
+<script src="assets/activity-builder.js?v=20260813rename4"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';
