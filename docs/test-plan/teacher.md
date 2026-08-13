@@ -64,7 +64,7 @@ Course assignment (separate): `course_teachers.assignment_role` ∈ `{teacher, s
   1. [ ] Create submission item with future deadline
   2. [ ] Set max attempts and weight
   3. [ ] Edit deadline later
-- **Expected result:** Slot visible to enrolled students; invalid deadline rejected on create/update
+- **Expected result:** Slot visible to enrolled students; blank deadline means no deadline; past deadlines rejected on create; updates may use a recent past time to close a slot
 - **Also verify (negative/permission case):** Student cannot `create_item`
 - **Existing automated coverage:** none (UI); upload validation CLI separate
 

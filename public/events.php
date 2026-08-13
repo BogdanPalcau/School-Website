@@ -179,7 +179,7 @@ $page_title = 'Events | ' . portal_school_name();
 $active_page = 'events';
 $page_eyebrow = 'School events';
 $page_heading = 'Events';
-$page_description = 'One-off assemblies, workshops, trips, and course activities — separate from your weekly class timetable.';
+$page_description = 'One-off assemblies, workshops, trips, and course activities — separate from your weekly class timetable. Download an .ics to add them to Google or Apple Calendar.';
 
 $detailEvent = null;
 if ($eventId > 0) {
@@ -228,6 +228,7 @@ if ($detailEvent && $editId > 0 && portal_event_can_manage($detailEvent)) {
 $extras = [
     ['title' => 'Device check', 'detail' => 'Test your audio and camera before live sessions so you are ready to join on time.'],
     ['title' => 'Timetable vs events', 'detail' => 'Weekly lessons stay on the Timetable. This page is only for dated, one-off activities.'],
+    ['title' => 'Export to your calendar', 'detail' => 'Download the .ics file below, then import it in Google Calendar (Settings → Import) or Apple Calendar (File → Import).'],
     ['title' => 'Parent evenings', 'detail' => 'Parent evening details also appear in the school bulletin when published.'],
 ];
 
@@ -639,6 +640,7 @@ ob_start();
                     <p class="eyebrow">Tips</p>
                     <h3 class="card-title">Before you attend</h3>
                 </div>
+                <a class="button-secondary button--sm" href="calendar-export.php?types=events">Events .ics</a>
             </div>
             <div class="ev-notes">
                 <?php foreach ($extras as $i => $extra): ?>

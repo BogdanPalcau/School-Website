@@ -10,7 +10,7 @@ $currentUser = portal_current_user();
 $isOwner     = portal_is_owner();
 $pdo         = portal_db();
 
-$adminSections = ['dashboard', 'users', 'courses', 'enrollments', 'activities', 'integrity', 'security'];
+$adminSections = ['dashboard', 'users', 'courses', 'enrollments', 'invites', 'activities', 'integrity', 'security'];
 $section       = (string) ($_GET['section'] ?? 'dashboard');
 if (!in_array($section, $adminSections, true)) {
     $section = 'dashboard';
@@ -254,6 +254,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['admin_flash'] = ['success', "Enrolments for {$target['name']} saved."];
         }
         $redirectSection('enrollments', ['enroll' => $targetId > 0 ? $targetId : null]);
+    }
+
+    if ($action === 'create_invite') {
+        $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+        $courseIds = array_map('intval', (array) ($_POST['course_ids'] ?? []));
+        // Back-compat if an older form posts course_id.
+        $legacyCourse = (int) ($_POST['course_id'] ?? 0);
+        if ($legacyCourse > 0) {
+            $courseIds[] = $legacyCourse;
+        }
+        $lockedName = trim((string) ($_POST['locked_name'] ?? ''));
+        $lockedYear = trim((string) ($_POST['locked_year'] ?? ''));
+        $expiresDays = (int) ($_POST['expires_days'] ?? 7);
+        $result = portal_invite_create(
+            $email,
+            $courseIds,
+            (int) ($currentUser['id'] ?? 0),
+            $lockedName,
+            $lockedYear,
+            $expiresDays,
+            portal_client_ip()
+        );
+        if (empty($result['ok'])) {
+            $_SESSION['admin_flash'] = ['error', (string) ($result['error'] ?? 'Could not create invite.')];
+        } else {
+            $token = (string) ($result['token'] ?? '');
+            $_SESSION['admin_invite_link'] = portal_invite_url($token);
+            $mailNote = !empty($result['email_sent'])
+                ? ' Invite email sent.'
+                : ' Email not sent (configure SMTP + PORTAL_BASE_URL). Copy the link below.';
+            $count = count(array_unique(array_filter($courseIds)));
+            $_SESSION['admin_flash'] = [
+                'success',
+                'Invite created for ' . $email . ' (' . $count . ' course' . ($count === 1 ? '' : 's') . ').' . $mailNote,
+            ];
+        }
+        $redirectSection('invites');
+    }
+
+    if ($action === 'revoke_invite') {
+        $inviteId = (int) ($_POST['invite_id'] ?? 0);
+        if (portal_invite_revoke($inviteId, (int) ($currentUser['id'] ?? 0))) {
+            $_SESSION['admin_flash'] = ['success', 'Invite revoked.'];
+        } else {
+            $_SESSION['admin_flash'] = ['error', 'Could not revoke that invite (it may already be used or revoked).'];
+        }
+        $redirectSection('invites');
     }
 
     if ($action === 'create_course') {
@@ -744,6 +791,11 @@ if (isset($_SESSION['admin_flash'])) {
     $flash = $_SESSION['admin_flash'];
     unset($_SESSION['admin_flash']);
 }
+$inviteLinkOnce = '';
+if (isset($_SESSION['admin_invite_link']) && is_string($_SESSION['admin_invite_link'])) {
+    $inviteLinkOnce = (string) $_SESSION['admin_invite_link'];
+    unset($_SESSION['admin_invite_link']);
+}
 
 // ── Page data ─────────────────────────────────────────────────────────────────
 $users              = portal_all_users();
@@ -756,6 +808,10 @@ $editCourse         = $editCourseId > 0 ? portal_find_course_by_id($editCourseId
 $duplicateCourse    = $duplicateCourseId > 0 ? portal_find_course_by_id($duplicateCourseId) : null;
 $editUser           = $editUserId > 0 ? portal_find_user_by_id($editUserId) : null;
 $yearGroupOptions   = portal_year_group_options();
+$pendingInvites     = portal_invite_list_pending();
+$inviteCourses      = $pdo->query(
+    "SELECT id, title, code, status, status_label, accent FROM courses ORDER BY title ASC"
+)->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 $userQuery  = trim((string) ($_GET['user_q'] ?? ''));
 $userRole   = (string) ($_GET['user_role'] ?? 'all');
@@ -966,6 +1022,7 @@ $sectionTitles = [
     'users'       => 'Manage Users',
     'courses'     => 'Course Management',
     'enrollments' => 'Enrolments',
+    'invites'     => 'Student Invites',
     'activities'  => 'Activity Management',
     'integrity'   => 'Integrity & Link Safety',
     'security'    => 'Security Activity',
@@ -976,6 +1033,7 @@ $navItems = [
     ['key' => 'users',       'label' => 'Manage Users',            'icon' => 'users'],
     ['key' => 'courses',     'label' => 'Course Management',       'icon' => 'book-open'],
     ['key' => 'enrollments', 'label' => 'Enrolments',              'icon' => 'folder'],
+    ['key' => 'invites',     'label' => 'Student Invites',         'icon' => 'users'],
     ['key' => 'activities',  'label' => 'Activity Management',     'icon' => 'activity'],
     ['key' => 'integrity',   'label' => 'Integrity & Link Safety', 'icon' => 'shield'],
     ['key' => 'security',    'label' => 'Security Activity',       'icon' => 'lock'],
@@ -1738,6 +1796,207 @@ ob_start();
                 </article>
             </section>
 
+            <!-- Student invites -->
+            <section id="admin-section-invites" class="admin-section<?= $section === 'invites' ? ' is-active' : '' ?>">
+                <?php if ($inviteLinkOnce !== ''): ?>
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Share once</p>
+                            <h3>Invite link</h3>
+                            <p class="admin-card-lead">Copy this link now — it will not be shown again. Only the invited email can create an account with it.</p>
+                        </div>
+                    </header>
+                    <label class="admin-field admin-field--full">
+                        <span>Invite URL</span>
+                        <input type="text" id="invite-link-once" readonly value="<?= portal_escape($inviteLinkOnce) ?>" onclick="this.select()">
+                    </label>
+                    <div class="admin-form-actions">
+                        <button type="button" class="admin-btn admin-btn--primary" id="invite-copy-btn" data-copy-target="invite-link-once">Copy link</button>
+                    </div>
+                </article>
+                <?php endif; ?>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">New invite</p>
+                            <h3>Invite a student</h3>
+                            <p class="admin-card-lead">Single-use, email-bound signup. Pick one or more courses below, then create the invite. Optional name/year locks apply at signup.</p>
+                        </div>
+                    </header>
+                    <form class="admin-invite-form" method="post" action="<?= portal_escape($adminUrl('invites')) ?>" id="invite-create-form">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="create_invite">
+
+                        <div class="admin-form-grid">
+                            <label class="admin-field">
+                                <span>Student email</span>
+                                <input type="email" name="email" required placeholder="student@school.edu" autocomplete="off">
+                            </label>
+                            <label class="admin-field">
+                                <span>Expires in</span>
+                                <select name="expires_days">
+                                    <option value="1">1 day</option>
+                                    <option value="3">3 days</option>
+                                    <option value="7" selected>7 days</option>
+                                    <option value="14">14 days</option>
+                                    <option value="30">30 days</option>
+                                </select>
+                            </label>
+                            <label class="admin-field">
+                                <span>Lock display name <small>(optional)</small></span>
+                                <input type="text" name="locked_name" maxlength="200" placeholder="Leave blank to let them choose">
+                            </label>
+                            <label class="admin-field">
+                                <span>Lock year group <small>(optional)</small></span>
+                                <select name="locked_year">
+                                    <option value="">Unlocked — student chooses</option>
+                                    <?php foreach ($yearGroupOptions as $yr): ?>
+                                    <option value="<?= portal_escape($yr) ?>"><?= portal_escape($yr) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div class="admin-invite-courses" data-invite-courses>
+                            <div class="admin-invite-courses-label-row">
+                                <span>Enrol into courses</span>
+                                <span class="admin-invite-courses-required">Required</span>
+                            </div>
+
+                            <button type="button"
+                                    class="admin-invite-courses-toggle"
+                                    id="invite-courses-toggle"
+                                    aria-expanded="false"
+                                    aria-controls="invite-courses-panel">
+                                <span class="admin-invite-courses-toggle-copy">
+                                    <strong data-invite-courses-title>Choose modules</strong>
+                                    <small data-invite-courses-summary>Click to select one or more courses for this invite</small>
+                                </span>
+                                <span class="admin-invite-courses-meta">
+                                    <span class="admin-invite-courses-badge" data-invite-selected-count>0</span>
+                                    <span class="admin-invite-courses-chevron" aria-hidden="true"></span>
+                                </span>
+                            </button>
+
+                            <div class="admin-invite-courses-chips" data-invite-courses-chips hidden></div>
+
+                            <div class="admin-invite-courses-panel" id="invite-courses-panel" hidden>
+                                <div class="admin-invite-courses-panel-inner">
+                                    <div class="admin-invite-courses-toolbar">
+                                        <label class="admin-search admin-search--block admin-invite-courses-filter">
+                                            <span class="visually-hidden">Filter courses</span>
+                                            <input type="search" id="invite-course-filter" placeholder="Filter by title or code" autocomplete="off">
+                                        </label>
+                                        <div class="admin-invite-courses-actions">
+                                            <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-invite-select-all>Select all</button>
+                                            <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-invite-clear-all>Clear</button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-enroll-grid" id="invite-course-grid">
+                                        <?php foreach ($inviteCourses as $ic): ?>
+                                        <?php
+                                            $cStatus = (string) ($ic['status'] ?? '');
+                                            $cBadge = in_array($cStatus, ['open', 'draft', 'archived'], true)
+                                                ? 'admin-badge--' . $cStatus
+                                                : 'admin-badge--draft';
+                                        ?>
+                                        <label class="admin-enroll-item"
+                                               data-invite-course
+                                               data-course-title="<?= portal_escape((string) $ic['title']) ?>"
+                                               data-enroll-search="<?= portal_escape(strtolower(($ic['title'] ?? '') . ' ' . ($ic['code'] ?? ''))) ?>">
+                                            <input type="checkbox" name="course_ids[]" value="<?= (int) $ic['id'] ?>">
+                                            <span class="admin-enroll-accent" style="background:<?= portal_escape((string) ($ic['accent'] ?? '#c1202f')) ?>"></span>
+                                            <div class="admin-enroll-body">
+                                                <div class="admin-enroll-text">
+                                                    <strong><?= portal_escape((string) $ic['title']) ?></strong>
+                                                    <span><?= portal_escape((string) $ic['code']) ?></span>
+                                                </div>
+                                                <span class="admin-badge <?= portal_escape($cBadge) ?>"><?= portal_escape((string) ($ic['status_label'] ?? $cStatus)) ?></span>
+                                            </div>
+                                        </label>
+                                        <?php endforeach; ?>
+                                        <?php if ($inviteCourses === []): ?>
+                                        <p class="admin-card-lead">No courses available yet. Create a course first.</p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="admin-form-actions">
+                            <button type="submit" class="admin-btn admin-btn--primary">Create invite</button>
+                        </div>
+                    </form>
+                </article>
+
+                <article class="admin-card">
+                    <header class="admin-card-header">
+                        <div>
+                            <p class="eyebrow">Pending</p>
+                            <h3>Open invites</h3>
+                        </div>
+                        <span class="chip"><?= count($pendingInvites) ?></span>
+                    </header>
+                    <div class="admin-table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Email</th>
+                                    <th>Courses</th>
+                                    <th>Locks</th>
+                                    <th>Expires</th>
+                                    <th>Invited by</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($pendingInvites as $inv): ?>
+                                <?php
+                                    $lockBits = [];
+                                    if (trim((string) ($inv['locked_name'] ?? '')) !== '') {
+                                        $lockBits[] = 'Name';
+                                    }
+                                    if (trim((string) ($inv['locked_year'] ?? '')) !== '') {
+                                        $lockBits[] = 'Year';
+                                    }
+                                    $courseCount = (int) ($inv['course_count'] ?? 0);
+                                    $courseList = (array) ($inv['course_titles'] ?? []);
+                                ?>
+                                <tr>
+                                    <td><?= portal_escape((string) $inv['email']) ?></td>
+                                    <td>
+                                        <?php if ($courseCount <= 1): ?>
+                                            <strong><?= portal_escape((string) ($courseList[0] ?? $inv['course_title'] ?? '—')) ?></strong>
+                                            <span class="admin-table-meta"><?= portal_escape((string) ($inv['course_code'] ?? '')) ?></span>
+                                        <?php else: ?>
+                                            <strong><?= $courseCount ?> courses</strong>
+                                            <span class="admin-table-meta"><?= portal_escape(implode(' · ', array_slice($courseList, 0, 3))) ?><?= $courseCount > 3 ? '…' : '' ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?= $lockBits === [] ? '—' : portal_escape(implode(', ', $lockBits)) ?></td>
+                                    <td><?= portal_escape(date('j M Y H:i', (int) $inv['expires_at'])) ?></td>
+                                    <td><?= portal_escape((string) ($inv['invited_by_name'] ?? '—')) ?></td>
+                                    <td>
+                                        <form method="post" action="<?= portal_escape($adminUrl('invites')) ?>" onsubmit="return confirm('Revoke this invite?');">
+                                            <?= portal_csrf_field() ?>
+                                            <input type="hidden" name="action" value="revoke_invite">
+                                            <input type="hidden" name="invite_id" value="<?= (int) $inv['id'] ?>">
+                                            <button type="submit" class="admin-btn admin-btn--secondary admin-btn--sm">Revoke</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if ($pendingInvites === []): ?>
+                                <tr><td colspan="6" class="admin-table-empty">No pending invites.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
             <!-- Integrity -->
             <section id="admin-section-integrity" class="admin-section<?= $section === 'integrity' ? ' is-active' : '' ?>">
                 <div class="admin-status-row admin-integrity-summary">
@@ -2284,24 +2543,6 @@ ob_start();
                     </div>
                 </article>
 
-                <div class="admin-profile-overlay" id="security-profile-overlay" hidden>
-                    <div class="admin-profile-backdrop" data-security-profile-close></div>
-                    <aside class="admin-profile-panel" role="dialog" aria-modal="true" aria-labelledby="security-profile-title" tabindex="-1">
-                        <header class="admin-profile-panel-header">
-                            <div>
-                                <p class="eyebrow">Account review</p>
-                                <h3 id="security-profile-title">User profile</h3>
-                            </div>
-                            <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-security-profile-close>Close</button>
-                        </header>
-                        <div class="admin-profile-panel-body" id="security-profile-body"></div>
-                        <div class="admin-profile-panel-actions" id="security-profile-actions" hidden>
-                            <p class="admin-profile-actions-label">Take action</p>
-                            <div class="admin-profile-action-grid" id="security-profile-action-grid"></div>
-                        </div>
-                    </aside>
-                </div>
-
                 <script type="application/json" id="security-user-profiles-data"><?= json_encode($securityUserProfiles, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?: '{}' ?></script>
                 <template id="security-profile-action-template">
                     <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form security-profile-action-form">
@@ -2396,6 +2637,24 @@ ob_start();
             </section>
 
         </div>
+    </div>
+
+    <div class="admin-profile-overlay" id="security-profile-overlay" hidden>
+        <div class="admin-profile-backdrop" data-security-profile-close></div>
+        <aside class="admin-profile-panel" role="dialog" aria-modal="true" aria-labelledby="security-profile-title" tabindex="-1">
+            <header class="admin-profile-panel-header">
+                <div>
+                    <p class="eyebrow">Account review</p>
+                    <h3 id="security-profile-title">User profile</h3>
+                </div>
+                <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-security-profile-close>Close</button>
+            </header>
+            <div class="admin-profile-panel-body" id="security-profile-body"></div>
+            <div class="admin-profile-panel-actions" id="security-profile-actions" hidden>
+                <p class="admin-profile-actions-label">Take action</p>
+                <div class="admin-profile-action-grid" id="security-profile-action-grid"></div>
+            </div>
+        </aside>
     </div>
 </div>
 
@@ -2576,7 +2835,12 @@ $canEditOpenedUser = $editUser !== null
         btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-admin-open');
             var dlg = document.getElementById(id);
-            if (dlg && typeof dlg.showModal === 'function') dlg.showModal();
+            if (!dlg || typeof dlg.showModal !== 'function') return;
+            try {
+                if (!dlg.open) dlg.showModal();
+            } catch (err) {
+                // Ignore InvalidStateError if already open.
+            }
         });
     });
 
@@ -2585,6 +2849,33 @@ $canEditOpenedUser = $editUser !== null
             var dlg = btn.closest('dialog');
             if (dlg) dlg.close();
         });
+    });
+
+    // Backdrop click + ensure no stuck modal top-layer on admin.
+    document.querySelectorAll('dialog.admin-panel').forEach(function (dlg) {
+        dlg.addEventListener('click', function (event) {
+            if (event.target === dlg) dlg.close();
+        });
+    });
+
+    document.querySelectorAll('dialog.admin-panel[open]').forEach(function (dlg) {
+        // Native `open` is non-modal and can leave a confusing overlay feel.
+        // Promote to a real modal so Escape/backdrop dismissal always works.
+        try {
+            dlg.removeAttribute('open');
+            dlg.showModal();
+        } catch (err) {
+            dlg.setAttribute('open', '');
+        }
+    });
+
+    window.addEventListener('pageshow', function () {
+        document.body.classList.remove('admin-profile-open', 'nav-open');
+        var profile = document.getElementById('security-profile-overlay');
+        if (profile) {
+            profile.hidden = true;
+            profile.classList.remove('is-open');
+        }
     });
 
     var syncModules = function () {};
@@ -2735,6 +3026,170 @@ $canEditOpenedUser = $editUser !== null
         }
     }
 
+    (function initInviteCourses() {
+        var root = document.querySelector('[data-invite-courses]');
+        if (!root) return;
+
+        var toggle = document.getElementById('invite-courses-toggle');
+        var panel = document.getElementById('invite-courses-panel');
+        var filter = document.getElementById('invite-course-filter');
+        var grid = document.getElementById('invite-course-grid');
+        var form = document.getElementById('invite-create-form');
+        var titleEl = root.querySelector('[data-invite-courses-title]');
+        var summary = root.querySelector('[data-invite-courses-summary]');
+        var countEl = root.querySelector('[data-invite-selected-count]');
+        var chips = root.querySelector('[data-invite-courses-chips]');
+        var selectAll = root.querySelector('[data-invite-select-all]');
+        var clearAll = root.querySelector('[data-invite-clear-all]');
+
+        function boxes() {
+            return root.querySelectorAll('input[name="course_ids[]"]');
+        }
+
+        function selectedBoxes() {
+            return Array.prototype.filter.call(boxes(), function (box) { return box.checked; });
+        }
+
+        function courseTitle(box) {
+            var item = box.closest('[data-invite-course]');
+            if (!item) return 'Course';
+            return item.getAttribute('data-course-title')
+                || ((item.querySelector('strong') || {}).textContent || 'Course').trim();
+        }
+
+        function syncSelection() {
+            var selected = selectedBoxes();
+            var n = selected.length;
+            var open = root.classList.contains('is-open');
+            root.classList.toggle('has-selection', n > 0);
+            if (countEl) countEl.textContent = String(n);
+
+            boxes().forEach(function (box) {
+                var item = box.closest('[data-invite-course]');
+                if (item) item.classList.toggle('is-selected', box.checked);
+            });
+
+            if (titleEl) {
+                titleEl.textContent = n === 0 ? 'Choose modules' : (n === 1 ? '1 course selected' : n + ' courses selected');
+            }
+            if (summary) {
+                if (n === 0) {
+                    summary.textContent = open
+                        ? 'Tick every module this student should join'
+                        : 'Open to select one or more courses';
+                } else if (open) {
+                    summary.textContent = 'You can add or remove courses below';
+                } else {
+                    summary.textContent = 'Click to review or change the selection';
+                }
+            }
+
+            if (chips) {
+                chips.innerHTML = '';
+                if (n === 0) {
+                    chips.hidden = true;
+                } else {
+                    chips.hidden = false;
+                    selected.slice(0, 6).forEach(function (box) {
+                        var chip = document.createElement('span');
+                        chip.className = 'admin-invite-chip';
+                        var label = document.createElement('span');
+                        label.textContent = courseTitle(box);
+                        chip.appendChild(label);
+                        chips.appendChild(chip);
+                    });
+                    if (n > 6) {
+                        var more = document.createElement('span');
+                        more.className = 'admin-invite-chip';
+                        more.innerHTML = '<span>+' + (n - 6) + ' more</span>';
+                        chips.appendChild(more);
+                    }
+                }
+            }
+        }
+
+        function setOpen(open, opts) {
+            if (!toggle || !panel) return;
+            opts = opts || {};
+            if (open) {
+                panel.hidden = false;
+                // Force reflow so the open transition runs after unhiding.
+                void panel.offsetHeight;
+                root.classList.add('is-open');
+                toggle.setAttribute('aria-expanded', 'true');
+                panel.classList.add('is-open');
+                syncSelection();
+                if (filter && opts.focusFilter) {
+                    window.setTimeout(function () { filter.focus(); }, 220);
+                }
+            } else {
+                root.classList.remove('is-open');
+                toggle.setAttribute('aria-expanded', 'false');
+                panel.classList.remove('is-open');
+                syncSelection();
+                window.setTimeout(function () {
+                    if (!root.classList.contains('is-open')) {
+                        panel.hidden = true;
+                    }
+                }, 280);
+            }
+        }
+
+        if (toggle) {
+            toggle.addEventListener('click', function () {
+                setOpen(!root.classList.contains('is-open'), { focusFilter: true });
+            });
+        }
+
+        if (filter && grid) {
+            filter.addEventListener('input', function () {
+                var q = filter.value.trim().toLowerCase();
+                grid.querySelectorAll('[data-invite-course]').forEach(function (item) {
+                    var hay = item.getAttribute('data-enroll-search') || '';
+                    item.hidden = q !== '' && hay.indexOf(q) === -1;
+                });
+            });
+        }
+
+        boxes().forEach(function (box) {
+            box.addEventListener('change', syncSelection);
+        });
+
+        if (selectAll) {
+            selectAll.addEventListener('click', function () {
+                boxes().forEach(function (box) {
+                    var item = box.closest('[data-invite-course]');
+                    if (item && !item.hidden) box.checked = true;
+                });
+                syncSelection();
+            });
+        }
+
+        if (clearAll) {
+            clearAll.addEventListener('click', function () {
+                boxes().forEach(function (box) { box.checked = false; });
+                syncSelection();
+            });
+        }
+
+        if (form) {
+            form.addEventListener('submit', function (event) {
+                if (selectedBoxes().length === 0) {
+                    event.preventDefault();
+                    setOpen(true);
+                    root.classList.add('is-validation-shaking');
+                    window.setTimeout(function () {
+                        root.classList.remove('is-validation-shaking');
+                    }, 400);
+                    if (summary) summary.textContent = 'Select at least one course before creating the invite';
+                }
+            });
+        }
+
+        // Start collapsed — expands only when the teacher clicks.
+        setOpen(false, { focusFilter: false });
+    })();
+
     var securityPageCheck = document.getElementById('security-select-page');
     var securityMatchingWrap = document.getElementById('security-select-matching-wrap');
     var securityMatchingToggle = document.getElementById('security-select-matching-toggle');
@@ -2875,10 +3330,8 @@ $canEditOpenedUser = $editUser !== null
             }
         }
 
+        profileOverlay.classList.add('is-open');
         profileOverlay.hidden = false;
-        requestAnimationFrame(function () {
-            profileOverlay.classList.add('is-open');
-        });
         document.body.classList.add('admin-profile-open');
         var panel = profileOverlay.querySelector('.admin-profile-panel');
         if (panel) panel.focus();
@@ -2904,6 +3357,30 @@ $canEditOpenedUser = $editUser !== null
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape') {
             closeSecurityProfile();
+        }
+    });
+})();
+
+(function () {
+    var btn = document.getElementById('invite-copy-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-copy-target') || 'invite-link-once';
+        var input = document.getElementById(id);
+        if (!input) return;
+        input.select();
+        input.setSelectionRange(0, input.value.length);
+        var done = function () {
+            var prev = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(function () { btn.textContent = prev; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(input.value).then(done).catch(function () {
+                try { document.execCommand('copy'); done(); } catch (e) {}
+            });
+        } else {
+            try { document.execCommand('copy'); done(); } catch (e) {}
         }
     });
 })();

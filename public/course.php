@@ -615,11 +615,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $createItemError = 'Please upload a video file or paste a ' . portal_supported_video_source_hint() . '.';
             } elseif ($type === 'submission') {
                 $deadlineRaw = trim((string) ($_POST['submission_deadline'] ?? ''));
-                $deadlineTs = $deadlineRaw !== '' ? strtotime($deadlineRaw) : false;
-                if ($deadlineTs === false) {
-                    $createItemError = 'Please set a valid deadline for this submission slot.';
+                if ($deadlineRaw === '') {
+                    $submissionDeadline = '';
                 } else {
-                    $submissionDeadline = date('Y-m-d H:i:s', $deadlineTs);
+                    $deadlineTs = strtotime($deadlineRaw);
+                    if ($deadlineTs === false) {
+                        $createItemError = 'Please enter a valid deadline, or leave it blank for no deadline.';
+                    } elseif ($deadlineTs <= time()) {
+                        $createItemError = 'Deadline must be in the future, or leave it blank for no deadline.';
+                    } else {
+                        $submissionDeadline = date('Y-m-d H:i:s', $deadlineTs);
+                    }
+                }
+                if ($createItemError === null) {
                     $submissionAiDetection = isset($_POST['submission_ai_detection']) && $_POST['submission_ai_detection'] === '1' ? 1 : 0;
                     $submissionMaxAttempts = (int) ($_POST['submission_max_attempts'] ?? 0);
                     if (!in_array($submissionMaxAttempts, [0, 1, 2], true)) {
@@ -701,11 +709,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($error === null && $itemRow['type'] === 'submission') {
                     $deadlineRaw = trim((string) ($_POST['submission_deadline'] ?? ''));
-                    $deadlineTs = $deadlineRaw !== '' ? strtotime($deadlineRaw) : false;
-                    if ($deadlineTs === false) {
-                        $error = 'Please set a valid deadline for this submission slot.';
+                    $previousDeadline = trim((string) ($itemRow['submission_deadline'] ?? ''));
+                    $previousTs = $previousDeadline !== '' ? strtotime($previousDeadline) : false;
+                    if ($deadlineRaw === '') {
+                        $deadline = '';
                     } else {
-                        $deadline = date('Y-m-d H:i:s', $deadlineTs);
+                        $deadlineTs = strtotime($deadlineRaw);
+                        if ($deadlineTs === false) {
+                            $error = 'Please enter a valid deadline, or leave it blank for no deadline.';
+                        } elseif ($deadlineTs <= time()) {
+                            // Teachers may close a slot by moving the deadline slightly into the
+                            // past. Reject absurd historical dates (e.g. 2006) on new changes.
+                            $oldestAllowedPast = time() - (7 * 24 * 3600);
+                            $unchangedPast = $previousTs !== false && abs($deadlineTs - $previousTs) < 60;
+                            if ($deadlineTs < $oldestAllowedPast && !$unchangedPast) {
+                                $error = 'Deadline must be in the future, leave blank for none, or set a recent time (within 7 days) to close submissions.';
+                            } else {
+                                $deadline = date('Y-m-d H:i:s', $deadlineTs);
+                            }
+                        } else {
+                            $deadline = date('Y-m-d H:i:s', $deadlineTs);
+                        }
+                    }
+                    if ($error === null) {
                         $aiDetection = isset($_POST['submission_ai_detection']) && $_POST['submission_ai_detection'] === '1' ? 1 : 0;
                         $maxAttempts = (int) ($_POST['submission_max_attempts'] ?? 0);
                         if (!in_array($maxAttempts, [0, 1, 2], true)) {
@@ -914,16 +940,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      WHERE id = ? AND course_id = ?"
                 )->execute([$score, $feedback, (int) $me['id'], $subId, $courseId]);
                 $prevScore = $prev['score'] ?? null;
+                $studentId = (int) ($prev['user_id'] ?? 0);
                 portal_log_security_event(
                     'grade_changed',
                     'medium',
                     'Marked submission #' . $subId
                         . ' (course #' . $courseId
-                        . ', student #' . (int) ($prev['user_id'] ?? 0)
+                        . ', student #' . $studentId
                         . ') score '
                         . ($prevScore === null || $prevScore === '' ? 'none' : (string) $prevScore)
                         . '→' . $score
                 );
+                if ($studentId > 0) {
+                    $slotTitleStmt = $db->prepare(
+                        "SELECT cfi.title
+                         FROM course_submissions cs
+                         JOIN course_folder_items cfi ON cfi.id = cs.item_id
+                         WHERE cs.id = ? AND cs.course_id = ?"
+                    );
+                    $slotTitleStmt->execute([$subId, $courseId]);
+                    $slotTitle = trim((string) ($slotTitleStmt->fetchColumn() ?: 'Assignment'));
+                    if ($slotTitle === '') {
+                        $slotTitle = 'Assignment';
+                    }
+                    $gradeLink = 'course.php?course=' . rawurlencode($slug) . '&section=gradebook';
+                    portal_notify_grade_returned(
+                        $studentId,
+                        $courseId,
+                        'Grade returned: ' . $slotTitle,
+                        'You scored ' . $score . '% on ' . $slotTitle . '.',
+                        $gradeLink,
+                        'submission:' . $subId . ':' . $score
+                    );
+                }
                 if (portal_is_fetch_request()) {
                     portal_json_response([
                         'ok'            => true,
@@ -2794,8 +2843,8 @@ ob_start();
                                                                             </div>
                                                                             <div class="folder-form-row">
                                                                                 <label class="folder-form-label">
-                                                                                    <span>Deadline</span>
-                                                                                    <input type="datetime-local" name="submission_deadline" required value="<?= portal_escape($itemDeadlineValue) ?>">
+                                                                                    <span>Deadline <small>(optional — leave blank for none)</small></span>
+                                                                                    <input type="datetime-local" name="submission_deadline" value="<?= portal_escape($itemDeadlineValue) ?>">
                                                                                 </label>
                                                                                 <label class="folder-form-label">
                                                                                     <span>Grade weight <small>(%)</small></span>
@@ -3143,8 +3192,8 @@ ob_start();
                                             </div>
                                             <div class="folder-form-row item-submission-group">
                                                 <label class="folder-form-label">
-                                                    <span>Deadline</span>
-                                                    <input type="datetime-local" name="submission_deadline">
+                                                    <span>Deadline <small>(optional — leave blank for none)</small></span>
+                                                    <input type="datetime-local" name="submission_deadline" min="<?= portal_escape(date('Y-m-d\TH:i')) ?>">
                                                 </label>
                                                 <label class="folder-form-label">
                                                     <span>Grade weight <small>(%)</small></span>
@@ -4042,7 +4091,7 @@ ob_start();
 
 <?php if (!empty($unreadAnnouncements)): ?>
 <!-- ── Unread announcements notification ─────────────────────────────────────── -->
-<div id="ann-notification" class="ann-notify-overlay" role="dialog" aria-modal="true" aria-label="New announcements">
+<div id="ann-notification" class="ann-notify-overlay" hidden role="dialog" aria-modal="true" aria-label="New announcements">
     <div class="ann-notify-box">
         <div class="ann-notify-header">
             <div>
@@ -4868,6 +4917,7 @@ ob_start();
         const token = pd?.dataset.csrf  ?? '';
 
         async function markAndClose() {
+            if (overlay.hidden) return;
             const ids = [...overlay.querySelectorAll('[data-ann-id]')].map(el => el.dataset.annId);
             const params = new URLSearchParams({ _token: token, action: 'mark_announcements_read' });
             ids.forEach(id => params.append('announcement_ids[]', id));
@@ -4880,8 +4930,12 @@ ob_start();
             } catch (_) {}
             // Remove the unread badge from the Announcements tab
             document.querySelector('.course-tab[href*="section=announcements"] .course-tab-badge')?.remove();
+            overlay.classList.remove('ann-notify--in');
             overlay.classList.add('ann-notify--out');
-            const hideOverlay = () => { overlay.hidden = true; };
+            const hideOverlay = () => {
+                overlay.hidden = true;
+                overlay.classList.remove('ann-notify--out');
+            };
             overlay.addEventListener('animationend', hideOverlay, { once: true });
             setTimeout(hideOverlay, 400); // fallback if animationend never fires
         }
@@ -4891,7 +4945,8 @@ ob_start();
         overlay.addEventListener('click', e => { if (e.target === overlay) markAndClose(); });
         document.addEventListener('keydown', e => { if (e.key === 'Escape') markAndClose(); });
 
-        // Animate in
+        // Reveal only when ready to animate — never leave an invisible click trap.
+        overlay.hidden = false;
         requestAnimationFrame(() => overlay.classList.add('ann-notify--in'));
     })();
 

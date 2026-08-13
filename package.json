@@ -7,9 +7,12 @@
     "test": "npm run test:all",
     "test:activity": "C:\\xampp\\php\\php.exe tests/activity_system_check.php",
     "test:events": "C:\\xampp\\php\\php.exe tests/events_system_check.php",
+    "test:mail": "C:\\xampp\\php\\php.exe tests/notification_mail_check.php",
+    "test:calendar": "C:\\xampp\\php\\php.exe tests/calendar_ics_check.php",
+    "test:invite": "C:\\xampp\\php\\php.exe tests/invite_check.php",
     "test:security": "playwright test",
     "test:security:headed": "playwright test --headed",
-    "test:all": "npm run test:activity && npm run test:events && npm run test:security",
+    "test:all": "npm run test:activity && npm run test:events && npm run test:mail && npm run test:calendar && npm run test:invite && npm run test:security",
     "playwright:install": "playwright install chromium"
   },
   "repository": {

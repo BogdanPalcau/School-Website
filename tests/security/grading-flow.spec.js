@@ -31,7 +31,9 @@ test('assignment submit before deadline, block after, grade/feedback peer-isolat
   const courseUrl = `/course.php?course=${fixtures.courses.openSlug}`;
   const title = 'Grading Flow Essay';
   const futureDeadline = '2099-12-31T17:00';
-  const pastDeadline = '2020-01-01T00:00';
+  const pastDeadline = new Date(Date.now() - 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 16);
 
   await signInAs(page, fixtures, 'teacher');
   await page.goto(`${courseUrl}&section=content`);

@@ -468,6 +468,14 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                         400
                     );
                 }
+                $pendingRelease = $db->prepare(
+                    "SELECT id, user_id, percentage FROM activity_attempts
+                     WHERE activity_id = ?
+                       AND status IN ('submitted','auto_submitted','marked')"
+                );
+                $pendingRelease->execute([$activityId]);
+                $toRelease = $pendingRelease->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
                 $db->prepare(
                     "UPDATE course_activities SET results_released = 1, updated_at = datetime('now'), version = version + 1
                      WHERE id = ?"
@@ -480,12 +488,7 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                 )->execute([$activityId]);
                 $activityForRewards = portal_activity_find($activityId);
                 if ($activityForRewards && ($activityForRewards['mode'] ?? '') === 'assessment') {
-                    $releasedStmt = $db->prepare(
-                        "SELECT id, user_id FROM activity_attempts
-                         WHERE activity_id = ? AND status = 'released'"
-                    );
-                    $releasedStmt->execute([$activityId]);
-                    foreach ($releasedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $releasedAttempt) {
+                    foreach ($toRelease as $releasedAttempt) {
                         portal_activity_award_badges_after_attempt(
                             (int) $releasedAttempt['user_id'],
                             $activityForRewards,
@@ -493,9 +496,14 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                         );
                     }
                 }
+                portal_notify_activity_grades_released(
+                    $activityForRewards ?: $activity,
+                    $course,
+                    $toRelease
+                );
                 portal_activity_audit($activityId, 'results_released_all');
             } else {
-                $chk = $db->prepare('SELECT id, status FROM activity_attempts WHERE id = ? AND activity_id = ?');
+                $chk = $db->prepare('SELECT id, status, user_id, percentage FROM activity_attempts WHERE id = ? AND activity_id = ?');
                 $chk->execute([$attemptId, $activityId]);
                 $row = $chk->fetch(PDO::FETCH_ASSOC);
                 if (!$row) {
@@ -507,17 +515,24 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                         400
                     );
                 }
+                $wasReleased = (string) ($row['status'] ?? '') === 'released';
                 $db->prepare(
                     "UPDATE activity_attempts SET status = 'released', grade_seen_at = '', updated_at = datetime('now') WHERE id = ?"
                 )->execute([$attemptId]);
                 $activityForRewards = portal_activity_find($activityId);
                 if ($activityForRewards && ($activityForRewards['mode'] ?? '') === 'assessment') {
-                    $rewardUser = $db->prepare('SELECT user_id FROM activity_attempts WHERE id = ?');
-                    $rewardUser->execute([$attemptId]);
                     portal_activity_award_badges_after_attempt(
-                        (int) $rewardUser->fetchColumn(),
+                        (int) ($row['user_id'] ?? 0),
                         $activityForRewards,
                         $attemptId
+                    );
+                }
+                if (!$wasReleased) {
+                    $row['id'] = $attemptId;
+                    portal_notify_activity_grades_released(
+                        $activityForRewards ?: $activity,
+                        $course,
+                        [$row]
                     );
                 }
                 portal_activity_audit($activityId, 'results_released', ['attempt_id' => $attemptId]);

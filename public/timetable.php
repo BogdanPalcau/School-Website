@@ -131,9 +131,13 @@ ob_start();
             <div>
                 <p class="eyebrow">Week view</p>
                 <h3 class="card-title">Your weekly schedule</h3>
-                <p>Live classes from your modules.</p>
+                <p>Live classes from your modules. Export to Google or Apple Calendar with .ics.</p>
             </div>
-            <span class="chip"><?= count($scheduleRows) ?> class<?= count($scheduleRows) === 1 ? '' : 'es' ?></span>
+            <div class="button-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="chip"><?= count($scheduleRows) ?> class<?= count($scheduleRows) === 1 ? '' : 'es' ?></span>
+                <a class="button-secondary button--sm" href="calendar-export.php?types=timetable">Download timetable .ics</a>
+                <a class="button-secondary button--sm" href="calendar-export.php?types=timetable,deadlines,events">Download all .ics</a>
+            </div>
         </div>
 
         <div class="calendar-overview">

@@ -850,9 +850,12 @@ ob_start();
                         <h3 class="card-title">Your priorities</h3>
                         <p class="dash-section-rule">Work waiting on you — deadlines and returned grades.</p>
                     </div>
-                    <?php if ($studentPriorityTotal > 0): ?>
-                        <span class="chip chip--muted"><?= $studentPriorityTotal ?></span>
-                    <?php endif; ?>
+                    <div class="button-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
+                        <?php if ($studentPriorityTotal > 0): ?>
+                            <span class="chip chip--muted"><?= $studentPriorityTotal ?></span>
+                        <?php endif; ?>
+                        <a class="button-secondary button--sm" href="calendar-export.php?types=deadlines" title="Import into Google or Apple Calendar">Deadlines .ics</a>
+                    </div>
                 </div>
 
                 <?php if (!$studentHasPriorities): ?>

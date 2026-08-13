@@ -69,6 +69,7 @@ ob_start();
     <div class="login-intro">
         <h2>Welcome back</h2>
         <p class="login-copy">Enter your school username and password to open your dashboard.</p>
+        <p class="login-copy">Have an invite link? Open it from your email or your admin — accounts are invitation-only.</p>
     </div>
 
     <?php if ($loggedOut): ?>

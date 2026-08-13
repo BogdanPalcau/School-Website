@@ -81,6 +81,8 @@ Security
 - CSRF protection on sensitive actions
 - Login throttling
 - Self-service password reset via SMTP (when configured)
+- Admin/owner student invites (email-bound, single-use, course-locked; copyable link always, email when SMTP is ready)
+- Grade return emails and 24h assignment deadline reminders (when SMTP + `PORTAL_BASE_URL` are configured; run `php scripts/send_notification_emails.php` on a schedule)
 - Safer upload validation
 - Protected database and upload folders
 - Rich-text sanitisation for discussions and announcements
@@ -111,7 +113,7 @@ Composer dependencies (password reset / outbound mail)
 ```
 composer install
 ```
-Copy `.env.example` to `.env` and set `SMTP_*`, `PORTAL_BASE_URL`, and `PORTAL_APP_SECRET`. Without SMTP, the forgot-password form still shows a neutral success message and does not reveal whether an account exists.
+Copy `.env.example` to `.env` and set `SMTP_*`, `PORTAL_BASE_URL`, and `PORTAL_APP_SECRET`. Without SMTP, the forgot-password form still shows a neutral success message and does not reveal whether an account exists. Grade/deadline/invite emails are skipped until SMTP and `PORTAL_BASE_URL` are set; schedule `php scripts/send_notification_emails.php --hours=24` hourly or daily for due-soon reminders. Admins can still create student invites and copy the link from Admin → Student Invites without SMTP.
 
 ---
 
@@ -197,6 +199,10 @@ School-Website/
 │
 ├── bootstrap.php             Core helpers, auth, database, security utilities
 ├── mailer.php                PHPMailer SMTP helper
+├── notification_mail.php     Grade + deadline reminder emails
+├── invite.php                Student invite helpers (admin/owner)
+├── calendar_ics.php          iCalendar (.ics) export helpers
+├── scripts/send_notification_emails.php  CLI deadline mailer (cron/Task Scheduler)
 ├── activity.php              Activities domain helpers (scoring, attempts, integrity, media)
 ├── composer.json             PHP dependencies (PHPMailer)
 ├── db_init.php               Database setup and seed data

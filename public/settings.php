@@ -140,6 +140,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'notify_qa'            => isset($_POST['notify_qa']) ? 1 : 0,
             'notify_announcements' => isset($_POST['notify_announcements']) ? 1 : 0,
             'notify_events'        => isset($_POST['notify_events']) ? 1 : 0,
+            'notify_deadlines'     => isset($_POST['notify_deadlines']) ? 1 : 0,
         ]);
         $_SESSION['settings_flash'] = ['success', 'Notification preferences saved.'];
         portal_redirect('settings.php#tab-notifications');
@@ -304,7 +305,7 @@ ob_start();
         <section class="settings-block" id="notifications" role="tabpanel" data-settings-panel="notifications">
             <div class="settings-block-head">
                 <h3>Notifications</h3>
-                <p>Personal alerts in Communication.</p>
+                <p>In-app alerts in Communication<?= portal_transactional_mail_ready() ? ', plus email when you are offline' : '' ?>.</p>
             </div>
 
             <form method="POST" class="settings-form">
@@ -315,9 +316,16 @@ ob_start();
                     <label class="settings-toggle">
                         <span>
                             <strong>Grade updates</strong>
-                            <small>When marked work is returned</small>
+                            <small>When marked work or activity results are returned<?= portal_transactional_mail_ready() ? ' (inbox + email)' : '' ?></small>
                         </span>
                         <input type="checkbox" name="notify_grades" value="1"<?= !empty($prefs['notify_grades']) ? ' checked' : '' ?>>
+                    </label>
+                    <label class="settings-toggle">
+                        <span>
+                            <strong>Deadline reminders</strong>
+                            <small>Assignment due within 24 hours if you have not submitted yet<?= portal_transactional_mail_ready() ? ' (email)' : ' (enable SMTP to receive email)' ?></small>
+                        </span>
+                        <input type="checkbox" name="notify_deadlines" value="1"<?= !empty($prefs['notify_deadlines']) ? ' checked' : '' ?>>
                     </label>
                     <label class="settings-toggle">
                         <span>

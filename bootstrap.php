@@ -656,7 +656,7 @@ if (!function_exists('portal_submission_deadline_info')) {
         if (trim($deadlineRaw) === '') {
             return [
                 'has_deadline' => false,
-                'text' => 'No deadline set',
+                'text' => 'No deadline',
                 'state' => 'none',
                 'passed' => false,
             ];
@@ -666,7 +666,7 @@ if (!function_exists('portal_submission_deadline_info')) {
         if ($ts === false) {
             return [
                 'has_deadline' => false,
-                'text' => 'No deadline set',
+                'text' => 'No deadline',
                 'state' => 'none',
                 'passed' => false,
             ];
@@ -710,7 +710,7 @@ if (!function_exists('portal_render_submission_deadline')) {
         <div class="<?= portal_escape($classes) ?>">
             <span class="sub-slot-deadline-icon"><?= portal_icon('clock', 'icon-xs') ?></span>
             <span class="sub-slot-deadline-body">
-                <span class="sub-slot-deadline-label">Due date</span>
+                <span class="sub-slot-deadline-label"><?= $info['has_deadline'] ? 'Due date' : 'Deadline' ?></span>
                 <strong class="sub-slot-deadline-value"><?= portal_escape($info['text']) ?></strong>
             </span>
             <?php if ($info['passed']): ?>
@@ -1156,7 +1156,7 @@ if (!function_exists('portal_year_group_options')) {
 
 if (!function_exists('portal_user_preferences')) {
     /**
-     * @return array{notify_grades:int,notify_qa:int,notify_announcements:int,notify_events:int}
+     * @return array{notify_grades:int,notify_qa:int,notify_announcements:int,notify_events:int,notify_deadlines:int}
      */
     function portal_user_preferences(int $userId): array
     {
@@ -1165,6 +1165,7 @@ if (!function_exists('portal_user_preferences')) {
             'notify_qa'            => 1,
             'notify_announcements' => 1,
             'notify_events'        => 1,
+            'notify_deadlines'     => 1,
         ];
         if ($userId <= 0) {
             return $defaults;
@@ -1172,7 +1173,7 @@ if (!function_exists('portal_user_preferences')) {
 
         try {
             $stmt = portal_db()->prepare(
-                "SELECT notify_grades, notify_qa, notify_announcements, notify_events
+                "SELECT notify_grades, notify_qa, notify_announcements, notify_events, notify_deadlines
                  FROM user_preferences WHERE user_id = ? LIMIT 1"
             );
             $stmt->execute([$userId]);
@@ -1186,9 +1187,10 @@ if (!function_exists('portal_user_preferences')) {
                 'notify_qa'            => (int) $row['notify_qa'] === 1 ? 1 : 0,
                 'notify_announcements' => (int) $row['notify_announcements'] === 1 ? 1 : 0,
                 'notify_events'        => (int) ($row['notify_events'] ?? 1) === 1 ? 1 : 0,
+                'notify_deadlines'     => (int) ($row['notify_deadlines'] ?? 1) === 1 ? 1 : 0,
             ];
         } catch (\Throwable $e) {
-            // Older DBs may lack notify_events until migration runs.
+            // Older DBs may lack newer preference columns until migration runs.
             try {
                 $stmt = portal_db()->prepare(
                     "SELECT notify_grades, notify_qa, notify_announcements
@@ -1205,6 +1207,7 @@ if (!function_exists('portal_user_preferences')) {
                     'notify_qa'            => (int) $row['notify_qa'] === 1 ? 1 : 0,
                     'notify_announcements' => (int) $row['notify_announcements'] === 1 ? 1 : 0,
                     'notify_events'        => 1,
+                    'notify_deadlines'     => 1,
                 ];
             } catch (\Throwable $e2) {
                 return $defaults;
@@ -1220,21 +1223,32 @@ if (!function_exists('portal_save_user_preferences')) {
             return;
         }
 
+        $current = portal_user_preferences($userId);
+        $flag = static function (array $prefs, array $current, string $key): int {
+            if (!array_key_exists($key, $prefs)) {
+                return !empty($current[$key]) ? 1 : 0;
+            }
+
+            return !empty($prefs[$key]) ? 1 : 0;
+        };
+
         portal_db()->prepare(
-            "INSERT INTO user_preferences (user_id, notify_grades, notify_qa, notify_announcements, notify_events, updated_at)
-             VALUES (?,?,?,?,?,datetime('now'))
+            "INSERT INTO user_preferences (user_id, notify_grades, notify_qa, notify_announcements, notify_events, notify_deadlines, updated_at)
+             VALUES (?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(user_id) DO UPDATE SET
                 notify_grades = excluded.notify_grades,
                 notify_qa = excluded.notify_qa,
                 notify_announcements = excluded.notify_announcements,
                 notify_events = excluded.notify_events,
+                notify_deadlines = excluded.notify_deadlines,
                 updated_at = datetime('now')"
         )->execute([
             $userId,
-            !empty($prefs['notify_grades']) ? 1 : 0,
-            !empty($prefs['notify_qa']) ? 1 : 0,
-            !empty($prefs['notify_announcements']) ? 1 : 0,
-            !empty($prefs['notify_events']) ? 1 : 0,
+            $flag($prefs, $current, 'notify_grades'),
+            $flag($prefs, $current, 'notify_qa'),
+            $flag($prefs, $current, 'notify_announcements'),
+            $flag($prefs, $current, 'notify_events'),
+            $flag($prefs, $current, 'notify_deadlines'),
         ]);
     }
 }
@@ -1258,6 +1272,7 @@ if (!function_exists('portal_notify_user')) {
             'grade', 'grades' => 'notify_grades',
             'announcement', 'announcements' => 'notify_announcements',
             'event' => 'notify_events',
+            'deadline', 'deadlines' => 'notify_deadlines',
             default => null,
         };
         if ($prefKey !== null && empty($prefs[$prefKey])) {
@@ -1789,6 +1804,11 @@ if (!function_exists('portal_security_event_type_label')) {
             'profile_updated'            => 'Profile updated',
             'password_changed'           => 'Password changed',
             'account_status_changed'     => 'Account status changed',
+            'invite_created'             => 'Student invite created',
+            'invite_revoked'             => 'Student invite revoked',
+            'invite_accepted'            => 'Student invite accepted',
+            'invite_accept_failed'       => 'Student invite accept failed',
+            'invite_email_sent'          => 'Student invite email sent',
             default                      => ucwords(str_replace('_', ' ', $eventType)),
         };
     }
@@ -2903,6 +2923,21 @@ if (!function_exists('portal_run_migrations')) {
         if (!in_array('notify_events', $prefCols, true)) {
             $db->exec("ALTER TABLE user_preferences ADD COLUMN notify_events INTEGER NOT NULL DEFAULT 1");
         }
+        if (!in_array('notify_deadlines', $prefCols, true)) {
+            $db->exec("ALTER TABLE user_preferences ADD COLUMN notify_deadlines INTEGER NOT NULL DEFAULT 1");
+        }
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS portal_mail_sent (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind     TEXT    NOT NULL,
+                ref_key  TEXT    NOT NULL,
+                sent_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, kind, ref_key)
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_portal_mail_sent_kind ON portal_mail_sent(kind, sent_at)");
 
         // ── Groups ────────────────────────────────────────────────────────────
         $db->exec("
@@ -2978,6 +3013,54 @@ if (!function_exists('portal_run_migrations')) {
             )
         ");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_ip ON password_reset_attempts(ip, attempted_at)");
+
+        // ── Student invites (admin/owner email-bound signup links) ─────────────
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS student_invites (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                email             TEXT    NOT NULL COLLATE NOCASE,
+                token_hash        TEXT    NOT NULL UNIQUE,
+                course_id         INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                locked_name       TEXT    NOT NULL DEFAULT '',
+                locked_year       TEXT    NOT NULL DEFAULT '',
+                invited_by        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at        INTEGER NOT NULL,
+                used_at           INTEGER NULL,
+                revoked_at        INTEGER NULL,
+                created_at        INTEGER NOT NULL,
+                created_ip        TEXT    NOT NULL DEFAULT '',
+                accepted_ip       TEXT    NOT NULL DEFAULT '',
+                accepted_user_id  INTEGER NULL REFERENCES users(id) ON DELETE SET NULL
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_student_invites_email ON student_invites(email, created_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_student_invites_pending ON student_invites(expires_at, used_at, revoked_at)");
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS student_invite_attempts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip           TEXT    NOT NULL,
+                attempted_at INTEGER NOT NULL
+            )
+        ");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_student_invite_attempts_ip ON student_invite_attempts(ip, attempted_at)");
+
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS student_invite_courses (
+                invite_id INTEGER NOT NULL REFERENCES student_invites(id) ON DELETE CASCADE,
+                course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                PRIMARY KEY (invite_id, course_id)
+            )
+        ");
+        // Backfill junction rows for invites created before multi-course support.
+        try {
+            $db->exec(
+                "INSERT OR IGNORE INTO student_invite_courses (invite_id, course_id)
+                 SELECT id, course_id FROM student_invites WHERE course_id > 0"
+            );
+        } catch (\Throwable $e) {
+            // ignore
+        }
 
         // ── Security activity log ──────────────────────────────────────────────
         $db->exec("
@@ -3434,6 +3517,8 @@ require_once __DIR__ . '/integrity.php';
 require_once __DIR__ . '/submission_security.php';
 require_once __DIR__ . '/events.php';
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/notification_mail.php';
+require_once __DIR__ . '/invite.php';
 // activity.php is loaded earlier so migrations run with portal_run_migrations()
 
 // ── Password reset (self-service email) ───────────────────────────────────────
