@@ -2244,6 +2244,15 @@ if (!function_exists('portal_set_user_account_status')) {
             return ['ok' => false, 'error' => 'You cannot restrict your own account.'];
         }
 
+        // Mirror security panel can_act / delete rules: only the owner may
+        // mute, restrict, ban, or reactivate peer admin accounts. Without this,
+        // any admin can POST security_account_action and lock out another admin.
+        $actor = portal_find_user_by_id($actorId);
+        $actorRole = (string) ($actor['role'] ?? '');
+        if ((string) ($target['role'] ?? '') === 'admin' && $actorRole !== 'owner') {
+            return ['ok' => false, 'error' => 'Only the owner can change admin account status.'];
+        }
+
         try {
             portal_db()->prepare('UPDATE users SET account_status = ? WHERE id = ?')
                 ->execute([$status, $userId]);
