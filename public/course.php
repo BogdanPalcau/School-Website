@@ -4199,7 +4199,8 @@ if (is_file($portalUploadDndJs)) {
 
 <?php if (portal_can_manage_course($courseId)): ?>
 <div class="reorder-mode-badge" id="reorder-mode-badge" hidden>
-    Moving mode — drag to rearrange folders and items
+    <span>Moving mode — drag to rearrange folders and items</span>
+    <button type="button" class="reorder-mode-done" id="reorder-mode-done">Done</button>
 </div>
 <?php endif; ?>
 <script>
@@ -6597,22 +6598,18 @@ if (is_file($portalUploadDndJs)) {
         });
     });
 
-    // ── Drag-to-reorder folders and items ────────────────────────────────────
+    // ── Pointer-drag to reorder folders and items (not HTML5 DnD) ───────────
     const stack     = document.getElementById('folder-stack');
     const modeBadge = document.getElementById('reorder-mode-badge');
-    if (!stack) return;
-
-    let reorderMode  = false;
-    let dragFolderEl = null;
-    let dragItemEl   = null;
+    const modeDone  = document.getElementById('reorder-mode-done');
+    if (stack) {
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let reorderMode = false;
+    let activePointerId = null;
 
     function isArrowReorderViewport() {
         return window.matchMedia('(max-width: 900px)').matches;
     }
-
-    // Folder summaries and item drag handles become draggable
-    stack.querySelectorAll('.folder-summary').forEach(s => s.setAttribute('draggable', 'true'));
-    stack.querySelectorAll('.item-drag-handle').forEach(h => h.setAttribute('draggable', 'true'));
 
     function enterReorderMode() {
         if (isArrowReorderViewport()) return;
@@ -6623,97 +6620,152 @@ if (is_file($portalUploadDndJs)) {
 
     function exitReorderMode() {
         reorderMode = false;
+        activePointerId = null;
         stack.classList.remove('folder-stack--reordering');
+        stack.querySelectorAll('.is-dragging').forEach((el) => {
+            el.classList.remove('is-dragging');
+            el.style.cssText = '';
+        });
+        stack.querySelectorAll('.folder-reorder-slot, .folder-item-reorder-slot').forEach((el) => el.remove());
         if (modeBadge) modeBadge.hidden = true;
     }
 
-    stack.querySelectorAll('.folder-drag-handle, .item-drag-handle').forEach(handle => {
-        handle.addEventListener('mousedown', () => {
-            if (!isArrowReorderViewport() && !reorderMode) enterReorderMode();
+    function flipSiblings(parent, apply) {
+        if (reduceMotion) {
+            apply();
+            return;
+        }
+        const nodes = Array.from(parent.children);
+        const first = new Map(nodes.map((n) => [n, n.getBoundingClientRect()]));
+        apply();
+        nodes.forEach((n) => {
+            const prev = first.get(n);
+            if (!prev || !n.isConnected) return;
+            const last = n.getBoundingClientRect();
+            const dy = prev.top - last.top;
+            if (Math.abs(dy) < 1) return;
+            n.animate(
+                [{ transform: 'translateY(' + dy + 'px)' }, { transform: 'none' }],
+                { duration: 220, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+            );
         });
-    });
+    }
 
-    // Click anywhere outside the folder stack to exit reorder mode
-    document.addEventListener('click', e => {
-        if (reorderMode && !stack.contains(e.target)) exitReorderMode();
-    });
+    function flipMove(el, apply) {
+        flipSiblings(el.parentNode, apply);
+    }
 
-    stack.addEventListener('dragstart', e => {
-        if (isArrowReorderViewport() || !reorderMode) { e.preventDefault(); return; }
+    function bindHandle(handle, kind) {
+        handle.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        handle.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || isArrowReorderViewport()) return;
+            const row = handle.closest('.folder-row');
+            const item = handle.closest('.folder-item');
+            const moving = kind === 'folder' ? row : item;
+            const parent = kind === 'folder' ? stack : item?.closest('.folder-items');
+            if (!moving || !parent) return;
+            e.preventDefault();
+            e.stopPropagation();
+            enterReorderMode();
+            activePointerId = e.pointerId;
 
-        // Item drag: triggered from .item-drag-handle
-        const itemHandle = e.target.closest('.item-drag-handle');
-        if (itemHandle) {
-            const item = itemHandle.closest('.folder-item');
-            if (!item) { e.preventDefault(); return; }
-            dragItemEl   = item;
-            dragFolderEl = null;
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', 'item:' + item.dataset.itemId);
-            requestAnimationFrame(() => item.classList.add('is-dragging'));
-            return;
-        }
+            const rect = moving.getBoundingClientRect();
+            const offsetX = e.clientX - rect.left;
+            const offsetY = e.clientY - rect.top;
+            const slot = document.createElement('div');
+            slot.className = kind === 'folder' ? 'folder-reorder-slot' : 'folder-item-reorder-slot';
+            slot.style.height = Math.round(rect.height) + 'px';
+            parent.insertBefore(slot, moving.nextSibling);
 
-        // Folder drag: must not start inside folder body
-        if (e.target.closest('.folder-body')) { e.preventDefault(); return; }
-        const row = e.target.closest('.folder-row');
-        if (!row) { e.preventDefault(); return; }
-        dragFolderEl = row;
-        dragItemEl   = null;
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', 'folder:' + row.dataset.folderId);
-        requestAnimationFrame(() => row.classList.add('is-dragging'));
-    });
+            moving.classList.add('is-dragging');
+            moving.style.width = rect.width + 'px';
+            moving.style.left = rect.left + 'px';
+            moving.style.top = rect.top + 'px';
+            try { handle.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
 
-    stack.addEventListener('dragend', () => {
-        if (dragFolderEl) {
-            dragFolderEl.classList.remove('is-dragging');
-            saveFolderOrder();
-        }
-        if (dragItemEl) {
-            dragItemEl.classList.remove('is-dragging');
-            saveItemPosition(dragItemEl);
-        }
-        dragFolderEl = null;
-        dragItemEl   = null;
-    });
+            const follow = (ev) => {
+                moving.style.left = (ev.clientX - offsetX) + 'px';
+                moving.style.top = (ev.clientY - offsetY) + 'px';
+            };
+            const placeSlot = (clientY) => {
+                const others = Array.from(parent.children).filter((n) => n !== moving && n !== slot);
+                for (const other of others) {
+                    const r = other.getBoundingClientRect();
+                    if (clientY < r.top + r.height / 2) {
+                        if (slot.nextElementSibling !== other) {
+                            flipSiblings(parent, () => parent.insertBefore(slot, other));
+                        }
+                        return;
+                    }
+                }
+                if (parent.lastElementChild !== slot) {
+                    flipSiblings(parent, () => parent.appendChild(slot));
+                }
+            };
 
-    stack.addEventListener('dragover', e => {
+            const onMove = (ev) => {
+                if (ev.pointerId !== activePointerId) return;
+                follow(ev);
+                placeSlot(ev.clientY);
+            };
+            const onUp = (ev) => {
+                if (ev.pointerId !== activePointerId) return;
+                activePointerId = null;
+                follow(ev);
+                const from = moving.getBoundingClientRect();
+                parent.insertBefore(moving, slot);
+                slot.remove();
+                moving.classList.remove('is-dragging');
+                moving.style.cssText = '';
+                if (!reduceMotion) {
+                    const to = moving.getBoundingClientRect();
+                    const dx = from.left - to.left;
+                    const dy = from.top - to.top;
+                    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+                        moving.animate(
+                            [{ transform: 'translate(' + dx + 'px, ' + dy + 'px) scale(1.02)' }, { transform: 'none' }],
+                            { duration: 260, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+                        );
+                    }
+                }
+                try { handle.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
+                handle.removeEventListener('pointermove', onMove);
+                handle.removeEventListener('pointerup', onUp);
+                handle.removeEventListener('pointercancel', onUp);
+                if (kind === 'folder') saveFolderOrder();
+                else saveItemPosition(moving);
+                syncMoveButtons();
+            };
+            handle.addEventListener('pointermove', onMove);
+            handle.addEventListener('pointerup', onUp);
+            handle.addEventListener('pointercancel', onUp);
+        });
+    }
+
+    stack.querySelectorAll('.folder-drag-handle').forEach((h) => bindHandle(h, 'folder'));
+    stack.querySelectorAll('.item-drag-handle').forEach((h) => bindHandle(h, 'item'));
+
+    modeDone?.addEventListener('click', (e) => {
         e.preventDefault();
+        e.stopPropagation();
+        exitReorderMode();
+    });
 
-        if (dragFolderEl) {
-            const target = e.target.closest('.folder-row');
-            if (!target || target === dragFolderEl) return;
-            const { top, height } = target.getBoundingClientRect();
-            if (e.clientY < top + height / 2) {
-                stack.insertBefore(dragFolderEl, target);
-            } else {
-                stack.insertBefore(dragFolderEl, target.nextSibling);
-            }
-            return;
-        }
+    document.addEventListener('click', (e) => {
+        if (!reorderMode || activePointerId !== null) return;
+        if (stack.contains(e.target) || modeBadge?.contains(e.target)) return;
+        exitReorderMode();
+    });
 
-        if (dragItemEl) {
-            const targetItem  = e.target.closest('.folder-item');
-            const targetItems = e.target.closest('.folder-items');
-            if (targetItem && targetItem !== dragItemEl) {
-                const { top, height } = targetItem.getBoundingClientRect();
-                if (e.clientY < top + height / 2) {
-                    targetItem.parentNode.insertBefore(dragItemEl, targetItem);
-                } else {
-                    targetItem.parentNode.insertBefore(dragItemEl, targetItem.nextSibling);
-                }
-            } else if (targetItems && !targetItems.contains(dragItemEl)) {
-                const targetCard = targetItems.closest('details.folder-card');
-                if (!targetCard || targetCard.open) {
-                    targetItems.appendChild(dragItemEl);
-                }
-            }
-        }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && reorderMode) exitReorderMode();
     });
 
     function saveFolderOrder() {
-        const ids   = Array.from(stack.querySelectorAll('.folder-row')).map(r => r.dataset.folderId);
+        const ids   = Array.from(stack.querySelectorAll(':scope > .folder-row')).map(r => r.dataset.folderId);
         const slug  = pageData.dataset.slug;
         const token = pageData.dataset.csrf;
         fetch('course.php?course=' + encodeURIComponent(slug), {
@@ -6788,11 +6840,13 @@ if (is_file($portalUploadDndJs)) {
             const idx = rows.indexOf(folderRow);
             const swap = dir === 'up' ? idx - 1 : idx + 1;
             if (idx < 0 || swap < 0 || swap >= rows.length) return;
-            if (dir === 'up') {
-                stack.insertBefore(folderRow, rows[swap]);
-            } else {
-                stack.insertBefore(rows[swap], folderRow);
-            }
+            flipMove(folderRow, () => {
+                if (dir === 'up') {
+                    stack.insertBefore(folderRow, rows[swap]);
+                } else {
+                    stack.insertBefore(rows[swap], folderRow);
+                }
+            });
             saveFolderOrder();
             syncMoveButtons();
             btn.blur();
@@ -6806,22 +6860,21 @@ if (is_file($portalUploadDndJs)) {
             const idx = items.indexOf(itemEl);
             const swap = dir === 'up' ? idx - 1 : idx + 1;
             if (idx < 0 || swap < 0 || swap >= items.length) return;
-            if (dir === 'up') {
-                list.insertBefore(itemEl, items[swap]);
-            } else {
-                list.insertBefore(items[swap], itemEl);
-            }
+            flipMove(itemEl, () => {
+                if (dir === 'up') {
+                    list.insertBefore(itemEl, items[swap]);
+                } else {
+                    list.insertBefore(items[swap], itemEl);
+                }
+            });
             saveItemPosition(itemEl);
             syncMoveButtons();
             btn.blur();
         }
     }, true);
 
-    window.addEventListener('resize', () => {
-        if (isArrowReorderViewport()) exitReorderMode();
-    });
-
     syncMoveButtons();
+    }
 })();
 
 // Guard discussion reply/topic forms against double-submit (double-click spam).

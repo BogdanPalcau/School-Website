@@ -7926,17 +7926,47 @@ body.admin-profile-open {
     position: fixed;
     top: 16px;
     left: 50%;
+    width: max-content;
+    max-width: calc(100vw - 32px);
     transform: translateX(-50%);
+    display: none;
+    align-items: center;
+    gap: 10px;
     background: #16a34a;
     color: #fff;
-    padding: 6px 18px;
+    padding: 6px 8px 6px 18px;
     border-radius: 999px;
     font-size: 0.85rem;
     font-weight: 600;
     z-index: 1000;
-    pointer-events: none;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
     animation: badge-slide-in 0.2s ease;
+    pointer-events: auto;
+}
+
+.reorder-mode-badge:not([hidden]) {
+    display: flex;
+}
+
+.reorder-mode-badge[hidden] {
+    display: none !important;
+}
+
+.reorder-mode-done {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: #fff;
+    color: #15803d;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 800;
+    padding: 5px 12px;
+    cursor: pointer;
+}
+
+.reorder-mode-done:hover {
+    background: #f0fdf4;
 }
 
 @keyframes badge-slide-in {
@@ -8336,6 +8366,8 @@ body.admin-profile-open {
     opacity: 0.2;
     cursor: grab;
     color: var(--muted);
+    touch-action: none;
+    user-select: none;
     transition: opacity 140ms ease, color 140ms ease;
 }
 
@@ -8387,7 +8419,7 @@ body.admin-profile-open {
     }
 
     .folder-card--managed .folder-summary {
-        grid-template-columns: 16px 14px 20px minmax(0, 1fr) 28px 28px 18px;
+        grid-template-columns: 14px 20px minmax(0, 1fr) 28px 28px 18px;
     }
 }
 
@@ -8586,17 +8618,57 @@ body.admin-profile-open {
 }
 
 .folder-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
     border-radius: var(--radius-md);
 }
 
-.folder-row.is-dragging {
-    opacity: 0.28;
-    transform: scale(1.03);
-    box-shadow: 0 18px 44px rgba(193,32,47,0.24);
-    animation: none !important;
+.folder-row > .folder-card {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
-/* ?? Reorder-mode jiggle ??????????????????????????????????????????????????? */
+.folder-row.is-dragging,
+.folder-item.is-dragging {
+    position: fixed;
+    z-index: 40;
+    margin: 0;
+    opacity: 1;
+    animation: none !important;
+    pointer-events: none;
+    box-shadow: 0 18px 40px rgba(193, 32, 47, 0.22);
+    transform: scale(1.03) rotate(-0.5deg);
+}
+
+.folder-row.is-dragging .folder-drag-handle,
+.folder-item.is-dragging .item-drag-handle {
+    pointer-events: auto;
+    cursor: grabbing;
+}
+
+.folder-stack--reordering .folder-row:not(.is-dragging) .folder-summary {
+    cursor: default;
+}
+
+.folder-reorder-slot,
+.folder-item-reorder-slot {
+    box-sizing: border-box;
+    pointer-events: none;
+    border: 2px dashed color-mix(in srgb, var(--primary) 55%, var(--border));
+    background: color-mix(in srgb, var(--primary) 9%, transparent);
+}
+
+.folder-reorder-slot {
+    border-radius: 12px;
+}
+
+.folder-item-reorder-slot {
+    border-radius: 8px;
+    margin: 4px 0;
+}
+
+/* Reorder-mode jiggle */
 
 @keyframes folder-jiggle {
     0%, 100% { transform: rotate(-0.6deg); }
@@ -8611,14 +8683,12 @@ body.admin-profile-open {
 .folder-stack--reordering .folder-row:not(.is-dragging) .folder-card {
     border-color: var(--primary-soft-strong);
     background: var(--surface-muted);
-    cursor: grab;
 }
 
 .folder-stack--reordering .folder-row:not(.is-dragging) .folder-summary {
-    cursor: grab;
+    cursor: default;
 }
 
-/* Stagger each card so they don't all wobble in perfect sync */
 .folder-stack--reordering .folder-row:nth-child(2):not(.is-dragging) { animation-delay: -0.12s; }
 .folder-stack--reordering .folder-row:nth-child(3):not(.is-dragging) { animation-delay: -0.06s; }
 .folder-stack--reordering .folder-row:nth-child(4):not(.is-dragging) { animation-delay: -0.18s; }
@@ -8626,12 +8696,6 @@ body.admin-profile-open {
 .folder-stack--reordering .folder-row:nth-child(6):not(.is-dragging) { animation-delay: -0.20s; }
 .folder-stack--reordering .folder-row:nth-child(7):not(.is-dragging) { animation-delay: -0.03s; }
 .folder-stack--reordering .folder-row:nth-child(8):not(.is-dragging) { animation-delay: -0.15s; }
-
-.folder-item.is-dragging {
-    opacity: 0.3;
-    outline: 2px dashed var(--primary);
-    border-radius: 4px;
-}
 
 /* Grip handle turns accent in reorder mode */
 .folder-stack--reordering .folder-drag-handle {
@@ -8644,12 +8708,15 @@ body.admin-profile-open {
 .folder-drag-handle {
     display: grid;
     place-items: center;
-    width: 20px;
+    width: 18px;
     height: 28px;
     cursor: grab;
     color: var(--muted);
     flex-shrink: 0;
     opacity: 0.45;
+    touch-action: none;
+    user-select: none;
+    align-self: center;
     transition: opacity 140ms ease, color 140ms ease;
 }
 
@@ -8699,6 +8766,7 @@ body.admin-profile-open {
 
 .course-move-btn:active:not(:disabled) {
     background: var(--surface-muted);
+    transform: translateY(1px);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -8734,6 +8802,10 @@ body.admin-profile-open {
     .reorder-mode-badge {
         display: none !important;
     }
+
+    .folder-card--managed .folder-summary {
+        grid-template-columns: 16px 22px minmax(0, 1fr) 30px 30px 20px;
+    }
 }
 
 .grip-icon {
@@ -8744,7 +8816,7 @@ body.admin-profile-open {
 
 /* Adjust folder-summary grid to include drag handle + admin actions */
 .folder-card--managed .folder-summary {
-    grid-template-columns: 20px 16px 22px minmax(0, 1fr) 30px 30px 20px;
+    grid-template-columns: 18px 16px 22px minmax(0, 1fr) 30px 30px 20px;
     gap: 10px;
     padding: 14px 16px;
 }
