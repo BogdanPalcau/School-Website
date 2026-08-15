@@ -285,7 +285,14 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
                 portal_activity_json_error((string) ($result['error'] ?? 'Upload failed.'));
             }
             $result['url'] = 'activity-media.php?id=' . (int) $result['media_id'];
-            portal_activity_json_ok($result);
+            $respond($result);
+        }
+
+        case 'delete_media': {
+            $respond(portal_activity_delete_media(
+                $activityId,
+                (int) ($payload['media_id'] ?? $_POST['media_id'] ?? 0)
+            ));
         }
 
         case 'validate':
@@ -983,22 +990,9 @@ ob_start();
         </form>
     </dialog>
 
-    <dialog class="ab-modal" id="ab-preview-modal" aria-labelledby="ab-preview-title">
-        <div class="ab-modal-panel ab-modal-panel--wide">
-            <header class="ab-modal-head">
-                <div>
-                    <p class="ab-panel-label">Student view</p>
-                    <h2 id="ab-preview-title">Preview</h2>
-                </div>
-                <button type="button" class="ab-icon-btn" data-ab-close-preview aria-label="Close"><?= portal_icon('x', 'icon-sm') ?></button>
-            </header>
-            <p class="ab-preview-banner" role="status">Preview — responses are not recorded</p>
-            <div data-ab-preview-root class="activity-player ab-preview-player"></div>
-        </div>
-    </dialog>
-
-    <input type="file" id="ab-media-file" accept="image/*,audio/*,video/*" hidden>
+    <input type="file" id="ab-media-file" accept="image/*,audio/*,video/*" multiple hidden>
     <input type="file" id="ab-camera-capture" accept="image/*" capture="environment" hidden>
+    <div class="ab-toast" data-ab-toast hidden role="status" aria-live="polite"></div>
     <input type="file" id="ab-csv-file" accept=".csv,text/csv" hidden>
 </section>
 
@@ -1006,7 +1000,7 @@ ob_start();
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.snow.css">
 <script src="https://cdn.jsdelivr.net/npm/quill@2/dist/quill.js"></script>
 <script src="assets/portal-quill.js?v=20260727a"></script>
-<script src="assets/activity-builder.js?v=20260813rename4"></script>
+<script src="assets/activity-builder.js?v=20260815-3media"></script>
 <?php
 $page_content = ob_get_clean();
 require __DIR__ . '/../layout.php';

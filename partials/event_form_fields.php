@@ -52,7 +52,7 @@ if ($fvEnds !== '' && !str_contains($fvEnds, 'T')) {
 <?php if ($isAdmin): ?>
 <label class="folder-form-label">
     <span>Scope</span>
-    <select name="scope" id="event-scope-select">
+    <select name="scope" class="event-scope-select">
         <option value="school"<?= $fvScope === 'school' ? ' selected' : '' ?>>Whole school</option>
         <option value="course"<?= $fvScope === 'course' ? ' selected' : '' ?>>Course</option>
     </select>
@@ -61,9 +61,10 @@ if ($fvEnds !== '' && !str_contains($fvEnds, 'T')) {
 <input type="hidden" name="scope" value="course">
 <?php endif; ?>
 <?php if ($manageableCourses !== []): ?>
-<label class="folder-form-label" id="event-course-field">
+<?php $hideCourseField = $isAdmin && $fvScope === 'school'; ?>
+<label class="folder-form-label event-course-field"<?= $hideCourseField ? ' hidden' : '' ?>>
     <span>Course</span>
-    <select name="course_id">
+    <select name="course_id"<?= $hideCourseField ? ' disabled' : ' required' ?>>
         <?php foreach ($manageableCourses as $course): ?>
             <option value="<?= (int) $course['id'] ?>"<?= $fvCourseId === (int) $course['id'] ? ' selected' : '' ?>>
                 <?= portal_escape((string) $course['title']) ?>

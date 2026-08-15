@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../bootstrap.php';
 portal_require_login();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
 
 $mediaId = (int) ($_GET['id'] ?? 0);
 if ($mediaId <= 0) {
@@ -67,14 +70,19 @@ header(
     ($inline ? 'Content-Disposition: inline' : 'Content-Disposition: attachment')
     . '; filename="' . $filenameSafe . '"'
 );
-header('Accept-Ranges: bytes');
 header('Cache-Control: private, max-age=3600');
+if ($inline && str_starts_with($mime, 'image/')) {
+    header('Accept-Ranges: none');
+} else {
+    header('Accept-Ranges: bytes');
+}
 
 $start = 0;
 $end = $size > 0 ? $size - 1 : 0;
 $length = $size;
+$allowRange = !($inline && str_starts_with($mime, 'image/'));
 
-$range = (string) ($_SERVER['HTTP_RANGE'] ?? '');
+$range = $allowRange ? (string) ($_SERVER['HTTP_RANGE'] ?? '') : '';
 if ($range !== '' && preg_match('/bytes=(\d*)-(\d*)/', $range, $m)) {
     if ($m[1] !== '') {
         $start = (int) $m[1];

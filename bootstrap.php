@@ -3,6 +3,48 @@ declare(strict_types=1);
 
 date_default_timezone_set('Europe/London');
 
+// Load .env before any database path is resolved. portal_db_path() caches on
+// first call, so PORTAL_DB_PATH must already be in the environment.
+if (!function_exists('portal_load_env_file')) {
+    function portal_load_env_file(): void
+    {
+        static $loaded = false;
+        if ($loaded) {
+            return;
+        }
+        $loaded = true;
+
+        $path = __DIR__ . DIRECTORY_SEPARATOR . '.env';
+        if (!is_file($path)) {
+            return;
+        }
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($lines === false) {
+            return;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+            if (!str_contains($line, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $line, 2);
+            $key = trim($key);
+            $value = trim($value, " \t\n\r\0\x0B\"'");
+            if ($key === '' || getenv($key) !== false) {
+                continue;
+            }
+            putenv($key . '=' . $value);
+            $_ENV[$key] = $value;
+        }
+    }
+}
+portal_load_env_file();
+
 if (session_status() !== PHP_SESSION_ACTIVE) {
     // Harden the session cookie: not readable by JS, sent same-site, and
     // marked Secure automatically when the request is served over HTTPS.

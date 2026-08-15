@@ -1175,6 +1175,16 @@ if (!function_exists('portal_activity_feedback_visible')) {
     }
 }
 
+if (!function_exists('portal_activity_strip_inline_images')) {
+    function portal_activity_strip_inline_images(string $html): string
+    {
+        if ($html === '') {
+            return '';
+        }
+        return (string) preg_replace('#<img\b[^>]*>#i', '', $html);
+    }
+}
+
 if (!function_exists('portal_activity_load_version_tree')) {
     /**
      * @return array{sections: list<array>, questions: list<array>, options_by_question: array<int, list<array>>}
@@ -1194,6 +1204,12 @@ if (!function_exists('portal_activity_load_version_tree')) {
         );
         $qStmt->execute([$versionId]);
         $questions = $qStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        foreach ($questions as &$q) {
+            $q['prompt_html'] = portal_activity_strip_inline_images((string) ($q['prompt_html'] ?? ''));
+            $q['explanation_html'] = portal_activity_strip_inline_images((string) ($q['explanation_html'] ?? ''));
+        }
+        unset($q);
 
         $optionsByQuestion = [];
         if ($questions !== []) {
@@ -1250,10 +1266,22 @@ if (!function_exists('portal_activity_load_version_tree')) {
             unset($q);
         }
 
+        $mediaByQuestion = [];
+        if ($questions !== []) {
+            $mediaByQuestion = portal_activity_media_for_questions(
+                array_map(static fn(array $q): int => (int) $q['id'], $questions)
+            );
+            foreach ($questions as &$q) {
+                $q['media'] = $mediaByQuestion[(int) $q['id']] ?? [];
+            }
+            unset($q);
+        }
+
         return [
             'sections' => $sections,
             'questions' => $questions,
             'options_by_question' => $optionsByQuestion,
+            'media_by_question' => $mediaByQuestion,
         ];
     }
 }
@@ -2316,9 +2344,9 @@ if (!function_exists('portal_activity_update_question')) {
         }
 
         $map = [
-            'prompt_html' => static fn($v) => portal_sanitize_rich_text((string) $v),
-            'explanation_html' => static fn($v) => portal_sanitize_rich_text((string) $v),
-            'hint_html' => static fn($v) => portal_sanitize_rich_text((string) $v),
+            'prompt_html' => static fn($v) => portal_activity_strip_inline_images(portal_sanitize_rich_text((string) $v)),
+            'explanation_html' => static fn($v) => portal_activity_strip_inline_images(portal_sanitize_rich_text((string) $v)),
+            'hint_html' => static fn($v) => portal_activity_strip_inline_images(portal_sanitize_rich_text((string) $v)),
             'teacher_notes' => static fn($v) => substr((string) $v, 0, 5000),
             'points' => static fn($v) => (float) $v,
             'difficulty' => static fn($v) => (string) $v,
@@ -4112,6 +4140,7 @@ if (!function_exists('portal_activity_get_attempt_for_player')) {
                 'points' => (float) $q['points'],
                 'required' => (int) $q['required'],
                 'settings' => portal_activity_json_decode((string) $q['settings_json'], []) ?: [],
+                'media' => is_array($q['media'] ?? null) ? $q['media'] : [],
                 'options' => array_map(static function (array $o) use ($includeCorrect): array {
                     $out = [
                         'id' => (int) $o['id'],
@@ -4174,6 +4203,403 @@ if (!function_exists('portal_activity_get_attempt_for_player')) {
             'accommodation' => $safeAcc,
             'server_now' => portal_activity_now_utc(),
         ];
+    }
+}
+
+if (!function_exists('portal_activity_preview_session')) {
+    /**
+     * @param array<string, mixed>|null $set
+     * @return array<string, mixed>
+     */
+    function portal_activity_preview_session(int $activityId, ?array $set = null): array
+    {
+        if (!isset($_SESSION['activity_previews']) || !is_array($_SESSION['activity_previews'])) {
+            $_SESSION['activity_previews'] = [];
+        }
+        $key = (string) $activityId;
+        if ($set !== null) {
+            $_SESSION['activity_previews'][$key] = $set;
+        }
+        $row = $_SESSION['activity_previews'][$key] ?? [];
+        return is_array($row) ? $row : [];
+    }
+}
+
+if (!function_exists('portal_activity_preview_option_order')) {
+    /**
+     * @param list<array<string, mixed>> $opts
+     * @return list<int>
+     */
+    function portal_activity_preview_option_order(array $opts, bool $shuffle): array
+    {
+        $oids = array_map(static fn(array $o): int => (int) $o['id'], $opts);
+        if (!$shuffle) {
+            return $oids;
+        }
+        $pinned = [];
+        $free = [];
+        foreach ($opts as $o) {
+            if ($o['pinned_position'] !== null && $o['pinned_position'] !== '') {
+                $pinned[(int) $o['pinned_position']] = (int) $o['id'];
+            } else {
+                $free[] = (int) $o['id'];
+            }
+        }
+        shuffle($free);
+        $oids = [];
+        $fi = 0;
+        $total = count($pinned) + count($free);
+        for ($i = 0; $i < $total; $i++) {
+            if (isset($pinned[$i])) {
+                $oids[] = $pinned[$i];
+            } elseif (isset($free[$fi])) {
+                $oids[] = $free[$fi++];
+            }
+        }
+        foreach ($free as $j => $id) {
+            if ($j >= $fi) {
+                $oids[] = $id;
+            }
+        }
+        return $oids;
+    }
+}
+
+if (!function_exists('portal_activity_preview_player_payload')) {
+    /**
+     * Student-player payload from the current draft, without creating an attempt.
+     *
+     * @param array<string, mixed> $activity
+     * @param array<string, mixed> $session
+     * @return array<string, mixed>
+     */
+    function portal_activity_preview_player_payload(array $activity, array $session = []): array
+    {
+        $activityId = (int) ($activity['id'] ?? 0);
+        $versionId = portal_activity_draft_version_id($activityId)
+            ?? portal_activity_published_version_id($activityId);
+        if ($versionId === null) {
+            return ['ok' => false, 'error' => 'No draft to preview.'];
+        }
+
+        $submitted = !empty($session['submitted']);
+        $fakeAttempt = [
+            'status' => $submitted
+                ? (string) ($session['status'] ?? 'submitted')
+                : 'in_progress',
+            'results_released' => $activity['results_released'] ?? 0,
+        ];
+        $includeCorrect = $submitted
+            && portal_activity_feedback_visible($activity, $fakeAttempt)
+            && (string) ($activity['feedback_policy'] ?? '') !== 'never';
+        if (
+            ($activity['mode'] ?? '') === 'assessment'
+            && empty($activity['results_released'])
+            && ($fakeAttempt['status'] ?? '') !== 'released'
+        ) {
+            $includeCorrect = false;
+        }
+
+        $tree = portal_activity_load_version_tree($versionId, $includeCorrect);
+        $scoringTree = $includeCorrect ? $tree : portal_activity_load_version_tree($versionId, true);
+
+        $questionIds = array_map('intval', $session['question_ids'] ?? []);
+        if ($questionIds === []) {
+            $questionIds = array_map(static fn(array $q): int => (int) $q['id'], $tree['questions']);
+            if ($questionIds === []) {
+                return ['ok' => false, 'error' => 'This activity has no questions.'];
+            }
+            if (!empty($activity['shuffle_questions'])) {
+                shuffle($questionIds);
+            }
+            $pool = (int) ($activity['questions_per_attempt'] ?? 0);
+            if ($pool > 0 && $pool < count($questionIds)) {
+                $questionIds = array_slice($questionIds, 0, $pool);
+            }
+        }
+
+        $optionOrder = is_array($session['option_order'] ?? null) ? $session['option_order'] : [];
+        if ($optionOrder === []) {
+            foreach ($questionIds as $qid) {
+                $optionOrder[(string) $qid] = portal_activity_preview_option_order(
+                    $tree['options_by_question'][$qid] ?? $scoringTree['options_by_question'][$qid] ?? [],
+                    !empty($activity['shuffle_options'])
+                );
+            }
+        }
+
+        $answersIn = is_array($session['answers'] ?? null) ? $session['answers'] : [];
+        $qMap = [];
+        foreach ($tree['questions'] as $q) {
+            $qMap[(int) $q['id']] = $q;
+        }
+        $scoreMap = [];
+        foreach ($scoringTree['questions'] as $q) {
+            $scoreMap[(int) $q['id']] = $q;
+        }
+
+        $questionsOut = [];
+        $answersOut = [];
+        $scoreTotal = 0.0;
+        $maxTotal = 0.0;
+        $awaitingManual = false;
+
+        foreach ($questionIds as $qid) {
+            if (!isset($qMap[$qid]) && !isset($scoreMap[$qid])) {
+                continue;
+            }
+            $q = $qMap[$qid] ?? $scoreMap[$qid];
+            $opts = $tree['options_by_question'][$qid] ?? [];
+            $orderedIds = $optionOrder[(string) $qid] ?? $optionOrder[$qid] ?? null;
+            if (is_array($orderedIds) && $orderedIds !== []) {
+                $byId = [];
+                foreach ($opts as $o) {
+                    $byId[(int) $o['id']] = $o;
+                }
+                $sorted = [];
+                foreach ($orderedIds as $oid) {
+                    if (isset($byId[(int) $oid])) {
+                        $sorted[] = $byId[(int) $oid];
+                    }
+                }
+                $opts = $sorted !== [] ? $sorted : $opts;
+            }
+
+            $entry = $answersIn[$qid] ?? $answersIn[(string) $qid] ?? null;
+            $answerVal = is_array($entry) ? ($entry['answer'] ?? null) : null;
+            $rev = is_array($entry) ? (int) ($entry['revision'] ?? 0) : 0;
+            $answerRow = [
+                'answer' => $answerVal,
+                'revision' => $rev,
+            ];
+
+            $rawQ = $scoreMap[$qid] ?? $q;
+            $rawOpts = $scoringTree['options_by_question'][$qid] ?? [];
+            $auto = portal_activity_score_answer($rawQ, $rawOpts, $answerVal);
+            $points = (float) ($rawQ['points'] ?? 0);
+            $maxTotal += $points;
+            if ($auto === null) {
+                if ($answerVal !== null && $answerVal !== '' && $answerVal !== []) {
+                    $awaitingManual = true;
+                }
+            } else {
+                $scoreTotal += $auto;
+            }
+            if ($includeCorrect) {
+                $answerRow['score'] = $auto;
+                $answerRow['feedback_html'] = '';
+            }
+            if ($answerVal !== null) {
+                $answersOut[$qid] = $answerRow;
+            }
+
+            $questionsOut[] = [
+                'id' => $qid,
+                'section_id' => $q['section_id'] ?? null,
+                'question_type' => $q['question_type'],
+                'prompt_html' => $q['prompt_html'],
+                'hint_html' => (
+                    ($activity['mode'] ?? '') !== 'assessment'
+                    && (
+                        ($activity['mode'] ?? '') === 'practice'
+                        || ($activity['feedback_policy'] ?? '') === 'after_each'
+                    )
+                )
+                    ? ($q['hint_html'] ?? '')
+                    : '',
+                'explanation_html' => $includeCorrect ? ($q['explanation_html'] ?? '') : '',
+                'points' => $points,
+                'required' => (int) ($q['required'] ?? 0),
+                'settings' => portal_activity_json_decode((string) ($q['settings_json'] ?? '{}'), []) ?: [],
+                'media' => is_array($q['media'] ?? null) ? $q['media'] : [],
+                'options' => array_map(static function (array $o) use ($includeCorrect): array {
+                    $out = [
+                        'id' => (int) $o['id'],
+                        'option_text_html' => $o['option_text_html'],
+                        'sort_order' => (int) ($o['sort_order'] ?? 0),
+                    ];
+                    if ($includeCorrect) {
+                        $out['is_correct'] = (int) ($o['is_correct'] ?? 0);
+                        $out['feedback_html'] = $o['feedback_html'] ?? '';
+                    }
+                    return $out;
+                }, $opts),
+            ];
+        }
+
+        $scoreReady = $includeCorrect && !$awaitingManual;
+        $status = !$submitted
+            ? 'in_progress'
+            : ($awaitingManual ? 'awaiting_manual_marking' : 'submitted');
+        $percentage = $maxTotal > 0 ? round(100 * $scoreTotal / $maxTotal, 2) : 0.0;
+        $token = (string) ($session['token'] ?? 'preview');
+        $expiresAt = (string) ($session['expires_at'] ?? '');
+
+        return [
+            'ok' => true,
+            'preview' => true,
+            'recorded' => false,
+            'token' => $token,
+            'resumed' => false,
+            'attempt' => [
+                'id' => 0,
+                'status' => $status,
+                'attempt_number' => 1,
+                'started_at' => $session['started_at'] ?? portal_activity_now_utc(),
+                'expires_at' => $expiresAt !== '' ? $expiresAt : null,
+                'submitted_at' => $submitted ? portal_activity_now_utc() : null,
+                'score' => $scoreReady ? $scoreTotal : null,
+                'maximum_score' => $scoreReady ? $maxTotal : null,
+                'percentage' => $scoreReady ? $percentage : null,
+                'autosave_revision' => 0,
+            ],
+            'activity' => [
+                'id' => $activityId,
+                'title' => $activity['title'],
+                'mode' => $activity['mode'],
+                'mode_label' => portal_activity_mode_label((string) $activity['mode']),
+                'instructions_html' => $activity['instructions_html'],
+                'navigation_policy' => $activity['navigation_policy'],
+                'feedback_policy' => $activity['feedback_policy'],
+                'paste_policy' => $activity['paste_policy'],
+                'copy_policy' => $activity['copy_policy'],
+                'integrity_enabled' => (int) ((($activity['mode'] ?? '') === 'assessment') ? $activity['integrity_enabled'] : 0),
+                'focus_monitoring' => (int) ((($activity['mode'] ?? '') === 'assessment') ? $activity['focus_monitoring'] : 0),
+                'fullscreen_policy' => $activity['fullscreen_policy'],
+                'time_limit_seconds' => (int) $activity['time_limit_seconds'],
+            ],
+            'sections' => $tree['sections'],
+            'questions' => $questionsOut,
+            'answers' => $answersOut,
+            'accommodation' => null,
+            'server_now' => portal_activity_now_utc(),
+            'player' => null,
+        ];
+    }
+}
+
+if (!function_exists('portal_activity_preview_post')) {
+    /**
+     * Handle player API actions in teacher preview without writing attempts.
+     *
+     * @param array<string, mixed> $activity
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    function portal_activity_preview_post(array $activity, array $payload): array
+    {
+        $activityId = (int) ($activity['id'] ?? 0);
+        $action = (string) ($payload['action'] ?? '');
+        $session = portal_activity_preview_session($activityId);
+
+        if ($action === 'start' || $action === 'resume') {
+            $limit = (int) ($activity['time_limit_seconds'] ?? 0);
+            $expiresAt = $limit > 0 ? gmdate('Y-m-d H:i:s', time() + max(1, $limit)) : '';
+            $fresh = [
+                'token' => 'preview',
+                'started_at' => portal_activity_now_utc(),
+                'expires_at' => $expiresAt,
+                'answers' => [],
+                'submitted' => false,
+                'question_ids' => [],
+                'option_order' => [],
+            ];
+            $payloadOut = portal_activity_preview_player_payload($activity, $fresh);
+            if (empty($payloadOut['ok'])) {
+                return $payloadOut;
+            }
+            $fresh['question_ids'] = array_map(static fn(array $q): int => (int) $q['id'], $payloadOut['questions']);
+            $optionOrder = [];
+            foreach ($payloadOut['questions'] as $q) {
+                $optionOrder[(string) $q['id']] = array_map(
+                    static fn(array $o): int => (int) $o['id'],
+                    $q['options'] ?? []
+                );
+            }
+            $fresh['option_order'] = $optionOrder;
+            portal_activity_preview_session($activityId, $fresh);
+            return $payloadOut;
+        }
+
+        if ($action === 'save_answer') {
+            $qid = (int) ($payload['question_id'] ?? 0);
+            if ($qid <= 0) {
+                return ['ok' => false, 'error' => 'Invalid question.'];
+            }
+            $rev = max(1, (int) ($payload['revision'] ?? 1));
+            $session['answers'] = is_array($session['answers'] ?? null) ? $session['answers'] : [];
+            $session['answers'][$qid] = [
+                'answer' => $payload['answer'] ?? null,
+                'revision' => $rev,
+            ];
+            portal_activity_preview_session($activityId, $session);
+            $response = [
+                'ok' => true,
+                'revision' => $rev,
+                'attempt_revision' => $rev,
+                'saved_at' => portal_activity_now_utc(),
+            ];
+            $mode = (string) ($activity['mode'] ?? '');
+            $policy = (string) ($activity['feedback_policy'] ?? '');
+            if (in_array($mode, ['practice', 'quiz', 'challenge'], true) && $policy === 'after_each') {
+                $versionId = portal_activity_draft_version_id($activityId)
+                    ?? portal_activity_published_version_id($activityId);
+                if ($versionId !== null) {
+                    $tree = portal_activity_load_version_tree($versionId, true);
+                    $question = null;
+                    foreach ($tree['questions'] as $q) {
+                        if ((int) $q['id'] === $qid) {
+                            $question = $q;
+                            break;
+                        }
+                    }
+                    if ($question) {
+                        $options = $tree['options_by_question'][$qid] ?? [];
+                        $auto = portal_activity_score_answer($question, $options, $payload['answer'] ?? null);
+                        if ($auto !== null) {
+                            $points = (float) ($question['points'] ?? 0);
+                            $response['feedback'] = [
+                                'correct' => $points <= 0 ? null : ($auto >= $points - 1e-9),
+                                'score' => $auto,
+                                'points' => $points,
+                                'explanation_html' => (string) ($question['explanation_html'] ?? ''),
+                                'message' => $auto >= $points - 1e-9
+                                    ? 'Correct!'
+                                    : ($auto > 0 ? 'Partially correct — review the explanation.' : 'Not quite — review the explanation and try again.'),
+                            ];
+                        }
+                    }
+                }
+            }
+            return $response;
+        }
+
+        if ($action === 'submit' || $action === 'result') {
+            $session['submitted'] = true;
+            portal_activity_preview_session($activityId, $session);
+            $out = portal_activity_preview_player_payload($activity, $session);
+            if (empty($out['ok'])) {
+                return $out;
+            }
+            $out['player'] = $out;
+            $out['gamification'] = null;
+            return $out;
+        }
+
+        if (in_array($action, ['leave_assessment', 'integrity_event', 'sync_timer'], true)) {
+            return [
+                'ok' => true,
+                'preview' => true,
+                'attempt' => [
+                    'id' => 0,
+                    'status' => 'in_progress',
+                    'expires_at' => $session['expires_at'] ?? null,
+                ],
+                'server_now' => portal_activity_now_utc(),
+            ];
+        }
+
+        return ['ok' => false, 'error' => 'Unknown action.'];
     }
 }
 
@@ -4894,6 +5320,50 @@ if (!function_exists('portal_activity_media_path_safe')) {
     }
 }
 
+if (!function_exists('portal_activity_question_media_limit')) {
+    function portal_activity_question_media_limit(?string $questionType): int
+    {
+        return ($questionType === 'flashcard') ? 1 : 3;
+    }
+}
+
+if (!function_exists('portal_activity_media_can_attach')) {
+    /**
+     * @return array{ok: bool, error?: string, limit?: int, count?: int}
+     */
+    function portal_activity_media_can_attach(int $questionId): array
+    {
+        $stmt = portal_db()->prepare('SELECT question_type FROM activity_questions WHERE id = ?');
+        $stmt->execute([$questionId]);
+        $type = $stmt->fetchColumn();
+        if ($type === false) {
+            return ['ok' => false, 'error' => 'Question not found.'];
+        }
+        $limit = portal_activity_question_media_limit((string) $type);
+        $countStmt = portal_db()->prepare(
+            "SELECT COUNT(*) FROM (
+                SELECT COALESCE(NULLIF(sha256, ''), 'id-' || id) AS k
+                FROM activity_media
+                WHERE question_id = ?
+                GROUP BY k
+             )"
+        );
+        $countStmt->execute([$questionId]);
+        $count = (int) $countStmt->fetchColumn();
+        if ($count >= $limit) {
+            return [
+                'ok' => false,
+                'error' => $limit === 1
+                    ? 'This card already has media. Remove it to add another.'
+                    : 'This question already has ' . $limit . ' attachments. Remove one to add another.',
+                'limit' => $limit,
+                'count' => $count,
+            ];
+        }
+        return ['ok' => true, 'limit' => $limit, 'count' => $count];
+    }
+}
+
 if (!function_exists('portal_activity_store_media')) {
     function portal_activity_store_media(
         int $courseId,
@@ -4908,6 +5378,13 @@ if (!function_exists('portal_activity_store_media')) {
     ): array {
         if (!portal_can_manage_course($courseId)) {
             return ['ok' => false, 'error' => 'You cannot upload media for this course.'];
+        }
+
+        if ($questionId !== null && $questionId > 0) {
+            $limitCheck = portal_activity_media_can_attach($questionId);
+            if (empty($limitCheck['ok'])) {
+                return $limitCheck;
+            }
         }
 
         $allowed = portal_activity_media_allowed_extensions();
@@ -4958,6 +5435,24 @@ if (!function_exists('portal_activity_store_media')) {
         }
 
         $sha = hash_file('sha256', $tmp) ?: '';
+        if ($questionId !== null && $questionId > 0 && $sha !== '') {
+            $dup = portal_db()->prepare(
+                'SELECT id FROM activity_media WHERE question_id = ? AND sha256 = ? ORDER BY id ASC LIMIT 1'
+            );
+            $dup->execute([$questionId, $sha]);
+            $existingId = (int) ($dup->fetchColumn() ?: 0);
+            if ($existingId > 0) {
+                return [
+                    'ok' => true,
+                    'media_id' => $existingId,
+                    'duplicate' => true,
+                    'mime_type' => $mime,
+                    'filesize' => $size,
+                    'original_filename' => $original,
+                    'media_type' => $mediaType,
+                ];
+            }
+        }
         $storedName = bin2hex(random_bytes(16)) . '.' . $ext;
         $relDir = 'activities/' . $courseId;
         $absDir = portal_uploads_base() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relDir);
@@ -5015,6 +5510,86 @@ if (!function_exists('portal_activity_store_media')) {
             'original_filename' => $original,
             'media_type' => $mediaType,
         ];
+    }
+}
+
+if (!function_exists('portal_activity_media_client_row')) {
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    function portal_activity_media_client_row(array $row): array
+    {
+        return [
+            'id' => (int) ($row['id'] ?? 0),
+            'question_id' => isset($row['question_id']) && $row['question_id'] !== '' && $row['question_id'] !== null
+                ? (int) $row['question_id']
+                : null,
+            'media_type' => (string) ($row['media_type'] ?? 'image'),
+            'original_filename' => (string) ($row['original_filename'] ?? ''),
+            'mime_type' => (string) ($row['mime_type'] ?? ''),
+            'filesize' => (int) ($row['filesize'] ?? 0),
+            'sha256' => (string) ($row['sha256'] ?? ''),
+            'alt_text' => (string) ($row['alt_text'] ?? ''),
+            'caption' => (string) ($row['caption'] ?? ''),
+            'url' => 'activity-media.php?id=' . (int) ($row['id'] ?? 0),
+        ];
+    }
+}
+
+if (!function_exists('portal_activity_media_for_questions')) {
+    /**
+     * @param list<int> $questionIds
+     * @return array<int, list<array<string, mixed>>>
+     */
+    function portal_activity_media_for_questions(array $questionIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $questionIds))));
+        if ($ids === []) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = portal_db()->prepare(
+            "SELECT id, question_id, media_type, original_filename, mime_type, filesize, sha256, alt_text, caption
+             FROM activity_media
+             WHERE question_id IN ($placeholders)
+             ORDER BY id ASC"
+        );
+        $stmt->execute($ids);
+        $byQuestion = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $qid = (int) $row['question_id'];
+            $byQuestion[$qid][] = portal_activity_media_client_row($row);
+        }
+        return $byQuestion;
+    }
+}
+
+if (!function_exists('portal_activity_delete_media')) {
+    function portal_activity_delete_media(int $activityId, int $mediaId): array
+    {
+        $activity = portal_activity_find($activityId);
+        if ($activity === null) {
+            return ['ok' => false, 'error' => 'Activity not found.'];
+        }
+        if (!portal_can_manage_course((int) $activity['course_id'])) {
+            return ['ok' => false, 'error' => 'You cannot manage this activity.'];
+        }
+        $stmt = portal_db()->prepare(
+            'SELECT * FROM activity_media WHERE id = ? AND activity_id = ?'
+        );
+        $stmt->execute([$mediaId, $activityId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return ['ok' => false, 'error' => 'Media not found.'];
+        }
+        $abs = portal_activity_media_path_safe((string) ($row['storage_path'] ?? ''));
+        portal_db()->prepare('DELETE FROM activity_media WHERE id = ? AND activity_id = ?')->execute([$mediaId, $activityId]);
+        if ($abs !== null && is_file($abs)) {
+            @unlink($abs);
+        }
+        portal_activity_audit($activityId, 'media_deleted', ['media_id' => $mediaId]);
+        return ['ok' => true, 'media_id' => $mediaId];
     }
 }
 

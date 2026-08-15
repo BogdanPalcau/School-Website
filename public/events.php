@@ -673,6 +673,31 @@ ob_start();
     </aside>
 </section>
 <?php endif; ?>
+<?php if ($isAdmin && $canCompose): ?>
+<script>
+(function () {
+    function syncEventCourseField(scopeSelect) {
+        var form = scopeSelect.closest('form');
+        if (!form) return;
+        var courseField = form.querySelector('.event-course-field');
+        if (!courseField) return;
+        var courseSelect = courseField.querySelector('select[name="course_id"]');
+        var isCourse = scopeSelect.value === 'course';
+        courseField.hidden = !isCourse;
+        if (courseSelect) {
+            courseSelect.disabled = !isCourse;
+            courseSelect.required = isCourse;
+        }
+    }
+    document.querySelectorAll('select.event-scope-select').forEach(function (scopeSelect) {
+        scopeSelect.addEventListener('change', function () {
+            syncEventCourseField(scopeSelect);
+        });
+        syncEventCourseField(scopeSelect);
+    });
+})();
+</script>
+<?php endif; ?>
 <?php
 $page_content = ob_get_clean();
 

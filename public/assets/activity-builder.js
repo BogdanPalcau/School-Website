@@ -44,12 +44,32 @@
     saveState: root.querySelector('[data-ab-save-state]'),
     status: root.querySelector('[data-ab-status]'),
     typePicker: document.getElementById('ab-type-picker'),
-    previewModal: document.getElementById('ab-preview-modal'),
-    previewRoot: root.querySelector('[data-ab-preview-root]'),
     mediaFile: document.getElementById('ab-media-file'),
     camera: document.getElementById('ab-camera-capture'),
     csvFile: document.getElementById('ab-csv-file'),
+    toast: root.querySelector('[data-ab-toast]'),
   };
+
+  let toastTimer = null;
+  let toastHideTimer = null;
+  function showToast(msg, kind) {
+    if (!els.toast) return;
+    els.toast.textContent = msg;
+    els.toast.classList.toggle('is-error', kind === 'error');
+    els.toast.hidden = false;
+    els.toast.classList.remove('is-in', 'is-out');
+    void els.toast.offsetWidth;
+    requestAnimationFrame(() => els.toast.classList.add('is-in'));
+    clearTimeout(toastTimer);
+    clearTimeout(toastHideTimer);
+    toastTimer = setTimeout(() => {
+      els.toast.classList.remove('is-in');
+      els.toast.classList.add('is-out');
+      toastHideTimer = setTimeout(() => {
+        if (els.toast) els.toast.hidden = true;
+      }, 300);
+    }, 4200);
+  }
 
   function optionsFor(qid) {
     const map = state.tree.options_by_question || {};
@@ -376,6 +396,104 @@
       .replace(/"/g, '&quot;');
   }
 
+  function formatBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  const MEDIA_LIMIT_QUESTION = 3;
+  const MEDIA_LIMIT_FLASHCARD = 1;
+
+  function mediaLimitFor(q) {
+    if (isFlashcardMode || (q && q.question_type === 'flashcard')) return MEDIA_LIMIT_FLASHCARD;
+    return MEDIA_LIMIT_QUESTION;
+  }
+
+  function uniqueMediaList(media) {
+    if (!Array.isArray(media) || media.length === 0) return [];
+    const seen = new Set();
+    return media.filter((m) => {
+      const hash = String(m.sha256 || '');
+      if (hash === '') return true;
+      if (seen.has(hash)) return false;
+      seen.add(hash);
+      return true;
+    });
+  }
+
+  function mediaCountFor(q) {
+    return uniqueMediaList(q && q.media).length;
+  }
+
+  function mediaCapMessage(limit) {
+    return limit === 1
+      ? 'This card already has media. Remove it to add another.'
+      : 'This question already has ' + limit + ' attachments. Remove one to add another.';
+  }
+
+  function mediaBlockHtml(q) {
+    const items = Array.isArray(q.media) ? q.media : [];
+    const limit = mediaLimitFor(q);
+    const used = mediaCountFor(q);
+    const remaining = Math.max(0, limit - used);
+    const atCap = remaining <= 0;
+    const list = items.length
+      ? ('<ul class="ab-media-list">' + items.map((m) => {
+          const url = escapeHtml(m.url || ('activity-media.php?id=' + m.id));
+          const name = escapeHtml(m.original_filename || ('Media #' + m.id));
+          const type = String(m.media_type || 'image');
+          let preview = '';
+          if (type === 'image') {
+            preview = '<img src="' + url + '" alt="">';
+          } else if (type === 'audio') {
+            preview = '<audio controls preload="metadata" src="' + url + '"></audio>';
+          } else if (type === 'video') {
+            preview = '<video controls preload="metadata" src="' + url + '"></video>';
+          }
+          return '<li class="ab-media-item">' +
+            '<div class="ab-media-preview">' + preview + '</div>' +
+            '<div class="ab-media-meta"><strong>' + name + '</strong>' +
+            '<span>' + escapeHtml(type) + (m.filesize ? ' · ' + formatBytes(m.filesize) : '') + '</span></div>' +
+            '<button type="button" class="ab-btn ab-btn--ghost" data-ab-delete-media="' + Number(m.id) + '">Delete</button>' +
+            '</li>';
+        }).join('') + '</ul>')
+      : '<p class="ab-media-empty">Nothing attached yet.</p>';
+
+    let hint;
+    if (atCap) {
+      hint = limit === 1
+        ? 'This card already has media. Remove it to add another.'
+        : 'Remove one to add another (' + limit + ' maximum).';
+    } else if (used === 0) {
+      hint = limit === 1
+        ? 'One image, audio clip, or video on this card'
+        : 'Images, audio, or video — up to ' + limit + ' per question';
+    } else {
+      hint = remaining === 1
+        ? '1 more can be added'
+        : remaining + ' more can be added';
+    }
+
+    const disabled = atCap ? ' disabled' : '';
+    return '<div class="ab-media-dropzone' + (atCap ? ' is-full' : '') + '" data-ab-media-dropzone>' +
+      '<div class="ab-media-dropzone-ui">' +
+      '<div class="ab-media-dropzone-copy"><strong>' + (atCap ? 'Media limit reached' : 'Drop media here') + '</strong>' +
+      '<span>' + hint + '</span></div>' +
+      '<div class="ab-media-dropzone-actions">' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-upload-media' + disabled + '>Upload media</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-camera' + disabled + '>Camera</button>' +
+      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-record-audio' + disabled + '>Record audio</button>' +
+      '</div></div>' +
+      '<div class="ab-media-progress is-hidden" data-ab-media-progress aria-live="polite">' +
+      '<div class="ab-media-progress-track"><div class="ab-media-progress-bar" data-ab-media-progress-bar></div></div>' +
+      '<span class="ab-media-progress-label" data-ab-media-progress-label>0%</span>' +
+      '</div>' +
+      '<div class="ab-media-attached" data-ab-media-list>' + list + '</div>' +
+      '</div>';
+  }
+
   function selectQuestion(id) {
     state.selectedQuestionId = id;
     renderStructure();
@@ -515,18 +633,7 @@
       '</div>' +
       '<label class="ab-field"><span>Question text</span><div class="quill-wrap ab-quill-compact"><div class="quill-editor" data-ab-q-quill="prompt"></div></div>' +
       '<textarea hidden data-ab-q-field="prompt_html">' + escapeHtml(q.prompt_html || '') + '</textarea></label>' +
-      '<div class="ab-media-dropzone" data-ab-media-dropzone>' +
-      '<div class="ab-media-dropzone-ui">' +
-      '<div class="ab-media-dropzone-copy"><strong>Drop media here</strong><span>Images, audio, or video — or browse</span></div>' +
-      '<div class="ab-media-dropzone-actions">' +
-      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-upload-media>Upload media</button>' +
-      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-camera>Camera</button>' +
-      '<button type="button" class="ab-btn ab-btn--ghost" data-ab-record-audio>Record audio</button>' +
-      '</div></div>' +
-      '<div class="ab-media-progress is-hidden" data-ab-media-progress aria-live="polite">' +
-      '<div class="ab-media-progress-track"><div class="ab-media-progress-bar" data-ab-media-progress-bar></div></div>' +
-      '<span class="ab-media-progress-label" data-ab-media-progress-label>0%</span>' +
-      '</div></div>' +
+      mediaBlockHtml(q) +
       '<div class="ab-editor-meta">' +
       '<label class="ab-field"><span>Points</span><input type="number" min="0" step="0.5" data-ab-q-field="points" value="' + Number(q.points || 1) + '"></label>' +
       '<label class="ab-check ab-check--inline"><input type="checkbox" data-ab-q-bool="required"' + (Number(q.required) !== 0 ? ' checked' : '') + '><span>Required</span></label>' +
@@ -574,6 +681,7 @@
       '<textarea data-ab-fc-front rows="4" placeholder="Term, question, or prompt">' + escapeHtml(frontText) + '</textarea></label>' +
       '<label class="ab-field"><span>Back</span>' +
       '<textarea data-ab-fc-back rows="4" placeholder="Definition or answer">' + escapeHtml(backText) + '</textarea></label>' +
+      mediaBlockHtml(q) +
       '<p class="ab-hint-line">Students flip the card to reveal the back, then mark Know or Still learning.</p>' +
       '<div class="ab-editor-actions">' +
       '<button type="button" class="ab-btn ab-btn--primary" data-ab-save-question>Save card</button>' +
@@ -594,6 +702,7 @@
     [front, back].forEach((el) => {
       el?.addEventListener('input', () => markDirty());
     });
+    bindMediaControls(q);
 
     saveBtn?.addEventListener('click', async () => {
       try {
@@ -646,14 +755,46 @@
     try { return JSON.parse(raw || '{}') || fallback; } catch (_) { return fallback; }
   }
 
+  function stripHtmlImages(html) {
+    return String(html || '').replace(/<img\b[^>]*>/gi, '');
+  }
+
   /** Load existing HTML without counting it as an edit. */
   function setQuillHtml(quill, html) {
     if (!html) return;
+    html = stripHtmlImages(html);
     try {
       quill.setContents(quill.clipboard.convert({ html }), 'silent');
     } catch (_) {
       quill.root.innerHTML = html;
     }
+  }
+
+  function bindQuillMediaIntercept(quill, questionId) {
+    const takeFiles = (dt) => {
+      if (!dt || !dt.files || !dt.files.length) return [];
+      return Array.from(dt.files).filter((f) => f && (f.type.startsWith('image/') || f.type.startsWith('audio/') || f.type.startsWith('video/') || f.size));
+    };
+    quill.root.addEventListener('drop', (e) => {
+      const files = takeFiles(e.dataTransfer);
+      if (!files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      uploadMediaFiles(files, questionId);
+    }, true);
+    quill.root.addEventListener('paste', (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItem = items.find((item) => item.type && item.type.startsWith('image/'));
+      if (!imageItem) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const file = imageItem.getAsFile();
+      if (file) uploadMediaFiles([file], questionId);
+    }, true);
+    try {
+      const Delta = Quill.import('delta');
+      quill.clipboard.addMatcher('IMG', () => new Delta());
+    } catch (_) { /* older Quill */ }
   }
 
   function initQuestionQuills(q) {
@@ -668,8 +809,9 @@
         modules: { toolbar: [['bold', 'italic'], ['link'], [{ list: 'ordered' }, { list: 'bullet' }]] },
       });
       setQuillHtml(quill, ta ? ta.value : '');
+      bindQuillMediaIntercept(quill, q.id);
       quill.on('text-change', () => {
-        if (ta) ta.value = quill.root.innerHTML;
+        if (ta) ta.value = stripHtmlImages(quill.root.innerHTML);
         markDirty();
       });
       node._quill = quill;
@@ -728,10 +870,23 @@
     els.editor.querySelectorAll('[data-ab-del-option]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const row = btn.closest('[data-option-id]');
-        const oid = Number(row?.dataset.optionId || 0);
+        const list = els.editor.querySelector('[data-ab-options]');
+        if (!row || !list) return;
+        const rows = list.querySelectorAll('[data-option-id]');
+        if (rows.length <= 2) {
+          setSaveState('Keep at least two options', true);
+          return;
+        }
+        row.remove();
+        list.querySelectorAll('[data-option-id]').forEach((el, i) => {
+          const letter = el.querySelector('.ab-option-letter');
+          if (!letter) return;
+          letter.textContent = el.classList.contains('ab-option-row--order')
+            ? String(i + 1)
+            : String.fromCharCode(65 + (i % 26));
+        });
         try {
           if (!await flushCurrentQuestion(q)) return;
-          await api('delete_option', { option_id: oid });
           renderAll();
           selectQuestion(q.id);
         } catch (err) { alert(err.message); }
@@ -803,6 +958,10 @@
       });
     });
 
+    bindMediaControls(q);
+  }
+
+  function bindMediaControls(q) {
     els.editor.querySelector('[data-ab-upload-media]')?.addEventListener('click', () => {
       els.mediaFile.dataset.questionId = String(q.id);
       els.mediaFile.click();
@@ -812,6 +971,21 @@
       els.camera.click();
     });
     els.editor.querySelector('[data-ab-record-audio]')?.addEventListener('click', () => recordAudio(q.id));
+
+    els.editor.querySelectorAll('[data-ab-delete-media]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const mediaId = Number(btn.getAttribute('data-ab-delete-media') || 0);
+        if (!mediaId || !confirm('Remove this media from the question?')) return;
+        try {
+          await api('delete_media', { media_id: mediaId });
+          setSaveState('Media removed');
+          renderAll();
+          selectQuestion(q.id);
+        } catch (err) {
+          alert(err.message || 'Could not delete media');
+        }
+      });
+    });
 
     const mediaZone = els.editor.querySelector('[data-ab-media-dropzone]');
     if (mediaZone) {
@@ -847,8 +1021,8 @@
         e.stopPropagation();
         dragDepth = 0;
         mediaZone.classList.remove('is-dragover');
-        const file = e.dataTransfer?.files?.[0];
-        if (file) uploadMedia(file, q.id);
+        const files = Array.from(e.dataTransfer?.files || []);
+        uploadMediaFiles(files, q.id);
       });
     }
   }
@@ -859,7 +1033,7 @@
       const key = node.getAttribute('data-ab-q-quill');
       const field = key === 'prompt' ? 'prompt_html' : 'explanation_html';
       const ta = els.editor.querySelector('[data-ab-q-field="' + field + '"]');
-      if (ta && node._quill) ta.value = node._quill.root.innerHTML;
+      if (ta && node._quill) ta.value = stripHtmlImages(node._quill.root.innerHTML);
     });
   }
 
@@ -1045,8 +1219,67 @@
     });
   }
 
+  let lastMediaDropKey = '';
+  let lastMediaDropAt = 0;
+
+  async function uploadMediaFiles(files, questionId) {
+    const list = Array.from(files || []).filter((f) => f && f.size);
+    const dropKey = String(questionId || '') + ':' + list.map((f) =>
+      String(f.name || '') + ':' + String(f.size || 0) + ':' + String(f.lastModified || 0)
+    ).join('|');
+    const now = Date.now();
+    if (dropKey !== '' && dropKey === lastMediaDropKey && (now - lastMediaDropAt) < 800) {
+      return;
+    }
+    lastMediaDropKey = dropKey;
+    lastMediaDropAt = now;
+    if (!list.length) return;
+    const unique = [];
+    const seen = new Set();
+    let droppedDupes = 0;
+    list.forEach((f) => {
+      const key = String(f.name || '') + ':' + String(f.size || 0) + ':' + String(f.lastModified || 0);
+      if (seen.has(key)) {
+        droppedDupes += 1;
+        return;
+      }
+      seen.add(key);
+      unique.push(f);
+    });
+    if (droppedDupes > 0) {
+      showToast('You cannot upload the same picture twice.', 'error');
+      setSaveState('You cannot upload the same picture twice.', true);
+    }
+    const q = (state.tree.questions || []).find((x) => Number(x.id) === Number(questionId))
+      || { question_type: isFlashcardMode ? 'flashcard' : '' };
+    const limit = mediaLimitFor(q);
+    const remaining = Math.max(0, limit - mediaCountFor(q));
+    if (remaining <= 0) {
+      alert(mediaCapMessage(limit));
+      return;
+    }
+    const batch = unique.slice(0, remaining);
+    const skipped = unique.length - batch.length;
+    for (const file of batch) {
+      const ok = await uploadMedia(file, questionId);
+      if (!ok) break;
+    }
+    if (skipped > 0) {
+      alert(
+        'Only ' + remaining + ' more attachment' + (remaining === 1 ? '' : 's')
+        + ' allowed on this ' + (limit === 1 ? 'card' : 'question') + '. '
+        + skipped + ' file' + (skipped === 1 ? ' was' : 's were') + ' not added.'
+      );
+    }
+  }
+
   async function uploadMedia(file, questionId) {
-    if (!file) return;
+    if (!file) return false;
+    const q = (state.tree.questions || []).find((x) => Number(x.id) === Number(questionId));
+    if (q && mediaCountFor(q) >= mediaLimitFor(q)) {
+      alert(mediaCapMessage(mediaLimitFor(q)));
+      return false;
+    }
     const fd = new FormData();
     fd.append('file', file);
     fd.append('action', 'upload_media');
@@ -1062,22 +1295,23 @@
     try {
       const data = await xhrUploadMedia(fd, (pct) => setMediaUploadProgress(pct, true));
       setMediaUploadProgress(100, true);
-      setSaveState('Media uploaded #' + data.media_id);
-      if (state.selectedQuestionId) {
-        const ta = els.editor?.querySelector('[data-ab-q-field="prompt_html"]');
-        if (ta && data.url) {
-          ta.value += '<p><img src="' + data.url + '" alt=""></p>';
-          await api('update_question', {
-            question_id: state.selectedQuestionId,
-            fields: { prompt_html: ta.value },
-          });
-          renderAll();
-          selectQuestion(state.selectedQuestionId);
-        }
+      if (data.duplicate) {
+        const msg = mediaType === 'image'
+          ? 'You cannot upload the same picture twice.'
+          : 'You cannot attach the same file twice.';
+        setSaveState(msg, true);
+        showToast(msg, 'error');
+        return false;
       }
+      setSaveState('Media attached');
+      const keepId = Number(questionId || state.selectedQuestionId || 0);
+      renderAll();
+      if (keepId) selectQuestion(keepId);
+      return true;
     } catch (err) {
       setSaveState(err.message || 'Upload failed', true);
       alert(err.message || 'Upload failed');
+      return false;
     } finally {
       setTimeout(() => setMediaUploadProgress(0, false), 400);
     }
@@ -1097,7 +1331,7 @@
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
         const file = new File([blob], 'recording.webm', { type: blob.type });
-        await uploadMedia(file, questionId);
+        await uploadMediaFiles([file], questionId);
       };
       recorder.start();
       setSaveState('Recording… click OK to stop');
@@ -1267,8 +1501,7 @@
         location.reload();
       } else if (action === 'preview') {
         if (!await ensureSettingsSaved()) throw new Error('Save the latest settings before opening the preview.');
-        const data = await api('preview_payload', {});
-        openPreview(data);
+        location.href = (boot.urls?.player || ('activity.php?id=' + activityId)) + '&preview=1';
       } else if (action === 'export-json') {
         const data = await api('export_json', {});
         const blob = new Blob([JSON.stringify(data.export, null, 2)], { type: 'application/json' });
@@ -1301,94 +1534,6 @@
     });
   });
 
-  function openPreview(data) {
-    if (!els.previewModal || !els.previewRoot) return;
-    els.previewRoot.innerHTML = '';
-    const banner = document.createElement('p');
-    banner.className = 'ab-preview-banner';
-    banner.textContent = data.banner || 'Preview — responses are not recorded';
-    els.previewRoot.appendChild(banner);
-    (data.questions || []).forEach((q, i) => {
-      const block = document.createElement('article');
-      block.className = 'ap-question';
-      block.innerHTML = '<h3>Q' + (i + 1) + '</h3><div class="ap-rich">' + (q.prompt_html || '') + '</div>';
-      const form = document.createElement('div');
-      form.className = 'ap-answer';
-      if (['single_choice', 'true_false'].includes(q.question_type)) {
-        (q.options || []).forEach(o => {
-          const lab = document.createElement('label');
-          lab.innerHTML = '<input type="radio" name="pq' + q.id + '"> <span>' + (o.option_text_html || '') + '</span>';
-          form.appendChild(lab);
-        });
-      } else if (q.question_type === 'flashcard') {
-        const back = escapeHtml(q.settings?.back || stripHtml(q.explanation_html || '') || 'Back of card');
-        form.innerHTML =
-          '<div class="ab-fc-preview-card">' +
-          '<div class="ab-fc-preview-face"><small>Front</small><div>' + (q.prompt_html || '') + '</div></div>' +
-          '<div class="ab-fc-preview-face"><small>Back</small><div>' + back + '</div></div>' +
-          '</div>';
-      } else if (q.question_type === 'multiple_choice') {
-        (q.options || []).forEach(o => {
-          const lab = document.createElement('label');
-          lab.innerHTML = '<input type="checkbox"> <span>' + (o.option_text_html || '') + '</span>';
-          form.appendChild(lab);
-        });
-      } else if (q.question_type === 'long_response') {
-        form.innerHTML = '<textarea rows="4" placeholder="Your response"></textarea>';
-      } else if (q.question_type === 'matching') {
-        const pairs = q.settings?.pairs || [];
-        const rights = pairs.map(p => p.right).filter(Boolean);
-        pairs.forEach((p) => {
-          if (!p.left) return;
-          const row = document.createElement('div');
-          row.className = 'ap-match-row';
-          row.innerHTML = '<span class="ap-match-left">' + escapeHtml(p.left) + '</span>' +
-            '<select disabled><option>' + (rights[0] ? escapeHtml(rights[0]) : 'Match…') + '</option></select>';
-          form.appendChild(row);
-        });
-        if (!pairs.length) form.innerHTML = '<p class="ab-hint-line">Add matching pairs in the editor.</p>';
-      } else {
-        form.innerHTML = '<input type="text" placeholder="Your answer">';
-      }
-      const checkBtn = document.createElement('button');
-      checkBtn.type = 'button';
-      checkBtn.className = 'button button--sm';
-      checkBtn.textContent = 'Check (local)';
-      checkBtn.addEventListener('click', () => {
-        const fb = document.createElement('p');
-        fb.className = 'ap-feedback';
-        if (q.manual_marking) {
-          fb.textContent = 'This question needs manual marking — not scored in preview.';
-        } else if (['single_choice', 'true_false', 'multiple_choice'].includes(q.question_type)) {
-          const selected = Array.from(form.querySelectorAll('input:checked'));
-          const correctIds = (q.options || []).filter(o => Number(o.is_correct)).map(o => Number(o.id));
-          // Preview scoring by option text match order
-          let ok = false;
-          if (q.question_type === 'multiple_choice') {
-            const idxs = selected.map(inp => Array.from(form.querySelectorAll('input')).indexOf(inp));
-            const correctIdxs = (q.options || []).map((o, i) => Number(o.is_correct) ? i : -1).filter(i => i >= 0);
-            ok = idxs.length === correctIdxs.length && idxs.every(i => correctIdxs.includes(i));
-          } else {
-            const idx = Array.from(form.querySelectorAll('input')).indexOf(selected[0]);
-            ok = idx >= 0 && Number((q.options || [])[idx]?.is_correct);
-          }
-          fb.textContent = ok ? 'Correct (preview only)' : 'Not correct (preview only)';
-          fb.classList.add(ok ? 'ap-feedback--ok' : 'ap-feedback--bad');
-        } else {
-          fb.textContent = 'Auto-check for this type is limited in preview.';
-        }
-        block.querySelector('.ap-feedback')?.remove();
-        block.appendChild(fb);
-      });
-      block.appendChild(form);
-      block.appendChild(checkBtn);
-      els.previewRoot.appendChild(block);
-    });
-    els.previewModal.showModal();
-  }
-
-  root.querySelector('[data-ab-close-preview]')?.addEventListener('click', () => els.previewModal?.close());
-
   // Mobile drawers
   root.querySelectorAll('[data-ab-drawer]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1413,13 +1558,15 @@
   });
 
   els.mediaFile?.addEventListener('change', () => {
-    const file = els.mediaFile.files?.[0];
-    uploadMedia(file, Number(els.mediaFile.dataset.questionId || state.selectedQuestionId || 0));
+    const files = Array.from(els.mediaFile.files || []);
+    uploadMediaFiles(files, Number(els.mediaFile.dataset.questionId || state.selectedQuestionId || 0));
     els.mediaFile.value = '';
   });
   els.camera?.addEventListener('change', () => {
     const file = els.camera.files?.[0];
-    uploadMedia(file, Number(els.camera.dataset.questionId || state.selectedQuestionId || 0));
+    if (file) {
+      uploadMediaFiles([file], Number(els.camera.dataset.questionId || state.selectedQuestionId || 0));
+    }
     els.camera.value = '';
   });
 
@@ -1431,7 +1578,7 @@
       if (item.type.startsWith('image/')) {
         e.preventDefault();
         const file = item.getAsFile();
-        uploadMedia(file, state.selectedQuestionId);
+        uploadMediaFiles([file], state.selectedQuestionId);
         break;
       }
     }

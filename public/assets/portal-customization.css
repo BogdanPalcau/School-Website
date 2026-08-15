@@ -299,8 +299,8 @@ html[data-accent] .nav-link.active {
     box-shadow: inset 3px 0 0 var(--primary-soft-strong);
 }
 
-html[data-accent]:not([data-accent="crimson"]) .button:hover,
-html[data-accent]:not([data-accent="crimson"]) .button:focus-visible,
+html[data-accent]:not([data-accent="crimson"]) .button:hover:not(.button-secondary),
+html[data-accent]:not([data-accent="crimson"]) .button:focus-visible:not(.button-secondary),
 html[data-accent]:not([data-accent="crimson"]) .login-button:hover,
 html[data-accent]:not([data-accent="crimson"]) .login-button:focus-visible {
     background: linear-gradient(135deg, var(--primary), var(--primary-strong));

@@ -98,6 +98,18 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
     $attemptId = (int) ($payload['attempt_id'] ?? 0);
     $sessionToken = (string) ($payload['token'] ?? $payload['session_token'] ?? '');
 
+    if ($canManage && !empty($payload['preview'])) {
+        $previewResult = portal_activity_preview_post($activity, $payload);
+        if (empty($previewResult['ok'])) {
+            portal_activity_json_error(
+                (string) ($previewResult['error'] ?? 'Preview failed.'),
+                400,
+                $previewResult
+            );
+        }
+        portal_activity_json_ok($previewResult);
+    }
+
     switch ($action) {
         case 'start':
             $result = portal_activity_start_attempt(
@@ -252,11 +264,12 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
 }
 
 $csrfToken = portal_csrf_token();
+$isPreview = $canManage && (int) ($_GET['preview'] ?? 0) === 1;
 
 // Formal assessments are single-sitting activities. If a student returns via
 // reload, history navigation, or a fresh tab after the unload request was lost,
 // close the old attempt before rendering the lobby. Quizzes/practice still resume.
-if (($activity['mode'] ?? '') === 'assessment') {
+if (!$isPreview && ($activity['mode'] ?? '') === 'assessment') {
     $staleAttemptStmt = $db->prepare(
         "SELECT id, resume_allowed FROM activity_attempts
          WHERE activity_id = ? AND user_id = ? AND status = 'in_progress'
@@ -273,7 +286,7 @@ if (($activity['mode'] ?? '') === 'assessment') {
 $summary = portal_activity_student_card_summary($activity, $uid);
 $canStart = portal_activity_can_start($activity, $uid);
 
-$inProgressId = $summary['in_progress_attempt_id'] ?? null;
+$inProgressId = $isPreview ? null : ($summary['in_progress_attempt_id'] ?? null);
 $forcePlayer = isset($_GET['play']) || isset($_GET['attempt']);
 $showPlayer = $inProgressId !== null && ($forcePlayer || isset($_GET['resume']) || (string) ($_GET['view'] ?? '') === 'play');
 
@@ -283,15 +296,17 @@ if ($inProgressId !== null && (isset($_GET['resume']) || (int) ($_GET['attempt']
 }
 
 $latestResult = null;
-$resultStmt = $db->prepare(
-    "SELECT id, status, percentage, score, maximum_score, submitted_at, attempt_number
-     FROM activity_attempts
-     WHERE activity_id = ? AND user_id = ?
-       AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')
-     ORDER BY attempt_number DESC LIMIT 1"
-);
-$resultStmt->execute([$activityId, $uid]);
-$latestResult = $resultStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+if (!$isPreview) {
+    $resultStmt = $db->prepare(
+        "SELECT id, status, percentage, score, maximum_score, submitted_at, attempt_number
+         FROM activity_attempts
+         WHERE activity_id = ? AND user_id = ?
+           AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')
+         ORDER BY attempt_number DESC LIMIT 1"
+    );
+    $resultStmt->execute([$activityId, $uid]);
+    $latestResult = $resultStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
 
 $showFeedback = false;
 if ($latestResult) {
@@ -305,8 +320,10 @@ $needsIntegrityAck = ($activity['mode'] ?? '') === 'assessment' && !empty($activ
 $leaderboardRows = !empty($activity['leaderboard_enabled'])
     ? portal_activity_course_leaderboard((int) $activity['course_id'], 8)
     : [];
-$overviewVersionId = portal_activity_published_version_id($activityId)
-    ?? ($canManage ? portal_activity_draft_version_id($activityId) : null);
+$overviewVersionId = $isPreview
+    ? (portal_activity_draft_version_id($activityId) ?? portal_activity_published_version_id($activityId))
+    : (portal_activity_published_version_id($activityId)
+        ?? ($canManage ? portal_activity_draft_version_id($activityId) : null));
 $questionCount = 0;
 $maximumPoints = 0.0;
 if ($overviewVersionId !== null) {
@@ -320,6 +337,13 @@ if ($overviewVersionId !== null) {
     $maximumPoints = (float) ($overview['maximum_points'] ?? 0);
 }
 
+if ($isPreview) {
+    $canStart = $questionCount > 0
+        ? ['ok' => true]
+        : ['ok' => false, 'error' => 'Add questions in the builder before previewing.'];
+}
+
+$builderUrl = 'activity-builder.php?id=' . $activityId;
 $bootstrap = [
     'activity' => [
         'id' => $activityId,
@@ -367,25 +391,34 @@ $bootstrap = [
         'awaiting_release' => !$showFeedback,
         'awaiting_marking' => ((string) ($latestResult['status'] ?? '') === 'awaiting_manual_marking'),
     ] : null),
-    'can_manage' => $canManage,
+    'can_manage' => $canManage && !$isPreview,
+    'preview' => $isPreview,
     'urls' => [
-        'self' => 'activity.php?id=' . $activityId,
+        'self' => 'activity.php?id=' . $activityId . ($isPreview ? '&preview=1' : ''),
         'course' => 'course.php?course=' . urlencode((string) ($course['slug'] ?? '')) . '&section=content',
-        'builder' => $canManage ? 'activity-builder.php?id=' . $activityId : null,
-        'results' => $canManage ? 'activity-results.php?id=' . $activityId : null,
+        'builder' => $canManage ? $builderUrl : null,
+        'results' => $canManage && !$isPreview ? 'activity-results.php?id=' . $activityId : null,
     ],
     'auto_start_player' => $showPlayer,
 ];
 
-$backUrl = 'course.php?course=' . urlencode((string) ($course['slug'] ?? '')) . '&section=content';
+$backUrl = $isPreview
+    ? $builderUrl
+    : ('course.php?course=' . urlencode((string) ($course['slug'] ?? '')) . '&section=content');
+$backLabel = $isPreview ? 'Back to editor' : 'Back to course';
 $courseLabel = trim((string) ($course['code'] ?? '')) !== ''
     ? (string) $course['code']
     : (string) ($course['title'] ?? 'Course');
 $page_title = (string) $activity['title'] . ' | ' . portal_school_name();
-$page_eyebrow = portal_activity_mode_label((string) $activity['mode']);
+$page_eyebrow = $isPreview
+    ? 'Student preview'
+    : portal_activity_mode_label((string) $activity['mode']);
 $page_heading = (string) $activity['title'];
-$page_description = (string) ($activity['short_description'] ?: 'Complete this activity for your course.');
+$page_description = $isPreview
+    ? 'This is the student view. Answers are not saved and do not count as an attempt.'
+    : (string) ($activity['short_description'] ?: 'Complete this activity for your course.');
 $active_page = 'courses';
+$layout_preview_as_student = $isPreview;
 
 ob_start();
 ?>
@@ -396,12 +429,18 @@ ob_start();
          data-mode="<?= portal_escape((string) $activity['mode']) ?>">
 
     <div data-ap-landing<?= $showPlayer ? ' hidden' : '' ?>>
+        <?php if ($isPreview): ?>
+        <div class="ap-preview-banner" role="status">
+            Student preview — answers are not recorded.
+            <a class="ap-preview-banner-link" href="<?= portal_escape($builderUrl) ?>">Back to editor</a>
+        </div>
+        <?php endif; ?>
         <div class="ap-toolbar">
             <a class="ap-back" href="<?= portal_escape($backUrl) ?>">
-                <span aria-hidden="true">←</span> Back to course
+                <span aria-hidden="true">←</span> <?= portal_escape($backLabel) ?>
             </a>
             <div class="ap-toolbar-actions">
-                <?php if ($canManage): ?>
+                <?php if ($canManage && !$isPreview): ?>
                     <a class="ap-tool-link" href="activity-builder.php?id=<?= (int) $activityId ?>">Edit</a>
                     <a class="ap-tool-link ap-tool-link--strong" href="activity-results.php?id=<?= (int) $activityId ?>">Submissions</a>
                 <?php endif; ?>
@@ -415,7 +454,7 @@ ob_start();
                         <?= portal_escape(portal_activity_mode_label((string) $activity['mode'])) ?>
                     </span>
                     <span><?= portal_escape($courseLabel) ?></span>
-                    <?php if (($activity['status'] ?? '') === 'draft'): ?>
+                    <?php if (($activity['status'] ?? '') === 'draft' && !$isPreview): ?>
                         <span class="activity-status activity-status--not-started">Draft</span>
                     <?php endif; ?>
                 </p>
@@ -499,7 +538,7 @@ ob_start();
                     <?php if ($latestResult): ?>
                         <button type="button" class="button button-secondary" data-ap-action="view-result">View last result</button>
                     <?php endif; ?>
-                    <a class="ap-text-link" href="<?= portal_escape($backUrl) ?>">Return to course</a>
+                    <a class="ap-text-link" href="<?= portal_escape($backUrl) ?>"><?= $isPreview ? 'Return to editor' : 'Return to course' ?></a>
                 </div>
             </div>
 
@@ -510,9 +549,14 @@ ob_start();
                         <dt>Attempts</dt>
                         <dd>
                             <?php if ((int) $activity['max_attempts'] > 0): ?>
-                                <?= (int) $summary['attempt_count'] ?> used
-                                <?php if ($summary['attempts_remaining'] !== null): ?>
-                                    · <?= (int) $summary['attempts_remaining'] ?> left
+                                <?= $isPreview ? 0 : (int) $summary['attempt_count'] ?> used
+                                <?php
+                                    $attemptsLeft = $isPreview
+                                        ? (int) $activity['max_attempts']
+                                        : $summary['attempts_remaining'];
+                                ?>
+                                <?php if ($attemptsLeft !== null): ?>
+                                    · <?= (int) $attemptsLeft ?> left
                                 <?php endif; ?>
                             <?php else: ?>
                                 Unlimited
@@ -580,7 +624,10 @@ ob_start();
     <div data-ap-shell<?= $showPlayer ? '' : ' hidden' ?>>
         <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
         <div class="fc-player" data-fc-player>
-            <div class="ap-preview-banner" data-ap-banner hidden role="status"></div>
+            <div class="ap-preview-banner" data-ap-banner<?= $isPreview ? '' : ' hidden' ?> role="status"><?php if ($isPreview): ?>
+                Student preview — answers are not recorded.
+                <a class="ap-preview-banner-link" href="<?= portal_escape($builderUrl) ?>">Back to editor</a>
+            <?php endif; ?></div>
             <div class="fc-toolbar">
                 <a class="ap-back" href="<?= portal_escape($backUrl) ?>">
                     <span aria-hidden="true">←</span> Exit
@@ -634,7 +681,10 @@ ob_start();
             </div>
         </div>
         <?php else: ?>
-        <div class="ap-preview-banner" data-ap-banner hidden role="status"></div>
+        <div class="ap-preview-banner" data-ap-banner<?= $isPreview ? '' : ' hidden' ?> role="status"><?php if ($isPreview): ?>
+            Student preview — answers are not recorded.
+            <a class="ap-preview-banner-link" href="<?= portal_escape($builderUrl) ?>">Back to editor</a>
+        <?php endif; ?></div>
         <div class="ap-network-warning" data-ap-network hidden role="alert">
             <span class="ap-network-warning-icon" aria-hidden="true">!</span>
             <div>
@@ -714,9 +764,9 @@ ob_start();
 
 <script type="application/json" id="ap-bootstrap"><?= portal_activity_json_encode($bootstrap) ?></script>
 <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
-<script src="assets/activity-flashcards.js?v=20260809f"></script>
+<script src="assets/activity-flashcards.js?v=20260815gallery"></script>
 <?php else: ?>
-<script src="assets/activity-player.js?v=20260802i"></script>
+<script src="assets/activity-player.js?v=20260815-stack3"></script>
 <?php endif; ?>
 <?php
 $page_content = ob_get_clean();

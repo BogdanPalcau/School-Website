@@ -29,11 +29,12 @@ $page_content = $page_content ?? $pageContent ?? '';
 $auth_eyebrow = $auth_eyebrow ?? $authEyebrow ?? 'Student access';
 $auth_heading = $auth_heading ?? $authHeading ?? portal_school_name();
 $auth_description = $auth_description ?? $authDescription ?? 'Sign in to see your lessons, deadlines, school updates, and everything coming up this week.';
+$layout_preview_as_student = !empty($layout_preview_as_student);
 
 $navItems = [
     ['key' => 'dashboard',     'label' => 'Dashboard',     'href' => 'dashboard.php',     'icon' => 'home'],
     ['key' => 'courses',       'label' => 'Courses',       'href' => 'courses.php',       'icon' => 'book-open'],
-    ['key' => 'grades',        'label' => portal_is_course_staff() || portal_is_admin() ? 'Marking' : 'Grades', 'href' => 'grades.php', 'icon' => 'award'],
+    ['key' => 'grades',        'label' => (!$layout_preview_as_student && (portal_is_course_staff() || portal_is_admin())) ? 'Marking' : 'Grades', 'href' => 'grades.php', 'icon' => 'award'],
     ['key' => 'timetable',     'label' => 'Timetable',     'href' => 'timetable.php',     'icon' => 'calendar'],
     ['key' => 'notifications', 'label' => 'Notifications', 'href' => 'notifications.php', 'icon' => 'bell'],
     ['key' => 'communication', 'label' => 'Communication', 'href' => 'communication.php', 'icon' => 'megaphone'],
@@ -43,7 +44,7 @@ $navItems = [
     ['key' => 'logout',        'label' => 'Logout',        'href' => 'logout.php',        'icon' => 'log-out'],
 ];
 
-if (portal_is_admin()) {
+if (portal_is_admin() && !$layout_preview_as_student) {
     array_splice($navItems, -2, 0, [[
         'key'   => 'admin',
         'label' => 'Admin',
@@ -71,7 +72,7 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260813uploaddnd12';
+$asset_version = '20260815stack3';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $customizationPrefs = portal_is_logged_in()
     ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))
@@ -209,10 +210,12 @@ if ($publicPos !== false) {
 
                 <?php
                     $__sidebarUser = portal_current_user();
-                    $__sidebarRole = portal_current_user_role();
+                    $__sidebarRole = $layout_preview_as_student ? 'student' : portal_current_user_role();
                     $__sidebarMeta = $__sidebarUser['year'] ?? '';
 
-                    if ($__sidebarRole === 'owner') {
+                    if ($layout_preview_as_student) {
+                        $__sidebarMeta = 'Student view';
+                    } elseif ($__sidebarRole === 'owner') {
                         $__sidebarMeta = 'Account owner';
                     } elseif ($__sidebarRole === 'admin') {
                         $__sidebarMeta = 'Administrator';

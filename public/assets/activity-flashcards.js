@@ -17,6 +17,7 @@
 
   const csrf = root.dataset.csrf || '';
   const activityId = Number(root.dataset.activityId || boot.activity?.id || 0);
+  const isPreview = !!boot.preview;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     || document.documentElement.getAttribute('data-motion') === 'reduced';
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
@@ -103,6 +104,7 @@
         id: activityId,
         attempt_id: state.attemptId,
         session_token: state.sessionToken,
+        preview: isPreview ? 1 : 0,
       }, body || {})),
     });
     const data = await res.json().catch(() => ({ ok: false, error: 'Invalid response' }));
@@ -193,6 +195,13 @@
     els.card.classList.toggle('is-swipe-learning', dx < -28);
   }
 
+  function stripStemImages(html) {
+    const box = document.createElement('div');
+    box.innerHTML = html || '';
+    box.querySelectorAll('img').forEach((el) => el.remove());
+    return box.innerHTML;
+  }
+
   function renderCard() {
     const q = currentCard();
     if (!q) {
@@ -201,7 +210,19 @@
     }
     resetSwipeVisual();
     state.marking = false;
-    if (els.front) els.front.innerHTML = q.prompt_html || ('<p>' + escapeHtml(strip(q.prompt_html)) + '</p>');
+    if (els.front) {
+      let front = stripStemImages(q.prompt_html || '') || ('<p>' + escapeHtml(strip(q.prompt_html)) + '</p>');
+      if (Array.isArray(q.media) && q.media.length) {
+        front += '<div class="ap-q-media" data-count="' + q.media.length + '">' + q.media.map((m) => {
+          const url = escapeHtml(m.url || ('activity-media.php?id=' + m.id));
+          const type = String(m.media_type || 'image');
+          if (type === 'audio') return '<audio class="ap-media-audio" controls preload="metadata" src="' + url + '"></audio>';
+          if (type === 'video') return '<video class="ap-media-video" controls preload="metadata" src="' + url + '"></video>';
+          return '<figure class="ap-media-figure"><img class="ap-media-image" src="' + url + '" alt=""></figure>';
+        }).join('') + '</div>';
+      }
+      els.front.innerHTML = front;
+    }
     const back = cardBack(q);
     if (els.back) {
       els.back.innerHTML = back

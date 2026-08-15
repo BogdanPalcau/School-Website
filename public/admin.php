@@ -1404,7 +1404,7 @@ ob_start();
                     </form>
 
                     <div class="admin-table-wrap">
-                        <table class="admin-table">
+                        <table class="admin-table admin-table--users">
                             <thead>
                                 <tr>
                                     <th>User</th>
@@ -1427,7 +1427,7 @@ ob_start();
                                         && ($isOwner || in_array($u['role'], ['student', 'teacher'], true));
                                 ?>
                                 <tr>
-                                    <td>
+                                    <td data-label="User">
                                         <div class="admin-table-user">
                                             <div class="admin-avatar admin-avatar--sm"><?= portal_escape($u['initials']) ?></div>
                                             <div>
@@ -1435,12 +1435,12 @@ ob_start();
                                             </div>
                                         </div>
                                     </td>
-                                    <td><?= portal_escape($u['username']) ?></td>
-                                    <td><?= portal_escape($u['email']) ?></td>
-                                    <td><span class="admin-badge admin-badge--<?= portal_escape($u['role']) ?>"><?= portal_escape(ucfirst($u['role'])) ?></span></td>
-                                    <td><?= portal_escape($u['year']) ?></td>
-                                    <td><?= (int) ($enrollmentCounts[(int) $u['id']] ?? 0) ?></td>
-                                    <td>
+                                    <td data-label="Username"><?= portal_escape($u['username']) ?></td>
+                                    <td data-label="Email"><?= portal_escape($u['email']) ?></td>
+                                    <td data-label="Role"><span class="admin-badge admin-badge--<?= portal_escape($u['role']) ?>"><?= portal_escape(ucfirst($u['role'])) ?></span></td>
+                                    <td data-label="Year"><?= portal_escape($u['year']) ?></td>
+                                    <td data-label="Enrolments"><?= (int) ($enrollmentCounts[(int) $u['id']] ?? 0) ?></td>
+                                    <td data-label="Actions">
                                         <div class="admin-table-actions">
                                             <?php if ($canManageUser): ?>
                                             <a class="admin-btn admin-btn--primary admin-btn--sm" href="<?= portal_escape($adminUrl('users', ['edit_user' => (int) $u['id']])) ?>">Edit</a>
@@ -1543,7 +1543,7 @@ ob_start();
                                         ? 'admin-badge--' . $statusKey : 'admin-badge--draft';
                                 ?>
                                 <tr>
-                                    <td>
+                                    <td data-label="Course">
                                         <div class="admin-course-cell">
                                             <span class="admin-course-accent" style="background:<?= portal_escape((string) $c['accent']) ?>"></span>
                                             <div>
@@ -1552,17 +1552,17 @@ ob_start();
                                             </div>
                                         </div>
                                     </td>
-                                    <td><?= portal_escape((string) $c['code']) ?></td>
-                                    <td><?= portal_escape((string) $c['year_group']) ?></td>
-                                    <td><?= portal_escape((string) $c['term']) ?></td>
-                                    <td><span class="admin-badge <?= portal_escape($badgeClass) ?>"><?= portal_escape((string) $c['status_label']) ?></span></td>
-                                    <td>
+                                    <td data-label="Code"><?= portal_escape((string) $c['code']) ?></td>
+                                    <td data-label="Year"><?= portal_escape((string) $c['year_group']) ?></td>
+                                    <td data-label="Term"><?= portal_escape((string) $c['term']) ?></td>
+                                    <td data-label="Status"><span class="admin-badge <?= portal_escape($badgeClass) ?>"><?= portal_escape((string) $c['status_label']) ?></span></td>
+                                    <td data-label="Schedule">
                                         <span><?= portal_escape((string) $c['meeting']) ?></span>
                                         <span class="admin-table-meta"><?= portal_escape((string) $c['room']) ?></span>
                                     </td>
-                                    <td><?= (int) $c['enrollment_count'] ?></td>
-                                    <td><?= (int) $c['assigned_staff_count'] ?></td>
-                                    <td>
+                                    <td data-label="Enrolled"><?= (int) $c['enrollment_count'] ?></td>
+                                    <td data-label="Staff"><?= (int) $c['assigned_staff_count'] ?></td>
+                                    <td data-label="Actions">
                                         <div class="admin-table-actions">
                                             <a class="admin-btn admin-btn--secondary admin-btn--sm" href="course.php?course=<?= portal_escape((string) $c['slug']) ?>">View</a>
                                             <a class="admin-btn admin-btn--secondary admin-btn--sm" href="<?= portal_escape($adminUrl('courses', ['edit' => (int) $c['id']])) ?>">Edit</a>
@@ -2482,13 +2482,13 @@ ob_start();
                                     }
                                 ?>
                                 <tr>
-                                    <td>
+                                    <td data-label="Select">
                                         <input type="checkbox" class="security-event-check" form="security-bulk-form" name="event_ids[]" value="<?= (int) $event['id'] ?>" <?= $isReviewed ? 'disabled' : '' ?>>
                                     </td>
-                                    <td><?= portal_escape(date('j M Y H:i', strtotime((string) $event['created_at']))) ?></td>
-                                    <td><span class="admin-severity admin-severity--<?= portal_escape($evSeverity) ?>"><?= portal_escape(ucfirst($evSeverity)) ?></span></td>
-                                    <td><?= portal_escape(portal_security_event_type_label($evType)) ?></td>
-                                    <td>
+                                    <td data-label="Date / time"><?= portal_escape(date('j M Y H:i', strtotime((string) $event['created_at']))) ?></td>
+                                    <td data-label="Severity"><span class="admin-severity admin-severity--<?= portal_escape($evSeverity) ?>"><?= portal_escape(ucfirst($evSeverity)) ?></span></td>
+                                    <td data-label="Event"><?= portal_escape(portal_security_event_type_label($evType)) ?></td>
+                                    <td data-label="User">
                                         <?php if ($targetUser && $showAccountActions): ?>
                                         <button type="button" class="admin-user-link" data-security-profile="<?= (int) $evUserId ?>" data-security-event="<?= (int) $event['id'] ?>">
                                             <?= portal_escape($evUser) ?>
@@ -2504,7 +2504,7 @@ ob_start();
                                             <span class="admin-badge admin-badge--draft"><?= portal_escape(portal_account_status_label($targetStatus)) ?></span>
                                         <?php endif; ?>
                                     </td>
-                                    <td>
+                                    <td data-label="IP">
                                         <?php if ($evIp !== '' && $evIp !== 'unknown'): ?>
                                         <a class="security-ip-link" href="<?= portal_escape($adminUrl('security', [
                                             'sec_period' => $secPeriod,
@@ -2514,16 +2514,16 @@ ob_start();
                                         <span class="admin-table-meta">—</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td><code class="admin-route-code"><?= portal_escape((string) $event['route']) ?></code></td>
-                                    <td><?= portal_escape((string) $event['details']) ?></td>
-                                    <td>
+                                    <td data-label="Route"><code class="admin-route-code"><?= portal_escape((string) $event['route']) ?></code></td>
+                                    <td data-label="Details"><?= portal_escape((string) $event['details']) ?></td>
+                                    <td data-label="Status">
                                         <?php if ($isReviewed): ?>
                                         <span class="admin-badge admin-badge--open">Reviewed</span>
                                         <?php else: ?>
                                         <span class="admin-badge admin-badge--draft">Open</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td>
+                                    <td data-label="Action">
                                         <div class="admin-inline-actions">
                                             <?php if (!$isReviewed): ?>
                                             <form method="post" action="<?= portal_escape($adminUrl('security', $securityFilterParams)) ?>" class="admin-inline-form">

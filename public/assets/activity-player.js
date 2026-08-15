@@ -18,6 +18,7 @@
 
   const csrf = root.dataset.csrf || boot.csrf || '';
   const activityId = Number(boot.activity?.id || root.dataset.activityId || 0);
+  const isPreview = !!boot.preview;
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const state = {
@@ -86,6 +87,7 @@
         id: activityId,
         token: state.token,
         attempt_id: state.attempt?.id || 0,
+        preview: isPreview ? 1 : 0,
       }, body || {})),
     });
     const data = await res.json().catch(() => ({ ok: false, error: 'Invalid response' }));
@@ -151,7 +153,7 @@
   }
 
   function armAssessmentHistoryGuard() {
-    if (state.mode !== 'assessment' || state.historyGuardArmed) return;
+    if (isPreview || state.mode !== 'assessment' || state.historyGuardArmed) return;
     window.history.pushState({ rieoAssessmentGuard: true }, '', window.location.href);
     state.historyGuardArmed = true;
   }
@@ -333,7 +335,8 @@
       + '<p class="ap-q-kicker">Question ' + (state.index + 1) + ' of ' + state.questions.length + '</p>'
       + (points != null ? '<span class="ap-q-points">' + (points === 1 ? '1 point' : points + ' points') + '</span>' : '')
       + '</div>';
-    html += '<div class="ap-q-stem ap-rich">' + (q.prompt_html || '') + '</div>';
+    html += '<div class="ap-q-stem ap-rich">' + stripStemImages(q.prompt_html || '') + '</div>';
+    html += renderQuestionMedia(q.media);
     html += '<div class="ap-answer" data-ap-answer>';
 
     switch (q.question_type) {
@@ -414,6 +417,7 @@
     if (q.hint_html) html += '<details class="ap-hint-block"><summary>Show hint</summary><div class="ap-rich">' + q.hint_html + '</div></details>';
 
     els.questionRoot.innerHTML = html;
+    loadQuestionMedia(els.questionRoot);
     if (els.feedback) {
       els.feedback.innerHTML = '';
       els.feedback.hidden = true;
@@ -431,6 +435,43 @@
       updateProgress();
     });
     answerBox?.addEventListener('input', debounce(() => queueSave(q), 600));
+  }
+
+  function stripStemImages(html) {
+    const box = document.createElement('div');
+    box.innerHTML = html || '';
+    box.querySelectorAll('img').forEach((el) => el.remove());
+    return box.innerHTML;
+  }
+
+  function renderQuestionMedia(media) {
+    if (!Array.isArray(media) || media.length === 0) return '';
+    const count = media.length;
+    return '<div class="ap-q-media" data-count="' + count + '">' + media.map((m) => {
+      const url = escapeText(m.url || ('activity-media.php?id=' + m.id));
+      const type = String(m.media_type || 'image');
+      if (type === 'audio') {
+        return '<audio class="ap-media-audio" controls preload="metadata" src="' + url + '"></audio>';
+      }
+      if (type === 'video') {
+        return '<video class="ap-media-video" controls preload="metadata" src="' + url + '"></video>';
+      }
+      return '<figure class="ap-media-figure"><img class="ap-media-image" data-ap-src="' + url + '" alt=""></figure>';
+    }).join('') + '</div>';
+  }
+
+  function loadQuestionMedia(root) {
+    const imgs = Array.from(root.querySelectorAll('img[data-ap-src]'));
+    const loadNext = (i) => {
+      if (i >= imgs.length) return;
+      const img = imgs[i];
+      const src = img.getAttribute('data-ap-src') || '';
+      const done = () => loadNext(i + 1);
+      img.addEventListener('load', done, { once: true });
+      img.addEventListener('error', done, { once: true });
+      img.src = src;
+    };
+    loadNext(0);
   }
 
   function escapeText(v) {
@@ -728,7 +769,7 @@
     const hasRewards = !!gamification && ((gamification.xp || 0) > 0 || (gamification.badges || []).length > 0);
 
     let html = '<article class="ap-result-card' + (showScore && celebrateMode ? ' ap-anim-celebrate' : '') + '">';
-    html += '<div class="ap-toolbar"><a class="ap-back" href="' + (boot.urls?.course || 'courses.php') + '"><span aria-hidden="true">←</span> Back to course</a></div>';
+    html += '<div class="ap-toolbar"><a class="ap-back" href="' + (isPreview ? (boot.urls?.builder || boot.urls?.self || 'courses.php') : (boot.urls?.course || 'courses.php')) + '"><span aria-hidden="true">←</span> ' + (isPreview ? 'Back to editor' : 'Back to course') + '</a></div>';
 
     if (showScore) {
       const tier = pct >= 90 ? 'gold' : (pct >= 70 ? 'good' : (pct >= 50 ? 'ok' : 'low'));
@@ -738,13 +779,13 @@
         + '<span class="ap-score-ring-value">' + pct + '<small>%</small></span></div>';
       html += '<div class="ap-result-head-text">';
       html += '<p class="ap-result-kicker">' + escapeText(tierLabel) + '</p>';
-      html += '<h2>Submitted</h2>';
-      html += '<p class="ap-lobby-lead">Attempt ' + (attempt.attempt_number || '') + ' · ' + escapeText(attempt.status || '') + '</p>';
+      html += '<h2>' + (isPreview ? 'Preview submitted' : 'Submitted') + '</h2>';
+      html += '<p class="ap-lobby-lead">' + (isPreview ? 'Preview complete — nothing was recorded.' : ('Attempt ' + (attempt.attempt_number || '') + ' · ' + escapeText(attempt.status || ''))) + '</p>';
       html += '</div></div>';
     } else {
       html += '<h2>Submitted</h2>';
-      html += '<p class="ap-lobby-lead">Attempt ' + (attempt.attempt_number || '') + ' · ' + escapeText(attempt.status || '') + '</p>';
-      html += '<p>Your responses were submitted. Results will appear when released.</p>';
+      html += '<p class="ap-lobby-lead">' + (isPreview ? 'Preview complete — nothing was recorded.' : ('Attempt ' + (attempt.attempt_number || '') + ' · ' + escapeText(attempt.status || ''))) + '</p>';
+      html += '<p>' + (isPreview ? 'Students would see this waiting screen until results are released.' : 'Your responses were submitted. Results will appear when released.') + '</p>';
     }
 
     if (hasRewards) {
@@ -778,7 +819,7 @@
       });
       html += '</div>';
     }
-    html += '<div class="ap-landing-actions"><a class="button" href="activity.php?id=' + activityId + '">Back to activity</a></div>';
+    html += '<div class="ap-landing-actions"><a class="button" href="' + (boot.urls?.self || ('activity.php?id=' + activityId + (isPreview ? '&preview=1' : ''))) + '">' + (isPreview ? 'Preview again' : 'Back to activity') + '</a></div>';
     html += '</article>';
     els.result.innerHTML = html;
 
@@ -984,7 +1025,8 @@
   // actually left (navigation, refresh, or tab/window close). Visibility/focus
   // changes remain integrity signals but do not themselves submit the work.
   window.addEventListener('pagehide', () => {
-    if (state.mode !== 'assessment'
+    if (isPreview
+      || state.mode !== 'assessment'
       || state.isFinishing
       || state.leaveSent
       || !state.attempt?.id

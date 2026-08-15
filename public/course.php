@@ -2381,7 +2381,7 @@ ob_start();
                                     <input type="text" name="description" maxlength="500" placeholder="Brief description shown under the folder name">
                                 </label>
                             </div>
-                            <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                            <label class="folder-form-label folder-form-check">
                                 <input type="checkbox" name="locked" value="1">
                                 Lock this folder <small style="font-weight:400">(students can see the folder, but not its contents)</small>
                             </label>
@@ -2402,6 +2402,16 @@ ob_start();
                     <?php foreach ($courseFolders as $folder): ?>
                         <?php $folderLocked = !empty($folder['locked']); ?>
                         <div class="folder-row" data-folder-id="<?= (int) $folder['id'] ?>">
+                        <?php if (portal_can_manage_course($courseId)): ?>
+                            <div class="course-move-btns" data-course-move="folder">
+                                <button type="button" class="course-move-btn" data-course-move-dir="up" aria-label="Move folder up" title="Move up">
+                                    <?= portal_icon('chevron-up', 'icon-sm') ?>
+                                </button>
+                                <button type="button" class="course-move-btn" data-course-move-dir="down" aria-label="Move folder down" title="Move down">
+                                    <?= portal_icon('chevron-down', 'icon-sm') ?>
+                                </button>
+                            </div>
+                        <?php endif; ?>
                         <details class="folder-card<?= portal_can_manage_course($courseId) ? ' folder-card--managed' : '' ?><?= $folderLocked ? ' folder-card--locked' : '' ?>">
                             <summary class="folder-summary">
                                 <?php if (portal_can_manage_course($courseId)): ?>
@@ -2455,7 +2465,7 @@ ob_start();
                                                     <input type="text" name="description" maxlength="500" value="<?= portal_escape($folder['description']) ?>">
                                                 </label>
                                             </div>
-                                            <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                            <label class="folder-form-label folder-form-check">
                                                 <input type="checkbox" name="locked" value="1" <?= $folderLocked ? 'checked' : '' ?>>
                                                 Lock folder <small style="font-weight:400">(students cannot open the contents)</small>
                                             </label>
@@ -2513,6 +2523,14 @@ ob_start();
                                                     <span class="item-drag-handle" title="Drag to reorder">
                                                         <?= portal_icon('grip', 'grip-icon') ?>
                                                     </span>
+                                                    <div class="course-move-btns" data-course-move="item">
+                                                        <button type="button" class="course-move-btn" data-course-move-dir="up" aria-label="Move item up" title="Move up">
+                                                            <?= portal_icon('chevron-up', 'icon-sm') ?>
+                                                        </button>
+                                                        <button type="button" class="course-move-btn" data-course-move-dir="down" aria-label="Move item down" title="Move down">
+                                                            <?= portal_icon('chevron-down', 'icon-sm') ?>
+                                                        </button>
+                                                    </div>
                                                 <?php endif; ?>
                                                 <?php if ($isPresentation): ?>
                                                     <?= portal_icon('presentation', 'item-type-icon') ?>
@@ -2702,7 +2720,7 @@ ob_start();
                                                                     </label>
                                                                 <?php endif; ?>
                                                                 <?php if (($item['type'] === 'document' || $item['type'] === 'video') && $item['file_path'] !== ''): ?>
-                                                                    <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                                                    <label class="folder-form-label folder-form-check">
                                                                         <input type="checkbox" name="allow_download" value="1" <?= !empty($item['allow_download']) ? 'checked' : '' ?>>
                                                                         Allow students to download this file
                                                                     </label>
@@ -2871,7 +2889,7 @@ ob_start();
                                                                                     </select>
                                                                                 </label>
                                                                                 <?php if ($showExternalAiSlotOption): ?>
-                                                                                <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                                                                <label class="folder-form-label folder-form-check">
                                                                                     <input type="checkbox" name="submission_ai_detection" value="1" <?= !empty($item['submission_ai_detection']) ? 'checked' : '' ?>>
                                                                                     External AI detection <small style="font-weight:400">(GPTZero for this assignment)</small>
                                                                                 </label>
@@ -3227,7 +3245,7 @@ ob_start();
                                                     </select>
                                                 </label>
                                                 <?php if ($showExternalAiSlotOption): ?>
-                                                <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                                <label class="folder-form-label folder-form-check">
                                                     <input type="checkbox" name="submission_ai_detection" value="1">
                                                     External AI detection <small style="font-weight:400">(GPTZero for this assignment)</small>
                                                 </label>
@@ -3235,7 +3253,7 @@ ob_start();
                                                 <p class="submit-hint" style="margin:0;">External AI detection is enabled site-wide for all submissions.</p>
                                                 <?php endif; ?>
                                             </div>
-                                            <label class="folder-form-label" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                                            <label class="folder-form-label folder-form-check">
                                                 <input type="checkbox" name="allow_download" value="1">
                                                 Allow students to download this file <small style="font-weight:400">(off by default)</small>
                                             </label>
@@ -6588,11 +6606,16 @@ if (is_file($portalUploadDndJs)) {
     let dragFolderEl = null;
     let dragItemEl   = null;
 
+    function isArrowReorderViewport() {
+        return window.matchMedia('(max-width: 900px)').matches;
+    }
+
     // Folder summaries and item drag handles become draggable
     stack.querySelectorAll('.folder-summary').forEach(s => s.setAttribute('draggable', 'true'));
     stack.querySelectorAll('.item-drag-handle').forEach(h => h.setAttribute('draggable', 'true'));
 
     function enterReorderMode() {
+        if (isArrowReorderViewport()) return;
         reorderMode = true;
         stack.classList.add('folder-stack--reordering');
         if (modeBadge) modeBadge.hidden = false;
@@ -6606,7 +6629,7 @@ if (is_file($portalUploadDndJs)) {
 
     stack.querySelectorAll('.folder-drag-handle, .item-drag-handle').forEach(handle => {
         handle.addEventListener('mousedown', () => {
-            if (!reorderMode) enterReorderMode();
+            if (!isArrowReorderViewport() && !reorderMode) enterReorderMode();
         });
     });
 
@@ -6616,7 +6639,7 @@ if (is_file($portalUploadDndJs)) {
     });
 
     stack.addEventListener('dragstart', e => {
-        if (!reorderMode) { e.preventDefault(); return; }
+        if (isArrowReorderViewport() || !reorderMode) { e.preventDefault(); return; }
 
         // Item drag: triggered from .item-drag-handle
         const itemHandle = e.target.closest('.item-drag-handle');
@@ -6729,6 +6752,76 @@ if (is_file($portalUploadDndJs)) {
             }).catch(() => {});
         }
     }
+
+    function syncMoveButtons() {
+        const rows = Array.from(stack.querySelectorAll(':scope > .folder-row'));
+        rows.forEach((row, i) => {
+            const up = row.querySelector('[data-course-move="folder"] [data-course-move-dir="up"]');
+            const down = row.querySelector('[data-course-move="folder"] [data-course-move-dir="down"]');
+            if (up) up.disabled = i === 0;
+            if (down) down.disabled = i === rows.length - 1;
+        });
+        stack.querySelectorAll('.folder-items').forEach((list) => {
+            const items = Array.from(list.querySelectorAll(':scope > .folder-item'));
+            items.forEach((item, i) => {
+                const up = item.querySelector('[data-course-move="item"] [data-course-move-dir="up"]');
+                const down = item.querySelector('[data-course-move="item"] [data-course-move-dir="down"]');
+                if (up) up.disabled = i === 0;
+                if (down) down.disabled = i === items.length - 1;
+            });
+        });
+    }
+
+    stack.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-course-move-dir]');
+        if (!btn || !stack.contains(btn) || btn.disabled) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const dir = btn.getAttribute('data-course-move-dir');
+        const folderRow = btn.closest('.folder-row');
+        const itemEl = btn.closest('.folder-item');
+        const moveKind = btn.closest('[data-course-move]')?.getAttribute('data-course-move');
+
+        if (moveKind === 'folder' && folderRow) {
+            const rows = Array.from(stack.querySelectorAll(':scope > .folder-row'));
+            const idx = rows.indexOf(folderRow);
+            const swap = dir === 'up' ? idx - 1 : idx + 1;
+            if (idx < 0 || swap < 0 || swap >= rows.length) return;
+            if (dir === 'up') {
+                stack.insertBefore(folderRow, rows[swap]);
+            } else {
+                stack.insertBefore(rows[swap], folderRow);
+            }
+            saveFolderOrder();
+            syncMoveButtons();
+            btn.blur();
+            return;
+        }
+
+        if (moveKind === 'item' && itemEl) {
+            const list = itemEl.closest('.folder-items');
+            if (!list) return;
+            const items = Array.from(list.querySelectorAll(':scope > .folder-item'));
+            const idx = items.indexOf(itemEl);
+            const swap = dir === 'up' ? idx - 1 : idx + 1;
+            if (idx < 0 || swap < 0 || swap >= items.length) return;
+            if (dir === 'up') {
+                list.insertBefore(itemEl, items[swap]);
+            } else {
+                list.insertBefore(items[swap], itemEl);
+            }
+            saveItemPosition(itemEl);
+            syncMoveButtons();
+            btn.blur();
+        }
+    }, true);
+
+    window.addEventListener('resize', () => {
+        if (isArrowReorderViewport()) exitReorderMode();
+    });
+
+    syncMoveButtons();
 })();
 
 // Guard discussion reply/topic forms against double-submit (double-click spam).
