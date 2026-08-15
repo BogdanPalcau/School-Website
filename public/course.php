@@ -6622,11 +6622,15 @@ if (is_file($portalUploadDndJs)) {
         reorderMode = false;
         activePointerId = null;
         stack.classList.remove('folder-stack--reordering');
-        stack.querySelectorAll('.is-dragging').forEach((el) => {
+        const slot = document.querySelector('.folder-reorder-slot, .folder-item-reorder-slot');
+        document.querySelectorAll('.folder-row.is-dragging, .folder-item.is-dragging').forEach((el) => {
+            if (slot && slot.parentNode) {
+                slot.parentNode.insertBefore(el, slot);
+            }
             el.classList.remove('is-dragging');
             el.style.cssText = '';
         });
-        stack.querySelectorAll('.folder-reorder-slot, .folder-item-reorder-slot').forEach((el) => el.remove());
+        document.querySelectorAll('.folder-reorder-slot, .folder-item-reorder-slot').forEach((el) => el.remove());
         if (modeBadge) modeBadge.hidden = true;
     }
 
@@ -6680,6 +6684,7 @@ if (is_file($portalUploadDndJs)) {
             slot.style.height = Math.round(rect.height) + 'px';
             parent.insertBefore(slot, moving.nextSibling);
 
+            document.body.appendChild(moving);
             moving.classList.add('is-dragging');
             moving.style.width = rect.width + 'px';
             moving.style.left = rect.left + 'px';
@@ -6690,33 +6695,70 @@ if (is_file($portalUploadDndJs)) {
                 moving.style.left = (ev.clientX - offsetX) + 'px';
                 moving.style.top = (ev.clientY - offsetY) + 'px';
             };
-            const placeSlot = (clientY) => {
-                const others = Array.from(parent.children).filter((n) => n !== moving && n !== slot);
-                for (const other of others) {
-                    const r = other.getBoundingClientRect();
-                    if (clientY < r.top + r.height / 2) {
-                        if (slot.nextElementSibling !== other) {
-                            flipSiblings(parent, () => parent.insertBefore(slot, other));
-                        }
-                        return;
+            const moveSlotTo = (list, refNode) => {
+                if (!list) return;
+                if (refNode === slot) refNode = slot.nextElementSibling;
+                if (refNode == null) {
+                    if (slot.parentNode === list && list.lastElementChild === slot) return;
+                    list.appendChild(slot);
+                    return;
+                }
+                if (slot.parentNode === list && slot.nextElementSibling === refNode) return;
+                list.insertBefore(slot, refNode);
+            };
+            const listAtPoint = (clientX, clientY) => {
+                const lists = Array.from(stack.querySelectorAll('.folder-items'));
+                for (const list of lists) {
+                    const r = list.getBoundingClientRect();
+                    if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+                        return list;
                     }
                 }
-                if (parent.lastElementChild !== slot) {
-                    flipSiblings(parent, () => parent.appendChild(slot));
+                return null;
+            };
+            const refFromY = (list, clientY) => {
+                const items = Array.from(list.children).filter(
+                    (n) => n !== slot && n !== moving && n.classList.contains('folder-item')
+                );
+                const slack = 8;
+                for (const item of items) {
+                    const r = item.getBoundingClientRect();
+                    if (clientY < r.top + r.height / 2 - slack) return item;
                 }
+                return null;
+            };
+            const placeSlot = (ev) => {
+                if (kind === 'folder') {
+                    const others = Array.from(stack.children).filter(
+                        (n) => n !== moving && n !== slot && n.classList.contains('folder-row')
+                    );
+                    for (const other of others) {
+                        const r = other.getBoundingClientRect();
+                        if (ev.clientY < r.top + r.height / 2) {
+                            moveSlotTo(stack, other);
+                            return;
+                        }
+                    }
+                    moveSlotTo(stack, null);
+                    return;
+                }
+                const list = listAtPoint(ev.clientX, ev.clientY) || slot.parentNode;
+                if (!list || !list.classList || !list.classList.contains('folder-items')) return;
+                moveSlotTo(list, refFromY(list, ev.clientY));
             };
 
             const onMove = (ev) => {
                 if (ev.pointerId !== activePointerId) return;
                 follow(ev);
-                placeSlot(ev.clientY);
+                placeSlot(ev);
             };
             const onUp = (ev) => {
                 if (ev.pointerId !== activePointerId) return;
                 activePointerId = null;
                 follow(ev);
                 const from = moving.getBoundingClientRect();
-                parent.insertBefore(moving, slot);
+                const dest = slot.parentNode || parent;
+                dest.insertBefore(moving, slot);
                 slot.remove();
                 moving.classList.remove('is-dragging');
                 moving.style.cssText = '';

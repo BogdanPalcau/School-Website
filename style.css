@@ -943,6 +943,10 @@ input[type="radio"]:not(.visually-hidden):disabled {
     overflow-x: clip;
 }
 
+.course-detail-layout > .stack:first-child:has(.folder-stack--reordering) {
+    overflow-x: visible;
+}
+
 .course-content-card {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -8632,13 +8636,22 @@ body.admin-profile-open {
 .folder-row.is-dragging,
 .folder-item.is-dragging {
     position: fixed;
-    z-index: 40;
+    z-index: 2000;
     margin: 0;
     opacity: 1;
     animation: none !important;
     pointer-events: none;
     box-shadow: 0 18px 40px rgba(193, 32, 47, 0.22);
     transform: scale(1.03) rotate(-0.5deg);
+}
+
+body > .folder-item.is-dragging {
+    list-style: none;
+    background: var(--surface);
+    padding-left: 12px;
+    padding-right: 12px;
+    border-bottom: 0;
+    border-radius: 8px;
 }
 
 .folder-row.is-dragging .folder-drag-handle,
@@ -8661,11 +8674,12 @@ body.admin-profile-open {
 
 .folder-reorder-slot {
     border-radius: 12px;
+    margin: 0 8px 0 16px;
 }
 
 .folder-item-reorder-slot {
     border-radius: 8px;
-    margin: 4px 0;
+    margin: 6px 10px 6px 16px;
 }
 
 /* Reorder-mode jiggle */
@@ -8675,9 +8689,24 @@ body.admin-profile-open {
     50%       { transform: rotate( 0.6deg); }
 }
 
+.folder-stack--reordering {
+    overflow: visible;
+    padding-left: 18px;
+    padding-right: 12px;
+    margin-left: -18px;
+    margin-right: -12px;
+}
+
+.folder-stack--reordering .folder-card,
+.folder-stack--reordering .folder-body,
+.folder-stack--reordering .folder-items {
+    overflow: visible;
+}
+
 .folder-stack--reordering .folder-row:not(.is-dragging) {
     animation: folder-jiggle 0.4s ease-in-out infinite;
-    transform-origin: center 55%;
+    transform-origin: 28px 55%;
+    overflow: visible;
 }
 
 .folder-stack--reordering .folder-row:not(.is-dragging) .folder-card {
