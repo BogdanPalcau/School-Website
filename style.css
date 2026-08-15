@@ -6936,9 +6936,11 @@ body.admin-profile-open {
     }
 
     .admin-field--inline,
-    .admin-search {
+    .admin-search,
+    .admin-field--grow {
         min-width: 0;
         width: 100%;
+        flex: 0 0 auto;
     }
 
     .admin-table-wrap {
