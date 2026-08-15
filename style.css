@@ -23648,6 +23648,7 @@ a.grades-simple-row:hover {
     align-items: center;
     justify-content: center;
     padding: 44px 36px;
+    overflow: hidden;
     background: #ffffff;
 }
 
@@ -23656,6 +23657,49 @@ a.grades-simple-row:hover {
     max-width: 360px;
     display: grid;
     gap: 20px;
+}
+
+.login-deck {
+    min-width: 0;
+}
+
+.login-deck-viewport {
+    overflow: hidden;
+}
+
+.login-deck-track {
+    display: flex;
+    align-items: flex-start;
+    width: 200%;
+    will-change: transform;
+    transition: transform 0.52s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.login-deck.is-forgot .login-deck-track {
+    transform: translateX(-50%);
+}
+
+.login-card-face {
+    flex: 0 0 50%;
+    width: 50%;
+    max-width: 50%;
+    box-sizing: border-box;
+    align-self: flex-start;
+}
+
+.login-deck.is-forgot .login-card-face[data-auth-panel="signin"],
+.login-deck:not(.is-forgot) .login-card-face[data-auth-panel="forgot"] {
+    pointer-events: none;
+}
+
+html[data-motion="reduced"] .login-deck-track {
+    transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .login-deck-track {
+        transition: none;
+    }
 }
 
 .login-panel-brand {
@@ -23710,13 +23754,15 @@ a.grades-simple-row:hover {
     align-items: center;
     gap: 6px;
     width: fit-content;
-    padding: 6px 12px;
+    max-width: 100%;
+    justify-self: start;
+    padding: 5px 10px;
     border-radius: 999px;
     background: var(--primary-soft, #f3dde1);
     color: var(--primary-strong);
-    font-size: 0.7rem;
+    font-size: 0.64rem;
     font-weight: 800;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
 }
 

@@ -69,7 +69,7 @@ ob_start();
             <label class="login-field">
                 <span>Email</span>
                 <span class="login-input">
-                    <?= portal_icon('user', 'field-icon') ?>
+                    <?= portal_icon('mail', 'field-icon') ?>
                     <input type="email" name="email" value="<?= portal_escape($email) ?>" autocomplete="email" required maxlength="190">
                 </span>
             </label>

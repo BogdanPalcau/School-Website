@@ -158,7 +158,7 @@ if ($publicPos !== false) {
                         <li><?= portal_icon('calendar') ?><span>A timetable that keeps every deadline in view</span></li>
                     </ul>
 
-                    <p class="login-showcase-footnote">Built for <?= portal_escape(portal_school_short_name()) ?> students, teachers, and families. Every account is set up by the school &mdash; there is no public sign-up.</p>
+                    <p class="login-showcase-footnote">Built for <?= portal_escape(portal_school_short_name()) ?> students, teachers, and families.</p>
                 </div>
             </section>
 
