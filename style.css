@@ -8780,6 +8780,73 @@ body.admin-profile-open {
     width: 100%;
 }
 
+.tab-settings-pre-enroll {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px 18px;
+    width: 100%;
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.tab-settings-hint,
+.tab-settings-status {
+    margin: 4px 0 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: 52rem;
+}
+
+.tab-settings-pre-enroll-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.pre-enroll-gate {
+    max-width: 40rem;
+    margin: 12px auto 48px;
+    padding: 28px 28px 32px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.pre-enroll-gate-kicker {
+    margin: 0 0 8px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--course-accent, var(--primary));
+}
+
+.pre-enroll-gate h2 {
+    margin: 0 0 10px;
+}
+
+.pre-enroll-gate p {
+    margin: 0 0 18px;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.pre-enroll-gate .button {
+    margin-right: 12px;
+}
+
+.pre-enroll-gate-back {
+    display: inline-block;
+    margin-top: 14px;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
 .tab-toggle {
     display: inline-flex;
     align-items: center;

@@ -48,7 +48,8 @@ $_pdo->exec("
         meeting       TEXT    NOT NULL DEFAULT 'TBA',
         room          TEXT    NOT NULL DEFAULT 'TBA',
         notice        TEXT    NOT NULL DEFAULT '',
-        student_count INTEGER NOT NULL DEFAULT 0
+        student_count INTEGER NOT NULL DEFAULT 0,
+        pre_enroll_quiz_id INTEGER NOT NULL DEFAULT 0
     )
 ");
 
@@ -117,6 +118,7 @@ $_pdo->exec("
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         locked      INTEGER NOT NULL DEFAULT 0,
+        is_pre_enroll INTEGER NOT NULL DEFAULT 0,
         sort_order  INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     )

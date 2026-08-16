@@ -769,7 +769,7 @@
     const hasRewards = !!gamification && ((gamification.xp || 0) > 0 || (gamification.badges || []).length > 0);
 
     let html = '<article class="ap-result-card' + (showScore && celebrateMode ? ' ap-anim-celebrate' : '') + '">';
-    html += '<div class="ap-toolbar"><a class="ap-back" href="' + (isPreview ? (boot.urls?.builder || boot.urls?.self || 'courses.php') : (boot.urls?.course || 'courses.php')) + '"><span aria-hidden="true">←</span> ' + (isPreview ? 'Back to editor' : 'Back to course') + '</a></div>';
+    html += '<div class="ap-toolbar"><a class="ap-back" href="' + (isPreview ? (boot.urls?.builder || boot.urls?.self || 'courses.php') : (boot.urls?.course || 'courses.php')) + '"><span aria-hidden="true">←</span> ' + (isPreview ? 'Back to editor' : (boot.pre_enroll ? 'Continue to module' : 'Back to course')) + '</a></div>';
 
     if (showScore) {
       const tier = pct >= 90 ? 'gold' : (pct >= 70 ? 'good' : (pct >= 50 ? 'ok' : 'low'));
@@ -819,7 +819,7 @@
       });
       html += '</div>';
     }
-    html += '<div class="ap-landing-actions"><a class="button" href="' + (boot.urls?.self || ('activity.php?id=' + activityId + (isPreview ? '&preview=1' : ''))) + '">' + (isPreview ? 'Preview again' : 'Back to activity') + '</a></div>';
+    html += '<div class="ap-landing-actions"><a class="button" href="' + (boot.pre_enroll && !isPreview ? (boot.urls?.course || 'courses.php') : (boot.urls?.self || ('activity.php?id=' + activityId + (isPreview ? '&preview=1' : '')))) + '">' + (isPreview ? 'Preview again' : (boot.pre_enroll ? 'Continue to module' : 'Back to activity')) + '</a></div>';
     html += '</article>';
     els.result.innerHTML = html;
 

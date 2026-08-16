@@ -55,9 +55,16 @@ if (!$canManage && portal_activity_content_locked($activity)) {
     exit('This activity is locked by your teacher.');
 }
 
-$courseStmt = $db->prepare('SELECT id, slug, full_title, title, code, accent FROM courses WHERE id = ?');
+$courseStmt = $db->prepare('SELECT * FROM courses WHERE id = ?');
 $courseStmt->execute([$courseId]);
 $course = $courseStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+$isPreEnrollQuiz = (int) ($activity['is_pre_enroll'] ?? 0) === 1
+    && (int) ($course['pre_enroll_quiz_id'] ?? 0) === $activityId;
+
+if (!$canManage && portal_pre_enroll_blocks_student($course, $uid) && !$isPreEnrollQuiz) {
+    portal_redirect('course.php?course=' . urlencode((string) ($course['slug'] ?? '')));
+}
 
 /**
  * @return array<string, mixed>
@@ -399,24 +406,27 @@ $bootstrap = [
         'builder' => $canManage ? $builderUrl : null,
         'results' => $canManage && !$isPreview ? 'activity-results.php?id=' . $activityId : null,
     ],
+    'pre_enroll' => $isPreEnrollQuiz && !$isPreview && !$canManage,
     'auto_start_player' => $showPlayer,
 ];
 
 $backUrl = $isPreview
     ? $builderUrl
     : ('course.php?course=' . urlencode((string) ($course['slug'] ?? '')) . '&section=content');
-$backLabel = $isPreview ? 'Back to editor' : 'Back to course';
+$backLabel = $isPreview ? 'Back to editor' : ($isPreEnrollQuiz ? 'Back' : 'Back to course');
 $courseLabel = trim((string) ($course['code'] ?? '')) !== ''
     ? (string) $course['code']
     : (string) ($course['title'] ?? 'Course');
 $page_title = (string) $activity['title'] . ' | ' . portal_school_name();
 $page_eyebrow = $isPreview
     ? 'Student preview'
-    : portal_activity_mode_label((string) $activity['mode']);
+    : ($isPreEnrollQuiz ? 'Pre-enrolment quiz' : portal_activity_mode_label((string) $activity['mode']));
 $page_heading = (string) $activity['title'];
 $page_description = $isPreview
     ? 'This is the student view. Answers are not saved and do not count as an attempt.'
-    : (string) ($activity['short_description'] ?: 'Complete this activity for your course.');
+    : ($isPreEnrollQuiz
+        ? 'Complete this short knowledge check to start the module.'
+        : (string) ($activity['short_description'] ?: 'Complete this activity for your course.'));
 $active_page = 'courses';
 $layout_preview_as_student = $isPreview;
 
@@ -460,13 +470,15 @@ ob_start();
                 </p>
                 <h1 class="ap-lobby-title"><?= portal_escape((string) $activity['title']) ?></h1>
                 <p class="ap-lobby-lead"><?= portal_escape(
-                    trim((string) $activity['short_description']) !== ''
+                    $isPreEnrollQuiz
+                        ? 'Complete this short knowledge check, then you can open the module.'
+                        : (trim((string) $activity['short_description']) !== ''
                         ? (string) $activity['short_description']
                         : (($activity['mode'] ?? '') === 'flashcard'
                             ? 'Flip through the cards to revise. Mark each one Know or Still learning as you go.'
                             : (($activity['mode'] ?? '') === 'assessment'
                             ? 'Review the details below, then continue when you are ready. Your answers are saved as you work.'
-                            : 'Review the details below, then begin when you are ready.'))
+                            : 'Review the details below, then begin when you are ready.')))
                 ) ?></p>
 
                 <div class="ap-lobby-metrics" aria-label="Activity overview">
@@ -766,7 +778,7 @@ ob_start();
 <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
 <script src="assets/activity-flashcards.js?v=20260815gallery"></script>
 <?php else: ?>
-<script src="assets/activity-player.js?v=20260815-stack3"></script>
+<script src="assets/activity-player.js?v=20260816-preenroll"></script>
 <?php endif; ?>
 <?php
 $page_content = ob_get_clean();

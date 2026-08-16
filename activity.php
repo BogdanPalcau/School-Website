@@ -186,7 +186,8 @@ if (!function_exists('portal_activity_run_migrations')) {
                 updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                published_at TEXT NOT NULL DEFAULT ''
+                published_at TEXT NOT NULL DEFAULT '',
+                is_pre_enroll INTEGER NOT NULL DEFAULT 0
             )
         ");
 
@@ -543,6 +544,10 @@ if (!function_exists('portal_activity_run_migrations')) {
         portal_activity_migrate_attempt_lifecycle_columns($db);
         portal_activity_migrate_folder_item_type($db);
         portal_activity_migrate_flashcard_checks($db);
+        $activityCols = array_column($db->query('PRAGMA table_info(course_activities)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('is_pre_enroll', $activityCols, true)) {
+            $db->exec('ALTER TABLE course_activities ADD COLUMN is_pre_enroll INTEGER NOT NULL DEFAULT 0');
+        }
         portal_activity_seed_badges($db);
         portal_activity_seed_templates($db);
     }
@@ -1053,6 +1058,7 @@ if (!function_exists('portal_flashcard_decks_for_user')) {
              FROM course_activities a
              WHERE a.mode = 'flashcard'
                AND a.status = 'published'
+               AND COALESCE(a.is_pre_enroll, 0) = 0
                AND a.course_id IN ($placeholders)
              ORDER BY a.title COLLATE NOCASE ASC"
         );
@@ -1405,6 +1411,166 @@ if (!function_exists('portal_activity_create')) {
             'item_id' => $itemId,
             'draft_version_id' => portal_activity_draft_version_id($activityId),
         ];
+    }
+}
+
+if (!function_exists('portal_pre_enroll_hidden_folder_id')) {
+    function portal_pre_enroll_hidden_folder_id(int $courseId): int
+    {
+        if ($courseId <= 0) {
+            return 0;
+        }
+        $db = portal_db();
+        $stmt = $db->prepare(
+            'SELECT id FROM course_folders WHERE course_id = ? AND is_pre_enroll = 1 LIMIT 1'
+        );
+        $stmt->execute([$courseId]);
+        $id = (int) ($stmt->fetchColumn() ?: 0);
+        if ($id > 0) {
+            return $id;
+        }
+        $db->prepare(
+            "INSERT INTO course_folders (course_id, title, description, locked, is_pre_enroll, sort_order)
+             VALUES (?, 'Pre-enrolment quiz', 'Hidden knowledge check shown the first time a student opens this module.', 0, 1, 9999)"
+        )->execute([$courseId]);
+
+        return (int) $db->lastInsertId();
+    }
+}
+
+if (!function_exists('portal_pre_enroll_activity')) {
+    /** @param array<string, mixed> $course */
+    function portal_pre_enroll_activity(array $course): ?array
+    {
+        $id = (int) ($course['pre_enroll_quiz_id'] ?? 0);
+        if ($id <= 0) {
+            return null;
+        }
+        $activity = portal_activity_find($id);
+        if (!$activity || (int) ($activity['course_id'] ?? 0) !== (int) ($course['id'] ?? 0)) {
+            return null;
+        }
+
+        return $activity;
+    }
+}
+
+if (!function_exists('portal_pre_enroll_student_completed')) {
+    function portal_pre_enroll_student_completed(int $activityId, int $userId): bool
+    {
+        if ($activityId <= 0 || $userId <= 0) {
+            return false;
+        }
+        $stmt = portal_db()->prepare(
+            "SELECT 1 FROM activity_attempts
+             WHERE activity_id = ? AND user_id = ?
+               AND status IN ('submitted','auto_submitted','awaiting_manual_marking','marked','released')
+             LIMIT 1"
+        );
+        $stmt->execute([$activityId, $userId]);
+
+        return (bool) $stmt->fetchColumn();
+    }
+}
+
+if (!function_exists('portal_pre_enroll_is_active')) {
+    /** @param array<string, mixed>|null $activity */
+    function portal_pre_enroll_is_active(?array $activity): bool
+    {
+        if (!$activity || (int) ($activity['is_pre_enroll'] ?? 0) !== 1) {
+            return false;
+        }
+        if (($activity['status'] ?? '') !== 'published') {
+            return false;
+        }
+        $versionId = portal_activity_published_version_id((int) $activity['id']);
+        if ($versionId === null) {
+            return false;
+        }
+        $countStmt = portal_db()->prepare(
+            'SELECT COUNT(*) FROM activity_questions WHERE activity_version_id = ?'
+        );
+        $countStmt->execute([$versionId]);
+
+        return (int) $countStmt->fetchColumn() > 0;
+    }
+}
+
+if (!function_exists('portal_pre_enroll_blocks_student')) {
+    /** @param array<string, mixed> $course */
+    function portal_pre_enroll_blocks_student(array $course, int $userId): bool
+    {
+        $activity = portal_pre_enroll_activity($course);
+        if (!portal_pre_enroll_is_active($activity)) {
+            return false;
+        }
+
+        return !portal_pre_enroll_student_completed((int) $activity['id'], $userId);
+    }
+}
+
+if (!function_exists('portal_pre_enroll_create_or_open')) {
+    /** @return array{ok:bool, activity_id?:int, error?:string} */
+    function portal_pre_enroll_create_or_open(int $courseId, int $userId): array
+    {
+        if (!portal_can_manage_course($courseId)) {
+            return ['ok' => false, 'error' => 'You cannot manage this course.'];
+        }
+
+        $db = portal_db();
+        $existing = $db->prepare(
+            'SELECT id FROM course_activities WHERE course_id = ? AND is_pre_enroll = 1 ORDER BY id DESC LIMIT 1'
+        );
+        $existing->execute([$courseId]);
+        $activityId = (int) ($existing->fetchColumn() ?: 0);
+
+        if ($activityId <= 0) {
+            $folderId = portal_pre_enroll_hidden_folder_id($courseId);
+            if ($folderId <= 0) {
+                return ['ok' => false, 'error' => 'Could not create the quiz folder.'];
+            }
+            $created = portal_activity_create($courseId, $folderId, 'Pre-enrolment quiz', 'quiz', $userId);
+            if (empty($created['ok'])) {
+                return ['ok' => false, 'error' => (string) ($created['error'] ?? 'Could not create the quiz.')];
+            }
+            $activityId = (int) ($created['activity_id'] ?? 0);
+            $db->prepare(
+                "UPDATE course_activities
+                 SET is_pre_enroll = 1,
+                     include_in_gradebook = 0,
+                     short_description = ?
+                 WHERE id = ?"
+            )->execute([
+                'A short knowledge check before students start this module. It is not part of the course grade unless you add it to the gradebook.',
+                $activityId,
+            ]);
+        }
+
+        if ($activityId <= 0) {
+            return ['ok' => false, 'error' => 'Could not create the quiz.'];
+        }
+
+        $db->prepare('UPDATE courses SET pre_enroll_quiz_id = ? WHERE id = ?')->execute([$activityId, $courseId]);
+
+        return ['ok' => true, 'activity_id' => $activityId];
+    }
+}
+
+if (!function_exists('portal_pre_enroll_disable')) {
+    function portal_pre_enroll_disable(int $courseId): bool
+    {
+        if (!portal_can_manage_course($courseId)) {
+            return false;
+        }
+        $db = portal_db();
+        $db->prepare('UPDATE courses SET pre_enroll_quiz_id = 0 WHERE id = ?')->execute([$courseId]);
+        $db->prepare(
+            "UPDATE course_activities
+             SET is_pre_enroll = 0, status = CASE WHEN status = 'published' THEN 'archived' ELSE status END
+             WHERE course_id = ? AND is_pre_enroll = 1"
+        )->execute([$courseId]);
+
+        return true;
     }
 }
 

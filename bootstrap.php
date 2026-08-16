@@ -3375,6 +3375,14 @@ if (!function_exists('portal_run_migrations')) {
         if (!in_array('archives_at', $courseCols, true)) {
             $db->exec("ALTER TABLE courses ADD COLUMN archives_at TEXT NOT NULL DEFAULT ''");
         }
+        if (!in_array('pre_enroll_quiz_id', $courseCols, true)) {
+            $db->exec("ALTER TABLE courses ADD COLUMN pre_enroll_quiz_id INTEGER NOT NULL DEFAULT 0");
+        }
+
+        $folderCols = array_column($db->query("PRAGMA table_info(course_folders)")->fetchAll(), 'name');
+        if ($folderCols !== [] && !in_array('is_pre_enroll', $folderCols, true)) {
+            $db->exec("ALTER TABLE course_folders ADD COLUMN is_pre_enroll INTEGER NOT NULL DEFAULT 0");
+        }
     }
 }
 
@@ -3722,6 +3730,9 @@ if (!function_exists('portal_activity_content_locked')) {
     function portal_activity_content_locked(array $activity): bool
     {
         $itemId = (int) ($activity['course_item_id'] ?? 0);
+        if (!empty($activity['is_pre_enroll'])) {
+            return false;
+        }
         $state = portal_folder_item_lock_state($itemId);
         if ($state === null) {
             return false;

@@ -32,7 +32,15 @@ if (!portal_can_access_course((int) $course['id'])) {
     portal_redirect('courses.php');
 }
 
+if (!portal_can_manage_course((int) $course['id']) && !portal_course_student_may_enter($course)) {
+    portal_redirect('courses.php');
+}
+
 $courseId = (int) $course['id'];
+$currentUser = portal_current_user();
+$preEnrollBlocks = !portal_can_manage_course($courseId)
+    && portal_pre_enroll_blocks_student($course, (int) ($currentUser['id'] ?? 0));
+$preEnrollActivity = portal_pre_enroll_activity($course);
 $showExternalAiSlotOption = portal_show_submission_external_ai_option($courseId);
 $externalAiSiteWide = portal_external_ai_configured() && portal_external_ai_policy() === 'site_wide';
 
@@ -94,6 +102,7 @@ foreach ([
     "ALTER TABLE course_submissions ADD COLUMN process_pasted_chars INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE course_submissions ADD COLUMN grades_released_at TEXT NOT NULL DEFAULT ''",
 ] as $sql) {
     try { portal_db()->exec($sql); } catch (\PDOException $e) {}
 }
@@ -282,6 +291,10 @@ function portal_course_google_safe_browsing_url_check(string $url): array
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = (string) ($_POST['_token'] ?? '');
     if (!hash_equals($csrfToken, $token)) {
+        portal_redirect('course.php?course=' . urlencode($slug));
+    }
+
+    if ($preEnrollBlocks) {
         portal_redirect('course.php?course=' . urlencode($slug));
     }
 
@@ -492,6 +505,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'delete_folder') {
             $folderId = (int) ($_POST['folder_id'] ?? 0);
+            $hiddenFolder = $db->prepare(
+                'SELECT COALESCE(is_pre_enroll, 0) FROM course_folders WHERE id = ? AND course_id = ?'
+            );
+            $hiddenFolder->execute([$folderId, $courseId]);
+            if ((int) $hiddenFolder->fetchColumn() === 1) {
+                $_SESSION['course_flash'] = ['error', 'The pre-enrolment quiz is managed from course settings.'];
+            } else {
             $folderItemIds = [];
             if ($folderId > 0) {
                 $idStmt = $db->prepare(
@@ -526,6 +546,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($deletedItemId > 0) {
                     portal_notifications_unsend('lesson-viewer.php?item=' . $deletedItemId, true, 'lesson_answer');
                 }
+            }
             }
 
         } elseif ($action === 'create_item') {
@@ -936,10 +957,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk->execute([$subId, $courseId]);
             if ($chk->fetch()) {
                 $before = $db->prepare(
-                    'SELECT score, feedback, user_id FROM course_submissions WHERE id = ? AND course_id = ?'
+                    'SELECT score, feedback, user_id, grades_released_at FROM course_submissions WHERE id = ? AND course_id = ?'
                 );
                 $before->execute([$subId, $courseId]);
                 $prev = $before->fetch(PDO::FETCH_ASSOC) ?: [];
+                $wasReleased = portal_submission_grades_released($prev);
                 $db->prepare(
                     "UPDATE course_submissions
                      SET score = ?, feedback = ?, marked_at = datetime('now'), marked_by = ?, grade_seen_at = ''
@@ -956,8 +978,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         . ') score '
                         . ($prevScore === null || $prevScore === '' ? 'none' : (string) $prevScore)
                         . '→' . $score
+                        . ($wasReleased ? ' (already released)' : ' (held)')
                 );
-                if ($studentId > 0) {
+                if ($wasReleased && $studentId > 0) {
                     $slotTitleStmt = $db->prepare(
                         "SELECT cfi.title
                          FROM course_submissions cs
@@ -966,18 +989,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                     $slotTitleStmt->execute([$subId, $courseId]);
                     $slotTitle = trim((string) ($slotTitleStmt->fetchColumn() ?: 'Assignment'));
-                    if ($slotTitle === '') {
-                        $slotTitle = 'Assignment';
-                    }
-                    $gradeLink = 'course.php?course=' . rawurlencode($slug) . '&section=gradebook';
-                    portal_notify_grade_returned(
-                        $studentId,
-                        $courseId,
-                        'Grade returned: ' . $slotTitle,
-                        'You scored ' . $score . '% on ' . $slotTitle . '.',
-                        $gradeLink,
-                        'submission:' . $subId . ':' . $score
-                    );
+                    portal_notify_file_grade_released($studentId, $courseId, $slug, $slotTitle, $score, $subId);
                 }
                 if (portal_is_fetch_request()) {
                     portal_json_response([
@@ -985,11 +997,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'submission_id' => $subId,
                         'score'         => $score,
                         'feedback'      => $feedback,
+                        'released'      => $wasReleased,
                     ]);
                 }
-                $_SESSION['course_flash'] = ['success', 'Submission marked.'];
+                $_SESSION['course_flash'] = [
+                    'success',
+                    $wasReleased
+                        ? 'Submission marked. The student can already see this grade.'
+                        : 'Grade saved. Release it when you want students to see it.',
+                ];
             } elseif (portal_is_fetch_request()) {
                 portal_json_response(['ok' => false, 'error' => 'Submission not found.'], 404);
+            }
+
+        } elseif ($action === 'release_submission_grades') {
+            $subId = (int) ($_POST['submission_id'] ?? 0);
+            $itemId = (int) ($_POST['item_id'] ?? 0);
+
+            $sql = "SELECT cs.id, cs.user_id, cs.score, cs.item_id, cfi.title AS slot_title
+                    FROM course_submissions cs
+                    JOIN course_folder_items cfi ON cfi.id = cs.item_id
+                    WHERE cs.course_id = ?
+                      AND cs.score IS NOT NULL
+                      AND cs.marked_at != ''
+                      AND (cs.grades_released_at IS NULL OR trim(cs.grades_released_at) = '')";
+            $params = [$courseId];
+            if ($subId > 0) {
+                $sql .= ' AND cs.id = ?';
+                $params[] = $subId;
+            } elseif ($itemId > 0) {
+                $sql .= ' AND cs.item_id = ?';
+                $params[] = $itemId;
+            } else {
+                $sql = '';
+            }
+
+            $toRelease = [];
+            if ($sql !== '') {
+                $list = $db->prepare($sql);
+                $list->execute($params);
+                $toRelease = $list->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            }
+
+            if ($toRelease === []) {
+                $_SESSION['course_flash'] = ['error', 'No held grades to release.'];
+            } else {
+                $ids = array_map(static fn(array $row): int => (int) $row['id'], $toRelease);
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $db->prepare(
+                    "UPDATE course_submissions
+                     SET grades_released_at = datetime('now'), grade_seen_at = ''
+                     WHERE course_id = ? AND id IN ($placeholders)"
+                )->execute(array_merge([$courseId], $ids));
+                foreach ($toRelease as $row) {
+                    portal_notify_file_grade_released(
+                        (int) $row['user_id'],
+                        $courseId,
+                        $slug,
+                        (string) ($row['slot_title'] ?? 'Assignment'),
+                        (int) $row['score'],
+                        (int) $row['id']
+                    );
+                }
+                $n = count($toRelease);
+                $_SESSION['course_flash'] = [
+                    'success',
+                    $n === 1
+                        ? 'Grade released. The student can now see it.'
+                        : $n . ' grades released. Students can now see them.',
+                ];
             }
 
         } elseif ($action === 'save_annotation' && portal_can_manage_course($courseId)) {
@@ -1155,6 +1231,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($summary !== '') {
                 $db->prepare("UPDATE courses SET summary = ? WHERE id = ?")
                    ->execute([$summary, $courseId]);
+            }
+
+        } elseif ($action === 'create_pre_enroll_quiz') {
+            $created = portal_pre_enroll_create_or_open($courseId, (int) $me['id']);
+            if (!empty($created['ok']) && (int) ($created['activity_id'] ?? 0) > 0) {
+                portal_redirect('activity-builder.php?id=' . (int) $created['activity_id']);
+            }
+            $_SESSION['course_flash'] = ['error', (string) ($created['error'] ?? 'Could not set up the pre-enrolment quiz.')];
+
+        } elseif ($action === 'remove_pre_enroll_quiz') {
+            if (portal_pre_enroll_disable($courseId)) {
+                $_SESSION['course_flash'] = ['success', 'The pre-enrolment quiz is off. Students can open this module without it.'];
+            } else {
+                $_SESSION['course_flash'] = ['error', 'Could not turn off the pre-enrolment quiz.'];
             }
         }
     }
@@ -1649,7 +1739,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      process_paste_events=excluded.process_paste_events,
                      process_pasted_chars=excluded.process_pasted_chars,
                      declared_file_type=excluded.declared_file_type,
-                     score=NULL, feedback='', marked_at='', marked_by=NULL, grade_seen_at='',
+                     score=NULL, feedback='', marked_at='', marked_by=NULL, grade_seen_at='', grades_released_at='',
                      ai_status='', ai_score=NULL, ai_report='', ai_checked_at=''"
             )->execute([
                 $itemId, $courseId, $uid,
@@ -1813,7 +1903,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (portal_is_fetch_request() && in_array($action, ['mark_submission', 'submit_work'], true)) {
         portal_json_response(['ok' => false, 'error' => 'Unexpected response.'], 500);
     }
-    if (in_array($action, ['mark_submission'], true)) {
+    if (in_array($action, ['mark_submission', 'release_submission_grades'], true)) {
         portal_redirect($rBase . '&section=gradebook');
     } elseif (in_array($action, ['create_schedule_slot','update_schedule_slot','delete_schedule_slot'])) {
         // Keep courses.meeting / courses.room aligned with live calendar slots.
@@ -1844,7 +1934,7 @@ $_me = portal_current_user();
 
 // Folders + items
 $_fStmt = $_db->prepare(
-    "SELECT * FROM course_folders WHERE course_id = ? ORDER BY sort_order ASC, id ASC"
+    "SELECT * FROM course_folders WHERE course_id = ? AND COALESCE(is_pre_enroll, 0) = 0 ORDER BY sort_order ASC, id ASC"
 );
 $_fStmt->execute([$courseId]);
 $courseFolders = $_fStmt->fetchAll();
@@ -2177,6 +2267,17 @@ if (!portal_can_manage_course($courseId)) {
     );
     $_activityGradeBadgeStmt->execute([$courseId, (int) $_me['id']]);
     $unreadCourseGradeCount = (int) $_activityGradeBadgeStmt->fetchColumn();
+    $_fileGradeBadgeStmt = $_db->prepare(
+        "SELECT COUNT(*)
+         FROM course_submissions
+         WHERE course_id = ? AND user_id = ?
+           AND score IS NOT NULL
+           AND marked_at != ''
+           AND grades_released_at != ''
+           AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
+    );
+    $_fileGradeBadgeStmt->execute([$courseId, (int) $_me['id']]);
+    $unreadCourseGradeCount += (int) $_fileGradeBadgeStmt->fetchColumn();
 
     $openReviewRaw = (string) ($_GET['open_review'] ?? '');
     if (preg_match('/^rvw-(\d+)$/', $openReviewRaw, $openReviewMatch)) {
@@ -2185,6 +2286,7 @@ if (!portal_can_manage_course($courseId)) {
              SET grade_seen_at = datetime('now')
              WHERE id = ? AND course_id = ? AND user_id = ?
                AND marked_at != ''
+               AND grades_released_at != ''
                AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
         )->execute([(int) $openReviewMatch[1], $courseId, (int) $_me['id']]);
     }
@@ -2195,6 +2297,7 @@ if (!portal_can_manage_course($courseId)) {
              WHERE course_id = ? AND user_id = ?
                AND marked_at != ''
                AND score IS NOT NULL
+               AND grades_released_at != ''
                AND (grade_seen_at = '' OR grade_seen_at IS NULL)"
         )->execute([$courseId, (int) $_me['id']]);
         $_db->prepare(
@@ -2238,6 +2341,10 @@ $active_page = 'courses';
 $page_eyebrow = 'Course section';
 $page_heading = $course['title'];
 $page_description = $currentSection['label'] . ' | ' . $course['full_title'] . ' | ' . $course['meeting'];
+if ($preEnrollBlocks) {
+    $page_eyebrow = 'Before you start';
+    $page_description = 'Complete a short knowledge check to open this module.';
+}
 
 ob_start();
 ?>
@@ -2253,10 +2360,25 @@ ob_start();
         </div>
     <?php endif; ?>
 
+<?php if ($preEnrollBlocks && is_array($preEnrollActivity)): ?>
+    <article class="pre-enroll-gate" style="--course-accent: <?= portal_escape((string) $course['accent']) ?>;">
+        <p class="pre-enroll-gate-kicker"><?= portal_escape((string) $course['code']) ?></p>
+        <h2>Knowledge check</h2>
+        <p>Your teacher would like you to complete a short quiz before you start <strong><?= portal_escape((string) $course['title']) ?></strong>. It helps them see what you already know. It is not part of your course grade unless they choose to count it.</p>
+        <a class="button" href="activity.php?id=<?= (int) $preEnrollActivity['id'] ?>">Start knowledge check</a>
+        <a class="pre-enroll-gate-back" href="courses.php">Back to courses</a>
+    </article>
+</section>
+<?php
+$page_content = ob_get_clean();
+require __DIR__ . '/../layout.php';
+return;
+endif; ?>
+
     <article class="course-hero-banner" style="--course-accent: <?= portal_escape($course['accent']) ?>;">
         <div class="course-hero-top">
             <a class="course-breadcrumb" href="courses.php">All courses</a>
-            <span class="course-status-pill<?= $course['status'] === 'open' ? ' active' : '' ?>"><?= portal_escape($course['status_label']) ?></span>
+            <span class="course-status-pill<?= portal_course_status_pill_class((string) $course['status']) ?>"><?= portal_escape($course['status_label']) ?></span>
         </div>
 
         <p class="course-list-code"><?= portal_escape($course['code']) ?></p>
@@ -2356,6 +2478,43 @@ ob_start();
             <?php endforeach; ?>
             <button type="submit" class="button button--sm">Save</button>
         </form>
+        <?php
+        $preEnrollActivity = portal_pre_enroll_activity($course);
+        $preEnrollOn = is_array($preEnrollActivity);
+        $preEnrollLive = portal_pre_enroll_is_active($preEnrollActivity);
+        ?>
+        <div class="tab-settings-pre-enroll">
+            <div>
+                <p class="tab-settings-label">Pre-enrolment quiz</p>
+                <p class="tab-settings-hint">Optional. If you set this up and publish it, students complete it the first time they open this module.</p>
+                <?php if ($preEnrollOn): ?>
+                    <p class="tab-settings-status">Status:
+                        <?php if ($preEnrollLive): ?>
+                            published — students will see it on first visit
+                        <?php elseif (($preEnrollActivity['status'] ?? '') === 'published'): ?>
+                            published, but add at least one question
+                        <?php else: ?>
+                            draft — students will not see it until you publish
+                        <?php endif; ?>
+                    </p>
+                <?php endif; ?>
+            </div>
+            <div class="tab-settings-pre-enroll-actions">
+                <form method="POST">
+                    <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                    <input type="hidden" name="action" value="create_pre_enroll_quiz">
+                    <button type="submit" class="button button--sm"><?= $preEnrollOn ? 'Edit quiz' : 'Set up quiz' ?></button>
+                </form>
+                <?php if ($preEnrollOn): ?>
+                    <a class="button-secondary button--sm" href="activity.php?id=<?= (int) $preEnrollActivity['id'] ?>&preview=1">Preview</a>
+                    <form method="POST" onsubmit="return confirm('Turn off the pre-enrolment quiz? Students will be able to open the module without it.');">
+                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                        <input type="hidden" name="action" value="remove_pre_enroll_quiz">
+                        <button type="submit" class="button-secondary button--sm">Turn off</button>
+                    </form>
+                <?php endif; ?>
+            </div>
+        </div>
     </div>
     <?php endif; ?>
 
@@ -2784,10 +2943,12 @@ ob_start();
                                                                             <?= portal_icon('file', 'icon-xs') ?>
                                                                             <span><?= portal_escape($mySub['filename']) ?></span>
                                                                         </span>
-                                                                        <?php if ($mySub['score'] !== null): ?>
+                                                                        <?php if ($mySub && portal_submission_is_marked($mySub) && portal_submission_grades_released($mySub)): ?>
                                                                             <span class="sub-slot-status sub-slot-status--graded" data-sub-card-status><?= (int)$mySub['score'] ?>%</span>
+                                                                        <?php elseif ($mySub && portal_submission_is_marked($mySub)): ?>
+                                                                            <span class="sub-slot-status sub-slot-status--pending" data-sub-card-status>Awaiting release</span>
                                                                         <?php else: ?>
-                                                                            <span class="sub-slot-status sub-slot-status--pending" data-sub-card-status>Not graded</span>
+                                                                            <span class="sub-slot-status sub-slot-status--pending" data-sub-card-status><?= $mySub ? 'Not graded' : '' ?></span>
                                                                         <?php endif; ?>
                                                                     <?php else: ?>
                                                                         <span class="sub-slot-file sub-slot-file--empty" data-sub-card-file>
@@ -2917,10 +3078,12 @@ ob_start();
                                                                                 </div>
                                                                             </div>
                                                                             <div class="sub-modal-entry-end">
-                                                                                <?php if ($sub['score'] !== null): ?>
-                                                                                    <span class="sub-modal-grade sub-modal-grade--marked"><?= (int)$sub['score'] ?><small>/100</small></span>
+                                                                                <?php if (portal_submission_is_marked($sub) && portal_submission_grades_released($sub)): ?>
+                                                                                    <span class="sub-modal-grade sub-modal-grade--marked" data-grade-status><?= (int)$sub['score'] ?><small>/100</small></span>
+                                                                                <?php elseif (portal_submission_is_marked($sub)): ?>
+                                                                                    <span class="sub-modal-grade sub-modal-grade--held" data-grade-status><?= (int)$sub['score'] ?><small>/100 held</small></span>
                                                                                 <?php else: ?>
-                                                                                    <span class="sub-modal-grade sub-modal-grade--pending">Not graded</span>
+                                                                                    <span class="sub-modal-grade sub-modal-grade--pending" data-grade-status>Not graded</span>
                                                                                 <?php endif; ?>
                                                                                 <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$sub['id'] ?>">Open review</button>
                                                                                 <form method="POST" class="sub-delete-form" onsubmit="return confirm('Remove this submission?');">
@@ -2946,7 +3109,18 @@ ob_start();
                                                                             <span class="sub-modal-mine-meta" data-sub-date><?= $mySub ? 'Submitted ' . portal_escape(date('j M Y H:i', strtotime($mySub['submitted_at']))) : '' ?></span>
                                                                         </div>
                                                                         <div class="sub-modal-mine-end">
-                                                                            <span class="sub-modal-grade<?= ($mySub && $mySub['score'] !== null) ? ' sub-modal-grade--marked' : ' sub-modal-grade--pending' ?>" data-sub-grade-badge><?php if ($mySub && $mySub['score'] !== null): ?><?= (int)$mySub['score'] ?><small>/100</small><?php else: ?>Not graded<?php endif; ?></span>
+                                                                            <span class="sub-modal-grade<?php
+                                                                                $mineReleased = $mySub && portal_submission_is_marked($mySub) && portal_submission_grades_released($mySub);
+                                                                                echo $mineReleased ? ' sub-modal-grade--marked' : ' sub-modal-grade--pending';
+                                                                            ?>" data-sub-grade-badge><?php
+                                                                                if ($mineReleased) {
+                                                                                    echo (int) $mySub['score'] . '<small>/100</small>';
+                                                                                } elseif ($mySub && portal_submission_is_marked($mySub)) {
+                                                                                    echo 'Awaiting release';
+                                                                                } else {
+                                                                                    echo 'Not graded';
+                                                                                }
+                                                                            ?></span>
                                                                             <?php if ($mySub): ?>
                                                                             <button type="button" class="button button--sm" data-review-open="rvw-<?= (int)$mySub['id'] ?>" data-sub-review-btn>Open review</button>
                                                                             <?php else: ?>
@@ -3640,11 +3814,30 @@ ob_start();
                     $gbIsStaff = portal_can_manage_course($courseId);
                     $gbMarked = array_values(array_filter(
                         $submissionGradebook,
-                        static fn(array $g): bool => $g['score'] !== null && trim((string) ($g['marked_at'] ?? '')) !== ''
+                        static function (array $g) use ($gbIsStaff): bool {
+                            if (($g['score'] ?? null) === null || trim((string) ($g['marked_at'] ?? '')) === '') {
+                                return false;
+                            }
+                            if ($gbIsStaff) {
+                                return true;
+                            }
+                            if (($g['grade_source'] ?? '') === 'activity') {
+                                return true;
+                            }
+                            return portal_submission_grades_released($g);
+                        }
                     ));
                     $gbPending = array_values(array_filter(
                         $submissionGradebook,
-                        static fn(array $g): bool => $g['score'] === null || trim((string) ($g['marked_at'] ?? '')) === ''
+                        static function (array $g) use ($gbIsStaff): bool {
+                            if (($g['score'] ?? null) === null || trim((string) ($g['marked_at'] ?? '')) === '') {
+                                return true;
+                            }
+                            if ($gbIsStaff || ($g['grade_source'] ?? '') === 'activity') {
+                                return false;
+                            }
+                            return !portal_submission_grades_released($g);
+                        }
                     ));
                     $gbAvg = null;
                     if (!empty($gbMarked)) {
@@ -3663,7 +3856,7 @@ ob_start();
                             <p class="eyebrow"><?= $gbIsStaff ? 'Course gradebook' : 'Your grades' ?></p>
                             <h3 class="card-title"><?= $gbIsStaff ? 'Marks and feedback' : 'Grades for this module' ?></h3>
                             <p class="gb-header-copy"><?= $gbIsStaff
-                                ? 'Track submissions and marks for this module.'
+                                ? 'Mark work privately, then release grades when the class should see them.'
                                 : 'Individual marks and feedback for assignments in this module.' ?></p>
                         </div>
                         <div class="gb-stat-row">
@@ -3694,8 +3887,15 @@ ob_start();
                         <div class="gb-slot-stack">
                             <?php if ($gbIsStaff): ?>
                                 <?php foreach ($gbGrouped as $slotTitle => $rows): ?>
-                                    <?php $slotWeightLabel = portal_format_submission_weight($rows[0]['submission_weight'] ?? 100); ?>
-                                    <div class="gb-slot-group">
+                                    <?php
+                                        $slotWeightLabel = portal_format_submission_weight($rows[0]['submission_weight'] ?? 100);
+                                        $slotItemId = (int) ($rows[0]['item_id'] ?? 0);
+                                        $heldCount = count(array_filter(
+                                            $rows,
+                                            static fn(array $g): bool => portal_submission_is_marked($g) && !portal_submission_grades_released($g)
+                                        ));
+                                    ?>
+                                    <div class="gb-slot-group" data-gb-slot data-item-id="<?= $slotItemId ?>">
                                         <div class="gb-slot-group-head">
                                             <div class="gb-slot-title">
                                                 <h4><?= portal_escape($slotTitle) ?></h4>
@@ -3703,17 +3903,34 @@ ob_start();
                                             </div>
                                             <div class="gb-slot-meta">
                                                 <span class="chip"><?= count($rows) ?> submission<?= count($rows) === 1 ? '' : 's' ?></span>
+                                                <?php if ($heldCount > 0 && $slotItemId > 0): ?>
+                                                    <form method="POST" class="gb-release-form" data-gb-release-form>
+                                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                        <input type="hidden" name="action" value="release_submission_grades">
+                                                        <input type="hidden" name="item_id" value="<?= $slotItemId ?>">
+                                                        <button type="submit" class="button button--sm">Release all grades</button>
+                                                    </form>
+                                                <?php elseif ($slotItemId > 0): ?>
+                                                    <form method="POST" class="gb-release-form is-hidden" data-gb-release-form>
+                                                        <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                                        <input type="hidden" name="action" value="release_submission_grades">
+                                                        <input type="hidden" name="item_id" value="<?= $slotItemId ?>">
+                                                        <button type="submit" class="button button--sm">Release all grades</button>
+                                                    </form>
+                                                <?php endif; ?>
                                             </div>
                                         </div>
                                         <div class="gb-slot-grid">
                                             <?php foreach ($rows as $grade): ?>
                                                 <?php
-                                                    $isMarked = $grade['score'] !== null && trim((string) ($grade['marked_at'] ?? '')) !== '';
+                                                    $isMarked = portal_submission_is_marked($grade);
+                                                    $isReleased = portal_submission_grades_released($grade);
                                                     $submittedTs = portal_db_timestamp((string) $grade['submitted_at']);
                                                     $reviewId = 'rvw-' . (int) $grade['id'];
                                                 ?>
                                                 <div class="sub-slot-card"
                                                      data-review-open="<?= portal_escape($reviewId) ?>"
+                                                     data-submission-id="<?= (int) $grade['id'] ?>"
                                                      role="button"
                                                      tabindex="0"
                                                      aria-label="Open review for <?= portal_escape((string) ($grade['student_name'] ?? 'student')) ?>">
@@ -3726,10 +3943,12 @@ ob_start();
                                                                 <small><?= portal_escape($submittedTs ? date('j M Y H:i', $submittedTs) : '') ?><?= trim((string) ($grade['filename'] ?? '')) !== '' ? ' · ' . portal_escape((string) $grade['filename']) : '' ?></small>
                                                             </span>
                                                         </span>
-                                                        <?php if ($isMarked): ?>
-                                                            <span class="sub-slot-status sub-slot-status--graded"><?= (int) $grade['score'] ?>%</span>
+                                                        <?php if ($isMarked && $isReleased): ?>
+                                                            <span class="sub-slot-status sub-slot-status--graded" data-grade-status><?= (int) $grade['score'] ?>%</span>
+                                                        <?php elseif ($isMarked): ?>
+                                                            <span class="sub-slot-status sub-slot-status--held" data-grade-status><?= (int) $grade['score'] ?>% held</span>
                                                         <?php else: ?>
-                                                            <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
+                                                            <span class="sub-slot-status sub-slot-status--pending" data-grade-status>Not graded</span>
                                                         <?php endif; ?>
                                                     </div>
                                                     <div class="sub-slot-card-row">
@@ -3744,11 +3963,14 @@ ob_start();
                                 <div class="gb-slot-grid">
                                     <?php foreach ($submissionGradebook as $grade): ?>
                                         <?php
-                                            $isMarked = $grade['score'] !== null && trim((string) ($grade['marked_at'] ?? '')) !== '';
+                                            $isActivityGrade = ($grade['grade_source'] ?? '') === 'activity';
+                                            $isMarked = $isActivityGrade
+                                                ? ($grade['score'] !== null && trim((string) ($grade['marked_at'] ?? '')) !== '')
+                                                : (portal_submission_is_marked($grade) && portal_submission_grades_released($grade));
+                                            $isHeld = !$isActivityGrade && portal_submission_is_marked($grade) && !portal_submission_grades_released($grade);
                                             $submittedTs = portal_db_timestamp((string) $grade['submitted_at']);
                                             $reviewId = 'rvw-' . (int) $grade['id'];
                                             $weightLabel = portal_format_submission_weight($grade['submission_weight'] ?? 100);
-                                            $isActivityGrade = ($grade['grade_source'] ?? '') === 'activity';
                                             $activityResultHref = 'activity-results.php?id=' . (int) ($grade['activity_id'] ?? 0)
                                                 . '&attempt=' . (int) ($grade['attempt_id'] ?? $grade['id']);
                                         ?>
@@ -3771,6 +3993,8 @@ ob_start();
                                                 </span>
                                                 <?php if ($isMarked): ?>
                                                     <span class="sub-slot-status sub-slot-status--graded"><?= (int) $grade['score'] ?>%</span>
+                                                <?php elseif ($isHeld): ?>
+                                                    <span class="sub-slot-status sub-slot-status--pending">Awaiting release</span>
                                                 <?php else: ?>
                                                     <span class="sub-slot-status sub-slot-status--pending">Not graded</span>
                                                 <?php endif; ?>
@@ -5720,9 +5944,13 @@ if (is_file($portalUploadDndJs)) {
             if (form) form.classList.add('is-visible');
         }
 
-        function applyGradePosted(block, score, feedback) {
+        function applyGradePosted(block, score, feedback, released) {
             const scoreEl = block.querySelector('[data-grade-score-display]');
             if (scoreEl) scoreEl.innerHTML = String(score) + '<small>/100</small>';
+            const label = block.querySelector('[data-grade-saved-label]');
+            if (label) label.textContent = released ? 'Grade released' : 'Grade saved — not released';
+            const releaseForm = block.querySelector('[data-grade-release-form]');
+            if (releaseForm) releaseForm.classList.toggle('is-hidden', !!released);
             const fbView = block.querySelector('[data-grade-feedback-view]');
             const fbText = block.querySelector('[data-grade-feedback-text]');
             const noFb = block.querySelector('[data-grade-no-feedback]');
@@ -5741,13 +5969,44 @@ if (is_file($portalUploadDndJs)) {
             block.querySelector('.rvw-grade-cancel')?.classList.add('is-visible');
         }
 
-        function updateGradeBadges(subId, score) {
+        function updateGradeBadges(subId, score, released) {
+            const held = !released;
+            const statusEls = document.querySelectorAll(
+                '.sub-slot-card[data-submission-id="' + subId + '"] [data-grade-status],'
+                + '.sub-slot-card[data-review-open="rvw-' + subId + '"] .sub-slot-status,'
+                + '.sub-modal-entry[data-submission-id="' + subId + '"] [data-grade-status],'
+                + '.sub-modal-entry[data-submission-id="' + subId + '"] .sub-modal-grade'
+            );
+            statusEls.forEach((el) => {
+                if (el.classList.contains('sub-modal-grade')) {
+                    el.className = held
+                        ? 'sub-modal-grade sub-modal-grade--held'
+                        : 'sub-modal-grade sub-modal-grade--marked';
+                    el.innerHTML = held
+                        ? String(score) + '<small>/100 held</small>'
+                        : String(score) + '<small>/100</small>';
+                    return;
+                }
+                el.className = held
+                    ? 'sub-slot-status sub-slot-status--held'
+                    : 'sub-slot-status sub-slot-status--graded';
+                el.setAttribute('data-grade-status', '');
+                el.textContent = held ? (String(score) + '% held') : (String(score) + '%');
+            });
+
+            const card = document.querySelector('.sub-slot-card[data-submission-id="' + subId + '"], .sub-slot-card[data-review-open="rvw-' + subId + '"]');
+            const releaseForm = card?.closest('[data-gb-slot]')?.querySelector('[data-gb-release-form]');
+            if (held && releaseForm) {
+                releaseForm.classList.remove('is-hidden');
+            }
+
             const entry = document.querySelector('.sub-modal-entry[data-submission-id="' + subId + '"]');
             const grade = entry?.querySelector('.sub-modal-grade');
-            if (grade) {
-                grade.className = 'sub-modal-grade sub-modal-grade--marked';
-                grade.innerHTML = String(score) + '<small>/100</small>';
+            if (grade && statusEls.length === 0) {
+                grade.className = held ? 'sub-modal-grade sub-modal-grade--held' : 'sub-modal-grade sub-modal-grade--marked';
+                grade.innerHTML = held ? String(score) + '<small>/100 held</small>' : String(score) + '<small>/100</small>';
             }
+
             const shell = document.querySelector('.rvw-shell[data-submission-id="' + subId + '"]');
             if (shell && shell.dataset.canAnnotate !== '1') {
                 const display = shell.querySelector('.rvw-grade-display');
@@ -5783,10 +6042,10 @@ if (is_file($portalUploadDndJs)) {
                     });
                     const data = await res.json();
                     if (data.ok) {
-                        applyGradePosted(block, data.score, data.feedback);
+                        applyGradePosted(block, data.score, data.feedback, data.released);
                         const shell = block.closest('.rvw-shell');
                         if (shell?.dataset.submissionId) {
-                            updateGradeBadges(shell.dataset.submissionId, data.score);
+                            updateGradeBadges(shell.dataset.submissionId, data.score, data.released);
                         }
                     } else {
                         alert(data.error || 'Could not save grade.');
