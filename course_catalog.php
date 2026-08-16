@@ -155,6 +155,108 @@ if (!function_exists('portal_sync_course_meeting_from_schedule')) {
     }
 }
 
+if (!function_exists('portal_course_weekday_names')) {
+    /** @return list<string> */
+    function portal_course_weekday_names(): array
+    {
+        return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    }
+}
+
+if (!function_exists('portal_save_course_schedule_from_post')) {
+    /**
+     * Replace a course weekly timetable from admin POST fields and sync meeting/room.
+     *
+     * @param array<string, mixed> $post
+     */
+    function portal_save_course_schedule_from_post(int $courseId, array $post): void
+    {
+        if ($courseId <= 0) {
+            return;
+        }
+
+        $days = portal_course_weekday_names();
+        $ids = $post['schedule_id'] ?? [];
+        $dayVals = $post['schedule_day'] ?? [];
+        $starts = $post['schedule_start'] ?? [];
+        $ends = $post['schedule_end'] ?? [];
+        $rooms = $post['schedule_room'] ?? [];
+        $notes = $post['schedule_notes'] ?? [];
+        if (!is_array($ids)) {
+            $ids = [];
+        }
+        if (!is_array($dayVals)) {
+            $dayVals = [];
+        }
+        if (!is_array($starts)) {
+            $starts = [];
+        }
+        if (!is_array($ends)) {
+            $ends = [];
+        }
+        if (!is_array($rooms)) {
+            $rooms = [];
+        }
+        if (!is_array($notes)) {
+            $notes = [];
+        }
+
+        $count = max(count($ids), count($dayVals), count($starts), count($ends), count($rooms), count($notes));
+        $db = portal_db();
+        $keepIds = [];
+        $sort = 0;
+
+        for ($i = 0; $i < $count; $i++) {
+            $day = substr(trim((string) ($dayVals[$i] ?? '')), 0, 20);
+            $start = substr(trim((string) ($starts[$i] ?? '')), 0, 10);
+            $end = substr(trim((string) ($ends[$i] ?? '')), 0, 10);
+            $room = substr(trim((string) ($rooms[$i] ?? '')), 0, 500);
+            $note = substr(trim((string) ($notes[$i] ?? '')), 0, 300);
+            $slotId = (int) ($ids[$i] ?? 0);
+
+            if ($start === '' && $end === '' && $room === '' && $note === '') {
+                continue;
+            }
+            if (!in_array($day, $days, true)) {
+                continue;
+            }
+
+            $sort++;
+            if ($slotId > 0) {
+                $chk = $db->prepare('SELECT id FROM course_schedule WHERE id = ? AND course_id = ? LIMIT 1');
+                $chk->execute([$slotId, $courseId]);
+                if ($chk->fetchColumn()) {
+                    $db->prepare(
+                        'UPDATE course_schedule
+                         SET day_of_week = ?, start_time = ?, end_time = ?, room = ?, notes = ?, sort_order = ?
+                         WHERE id = ? AND course_id = ?'
+                    )->execute([$day, $start, $end, $room, $note, $sort, $slotId, $courseId]);
+                    $keepIds[] = $slotId;
+                    continue;
+                }
+            }
+
+            $db->prepare(
+                'INSERT INTO course_schedule (course_id, day_of_week, start_time, end_time, room, notes, sort_order)
+                 VALUES (?,?,?,?,?,?,?)'
+            )->execute([$courseId, $day, $start, $end, $room, $note, $sort]);
+            $keepIds[] = (int) $db->lastInsertId();
+        }
+
+        if ($keepIds === []) {
+            $db->prepare('DELETE FROM course_schedule WHERE course_id = ?')->execute([$courseId]);
+        } else {
+            $placeholders = implode(',', array_fill(0, count($keepIds), '?'));
+            $params = array_merge([$courseId], $keepIds);
+            $db->prepare(
+                "DELETE FROM course_schedule WHERE course_id = ? AND id NOT IN ($placeholders)"
+            )->execute($params);
+        }
+
+        portal_sync_course_meeting_from_schedule($courseId);
+    }
+}
+
 if (!function_exists('portal_default_course_sections')) {
     function portal_default_course_sections(array $course): array
     {
@@ -463,6 +565,7 @@ if (!function_exists('portal_course_tab_definitions')) {
 if (!function_exists('portal_course_catalog')) {
     function portal_course_catalog(): array
     {
+        portal_course_apply_scheduled_opens();
         $pdo = portal_db();
 
         $rows = $pdo->query(
@@ -564,9 +667,16 @@ if (!function_exists('portal_user_course_catalog')) {
             return [];
         }
 
-        return array_values(
-            array_filter(portal_course_catalog(), fn($c) => in_array((int) $c['id'], $ids, true))
-        );
+        return array_values(array_filter(
+            portal_course_catalog(),
+            static function (array $c) use ($ids): bool {
+                if (!in_array((int) $c['id'], $ids, true)) {
+                    return false;
+                }
+                // Drafts stay staff-only even if a student was enrolled early.
+                return (string) ($c['status'] ?? '') !== 'draft';
+            }
+        ));
     }
 }
 
@@ -852,10 +962,274 @@ if (!function_exists('portal_valid_course_slug')) {
     }
 }
 
+if (!function_exists('portal_academic_year_current')) {
+    function portal_academic_year_current(?int $timestamp = null): string
+    {
+        $ts = $timestamp ?? time();
+        $year = (int) date('Y', $ts);
+        $month = (int) date('n', $ts);
+        // Academic year starts in September.
+        $start = $month >= 9 ? $year : $year - 1;
+        $end = $start + 1;
+
+        return sprintf('%02d/%02d', $start % 100, $end % 100);
+    }
+}
+
+if (!function_exists('portal_valid_academic_year')) {
+    function portal_valid_academic_year(string $year): bool
+    {
+        if (!preg_match('/^(\d{2})\/(\d{2})$/', $year, $m)) {
+            return false;
+        }
+        $start = (int) $m[1];
+        $end = (int) $m[2];
+
+        return $end === (($start + 1) % 100);
+    }
+}
+
+if (!function_exists('portal_academic_year_compact')) {
+    function portal_academic_year_compact(string $year): string
+    {
+        return portal_valid_academic_year($year) ? str_replace('/', '', $year) : '';
+    }
+}
+
+if (!function_exists('portal_academic_year_options')) {
+    /**
+     * Current academic year plus a short window of upcoming years.
+     *
+     * @return list<string>
+     */
+    function portal_academic_year_options(): array
+    {
+        $current = portal_academic_year_current();
+        [$startStr] = explode('/', $current);
+        $start = (int) $startStr;
+        $options = [];
+        for ($i = 0; $i <= 2; $i++) {
+            $from = ($start + $i) % 100;
+            $to = ($from + 1) % 100;
+            $options[] = sprintf('%02d/%02d', $from, $to);
+        }
+
+        return $options;
+    }
+}
+
+if (!function_exists('portal_academic_year_allowed')) {
+    function portal_academic_year_allowed(string $year, string $existing = ''): bool
+    {
+        if (!portal_valid_academic_year($year)) {
+            return false;
+        }
+        if ($existing !== '' && $year === $existing) {
+            return true;
+        }
+
+        return in_array($year, portal_academic_year_options(), true);
+    }
+}
+
+if (!function_exists('portal_course_code_prefix_map')) {
+    /** @return array<string, string> */
+    function portal_course_code_prefix_map(): array
+    {
+        return [
+            'english as a second language' => 'ESL',
+            'english as second language' => 'ESL',
+            'english language' => 'ENG',
+            'english literature' => 'ENG',
+            'computer science' => 'CS',
+            'physical education' => 'PE',
+            'extended mathematics' => 'MTH',
+            'additional mathematics' => 'MTH',
+            'further mathematics' => 'MTH',
+            'biology' => 'BIO',
+            'chemistry' => 'CHM',
+            'physics' => 'PHY',
+            'mathematics' => 'MTH',
+            'maths' => 'MTH',
+            'math' => 'MTH',
+            'english' => 'ENG',
+            'esl' => 'ESL',
+            'ict' => 'ICT',
+            'computing' => 'CS',
+            'business' => 'BUS',
+            'accounting' => 'ACC',
+            'tourism' => 'TOU',
+            'economics' => 'ECO',
+            'history' => 'HIS',
+            'geography' => 'GEO',
+            'french' => 'FRE',
+            'spanish' => 'SPA',
+            'art' => 'ART',
+            'music' => 'MUS',
+        ];
+    }
+}
+
+if (!function_exists('portal_course_title_prefix')) {
+    function portal_course_title_prefix(string $title): string
+    {
+        $normalized = strtolower(trim((string) preg_replace('/\s+/', ' ', $title)));
+        if ($normalized === '') {
+            return 'CRS';
+        }
+
+        foreach (portal_course_code_prefix_map() as $name => $prefix) {
+            if ($normalized === $name || str_starts_with($normalized, $name . ' ')) {
+                return $prefix;
+            }
+        }
+
+        $stop = ['a', 'an', 'the', 'of', 'and', 'as', 'for', 'to', 'in', 'with'];
+        $words = [];
+        foreach (explode(' ', $normalized) as $word) {
+            $word = (string) preg_replace('/[^a-z0-9]/', '', $word);
+            if ($word === '' || in_array($word, $stop, true)) {
+                continue;
+            }
+            $words[] = $word;
+        }
+        if ($words === []) {
+            return 'CRS';
+        }
+        if (count($words) >= 2) {
+            $initials = '';
+            foreach (array_slice($words, 0, 4) as $word) {
+                $initials .= strtoupper($word[0]);
+            }
+
+            return $initials;
+        }
+
+        $word = $words[0];
+        if (strlen($word) <= 4) {
+            return strtoupper($word);
+        }
+
+        return strtoupper(substr($word, 0, 3));
+    }
+}
+
+if (!function_exists('portal_generate_course_code')) {
+    function portal_generate_course_code(string $title, string $year, ?int $exceptId = null): string
+    {
+        $prefix = portal_course_title_prefix($title);
+        $compact = portal_academic_year_compact($year);
+        if ($compact === '') {
+            $compact = portal_academic_year_compact(portal_academic_year_current());
+        }
+        $stem = $prefix . '-' . $compact;
+        $max = 0;
+        $sql = 'SELECT code FROM courses WHERE code LIKE ?';
+        $params = [$stem . '-%'];
+        if ($exceptId !== null && $exceptId > 0) {
+            $sql .= ' AND id != ?';
+            $params[] = $exceptId;
+        }
+        $stmt = portal_db()->prepare($sql);
+        $stmt->execute($params);
+        $pattern = '/^' . preg_quote($stem, '/') . '-(\d+)/';
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $code) {
+            if (preg_match($pattern, (string) $code, $m)) {
+                $max = max($max, (int) $m[1]);
+            }
+        }
+
+        return sprintf('%s-%02d', $stem, $max + 1);
+    }
+}
+
+if (!function_exists('portal_assign_course_code')) {
+    function portal_assign_course_code(string $title, string $year, string $existing = '', ?int $exceptId = null): string
+    {
+        $prefix = portal_course_title_prefix($title);
+        $compact = portal_academic_year_compact($year);
+        if ($compact === '') {
+            return portal_generate_course_code($title, portal_academic_year_current(), $exceptId);
+        }
+        $stem = $prefix . '-' . $compact . '-';
+        if ($existing !== '' && str_starts_with($existing, $stem)) {
+            return $existing;
+        }
+
+        return portal_generate_course_code($title, $year, $exceptId);
+    }
+}
+
+if (!function_exists('portal_slugify_course_title')) {
+    function portal_slugify_course_title(string $title): string
+    {
+        $slug = strtolower($title);
+        $slug = (string) preg_replace('/[^a-z0-9]+/', '-', $slug);
+        $slug = trim($slug, '-');
+
+        return $slug !== '' ? $slug : 'course';
+    }
+}
+
+if (!function_exists('portal_generate_course_slug')) {
+    function portal_generate_course_slug(string $title, string $year, ?int $exceptId = null): string
+    {
+        $compact = portal_academic_year_compact($year);
+        if ($compact === '') {
+            $compact = portal_academic_year_compact(portal_academic_year_current());
+        }
+        $base = portal_slugify_course_title($title) . '-' . $compact;
+        $slug = $base;
+        $n = 2;
+        while (portal_course_slug_taken($slug, $exceptId) && $n < 100) {
+            $slug = $base . '-' . $n;
+            $n++;
+        }
+
+        return $slug;
+    }
+}
+
+if (!function_exists('portal_resolve_course_slug')) {
+    function portal_resolve_course_slug(string $posted, string $title, string $year, ?int $exceptId = null): string
+    {
+        $posted = strtolower(trim($posted));
+        if ($posted !== '' && portal_valid_course_slug($posted) && !portal_course_slug_taken($posted, $exceptId)) {
+            return $posted;
+        }
+
+        return portal_generate_course_slug($title, $year, $exceptId);
+    }
+}
+
+if (!function_exists('portal_course_full_title')) {
+    function portal_course_full_title(string $title, string $year): string
+    {
+        $title = trim($title);
+        $year = trim($year);
+        if ($title === '') {
+            return $year;
+        }
+        if ($year === '' || !portal_valid_academic_year($year)) {
+            return $title;
+        }
+
+        return $year . ' — ' . $title;
+    }
+}
+
 if (!function_exists('portal_valid_course_accent')) {
     function portal_valid_course_accent(string $accent): bool
     {
         return (bool) preg_match('/^#[0-9a-fA-F]{6}$/', $accent);
+    }
+}
+
+if (!function_exists('portal_course_status_keys')) {
+    /** @return list<string> */
+    function portal_course_status_keys(): array
+    {
+        return ['draft', 'closed', 'open', 'archived'];
     }
 }
 
@@ -864,10 +1238,114 @@ if (!function_exists('portal_course_status_label')) {
     {
         return match ($status) {
             'open'     => 'Open',
+            'closed'   => 'Closed',
             'draft'    => 'Draft',
             'archived' => 'Archived',
             default    => ucfirst($status),
         };
+    }
+}
+
+if (!function_exists('portal_course_status_badge_class')) {
+    function portal_course_status_badge_class(string $status): string
+    {
+        return in_array($status, portal_course_status_keys(), true)
+            ? 'admin-badge--' . $status
+            : 'admin-badge--draft';
+    }
+}
+
+if (!function_exists('portal_course_normalize_status')) {
+    function portal_course_normalize_status(string $status): string
+    {
+        return in_array($status, portal_course_status_keys(), true) ? $status : 'draft';
+    }
+}
+
+if (!function_exists('portal_course_normalize_opens_at')) {
+    function portal_course_normalize_opens_at(string $raw): string
+    {
+        $raw = trim(str_replace('T', ' ', $raw));
+        if ($raw === '') {
+            return '';
+        }
+        $ts = strtotime($raw);
+
+        return $ts ? date('Y-m-d H:i:s', $ts) : '';
+    }
+}
+
+if (!function_exists('portal_course_opens_at_input_value')) {
+    function portal_course_opens_at_input_value(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+        $ts = strtotime($raw);
+
+        return $ts ? date('Y-m-d\TH:i', $ts) : '';
+    }
+}
+
+if (!function_exists('portal_course_opens_label')) {
+    function portal_course_opens_label(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+        $ts = strtotime($raw);
+
+        return $ts ? date('j M Y H:i', $ts) : '';
+    }
+}
+
+if (!function_exists('portal_course_apply_scheduled_opens')) {
+    function portal_course_apply_scheduled_opens(): void
+    {
+        try {
+            portal_db()->exec(
+                "UPDATE courses
+                 SET status = 'open', status_label = 'Open'
+                 WHERE status = 'closed'
+                   AND opens_at IS NOT NULL
+                   AND trim(opens_at) != ''
+                   AND datetime(opens_at) <= datetime('now')"
+            );
+            portal_db()->exec(
+                "UPDATE courses
+                 SET status = 'archived', status_label = 'Archived'
+                 WHERE status = 'open'
+                   AND archives_at IS NOT NULL
+                   AND trim(archives_at) != ''
+                   AND datetime(archives_at) <= datetime('now')"
+            );
+        } catch (\Throwable) {
+            // Columns may not exist yet during very early bootstrap.
+        }
+    }
+}
+
+if (!function_exists('portal_course_status_pill_class')) {
+    function portal_course_status_pill_class(string $status): string
+    {
+        return match ($status) {
+            'open'     => ' active',
+            'closed'   => ' is-closed',
+            'draft'    => ' is-draft',
+            'archived' => ' is-archived',
+            default    => '',
+        };
+    }
+}
+
+if (!function_exists('portal_course_student_may_enter')) {
+    function portal_course_student_may_enter(array $course): bool
+    {
+        $status = (string) ($course['status'] ?? '');
+
+        return in_array($status, ['open', 'archived'], true);
     }
 }
 
@@ -878,6 +1356,7 @@ if (!function_exists('portal_find_course_by_id')) {
             return null;
         }
 
+        portal_course_apply_scheduled_opens();
         $stmt = portal_db()->prepare('SELECT * FROM courses WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
@@ -926,6 +1405,7 @@ if (!function_exists('portal_admin_course_rows')) {
      */
     function portal_admin_course_rows(): array
     {
+        portal_course_apply_scheduled_opens();
         $pdo = portal_db();
 
         $rows = $pdo->query(
@@ -942,12 +1422,17 @@ if (!function_exists('portal_admin_course_rows')) {
             $staffCounts[(int) $sr['course_id']] = (int) $sr['cnt'];
         }
 
+        $schedules = portal_course_schedules_by_course_id();
+
         $courses = [];
         foreach ($rows as $row) {
             $id = (int) $row['id'];
             $row['id'] = $id;
             $row['enrollment_count'] = $enrollCounts[$id] ?? 0;
             $row['assigned_staff_count'] = $staffCounts[$id] ?? 0;
+            $summary = portal_format_course_schedule_summary($schedules[$id] ?? []);
+            $row['meeting'] = $summary['meeting'];
+            $row['room'] = $summary['room'];
             $courses[] = $row;
         }
 

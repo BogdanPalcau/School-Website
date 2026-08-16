@@ -42,6 +42,8 @@ $_pdo->exec("
         term          TEXT    NOT NULL DEFAULT 'Full year',
         status        TEXT    NOT NULL DEFAULT 'open',
         status_label  TEXT    NOT NULL DEFAULT 'Open',
+        opens_at      TEXT    NOT NULL DEFAULT '',
+        archives_at   TEXT    NOT NULL DEFAULT '',
         accent        TEXT    NOT NULL DEFAULT '#c1202f',
         meeting       TEXT    NOT NULL DEFAULT 'TBA',
         room          TEXT    NOT NULL DEFAULT 'TBA',

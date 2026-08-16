@@ -899,6 +899,46 @@ if (!function_exists('portal_weighted_grade_average')) {
     }
 }
 
+if (!function_exists('portal_submission_is_marked')) {
+    function portal_submission_is_marked(array $row): bool
+    {
+        $score = $row['score'] ?? null;
+        return $score !== null && $score !== '' && trim((string) ($row['marked_at'] ?? '')) !== '';
+    }
+}
+
+if (!function_exists('portal_submission_grades_released')) {
+    function portal_submission_grades_released(array $row): bool
+    {
+        return trim((string) ($row['grades_released_at'] ?? '')) !== '';
+    }
+}
+
+if (!function_exists('portal_notify_file_grade_released')) {
+    function portal_notify_file_grade_released(
+        int $studentId,
+        int $courseId,
+        string $courseSlug,
+        string $slotTitle,
+        int $score,
+        int $submissionId
+    ): void {
+        if ($studentId <= 0 || !function_exists('portal_notify_grade_returned')) {
+            return;
+        }
+        $title = trim($slotTitle) !== '' ? $slotTitle : 'Assignment';
+        $gradeLink = 'course.php?course=' . rawurlencode($courseSlug) . '&section=gradebook';
+        portal_notify_grade_returned(
+            $studentId,
+            $courseId,
+            'Grade returned: ' . $title,
+            'You scored ' . $score . '% on ' . $title . '.',
+            $gradeLink,
+            'submission:' . $submissionId . ':' . $score
+        );
+    }
+}
+
 // ── Database ──────────────────────────────────────────────────────────────────
 
 if (!function_exists('portal_db_path')) {
@@ -3280,10 +3320,21 @@ if (!function_exists('portal_run_migrations')) {
             'eula_accepted_at' => "ALTER TABLE course_submissions ADD COLUMN eula_accepted_at TEXT NOT NULL DEFAULT ''",
             'grade_seen_at' => "ALTER TABLE course_submissions ADD COLUMN grade_seen_at TEXT NOT NULL DEFAULT ''",
             'declared_file_type' => "ALTER TABLE course_submissions ADD COLUMN declared_file_type TEXT",
+            'grades_released_at' => "ALTER TABLE course_submissions ADD COLUMN grades_released_at TEXT NOT NULL DEFAULT ''",
         ];
         foreach ($submissionAdds as $col => $sql) {
             if (!in_array($col, $submissionCols, true)) {
                 $db->exec($sql);
+                if ($col === 'grades_released_at') {
+                    // One-time: marks that already existed stay visible to students.
+                    $db->exec(
+                        "UPDATE course_submissions
+                         SET grades_released_at = marked_at
+                         WHERE (grades_released_at IS NULL OR trim(grades_released_at) = '')
+                           AND marked_at IS NOT NULL AND trim(marked_at) != ''
+                           AND score IS NOT NULL"
+                    );
+                }
             }
         }
 
@@ -3317,6 +3368,12 @@ if (!function_exists('portal_run_migrations')) {
         $courseCols = array_column($db->query("PRAGMA table_info(courses)")->fetchAll(), 'name');
         if (!in_array('external_ai_detection', $courseCols, true)) {
             $db->exec("ALTER TABLE courses ADD COLUMN external_ai_detection INTEGER NOT NULL DEFAULT 0");
+        }
+        if (!in_array('opens_at', $courseCols, true)) {
+            $db->exec("ALTER TABLE courses ADD COLUMN opens_at TEXT NOT NULL DEFAULT ''");
+        }
+        if (!in_array('archives_at', $courseCols, true)) {
+            $db->exec("ALTER TABLE courses ADD COLUMN archives_at TEXT NOT NULL DEFAULT ''");
         }
     }
 }

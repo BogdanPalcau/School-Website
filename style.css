@@ -694,6 +694,27 @@ input[type="radio"]:not(.visually-hidden):disabled {
     gap: 16px;
 }
 
+.course-year-shell--pinned {
+    border-color: rgba(193, 32, 47, 0.22);
+    background: #fff8f8;
+}
+
+.course-pinned-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.course-pinned-title .icon-sm {
+    width: 1em;
+    height: 1em;
+}
+
+.course-year-shell--archived {
+    background: #f6f7f9;
+    border-color: #d7dbe2;
+}
+
 .course-list {
     display: grid;
     gap: 14px;
@@ -796,7 +817,38 @@ input[type="radio"]:not(.visually-hidden):disabled {
 }
 
 .course-status-pill.active {
-    background: rgba(193, 32, 47, 0.12);
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.course-status-pill.is-closed {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.course-status-pill.is-draft {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.course-status-pill.is-archived {
+    background: #e5e7eb;
+    color: #4b5563;
+}
+
+.course-list-item.is-course-locked,
+.dash-course-link.is-course-locked {
+    cursor: not-allowed;
+}
+
+.course-locked-panel {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 28px 26px;
+    display: grid;
+    gap: 12px;
+    text-align: center;
+    justify-items: center;
 }
 
 .course-list-link {
@@ -2950,9 +3002,27 @@ body {
 }
 
 .course-status-pill.active {
-    border-color: #cfa7ae;
-    background: #f7e9ec;
-    color: var(--primary-strong);
+    border-color: #86efac;
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.course-status-pill.is-closed {
+    border-color: #f0d2a0;
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.course-status-pill.is-draft {
+    border-color: #d8cff8;
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.course-status-pill.is-archived {
+    border-color: #c5cad3;
+    background: #e5e7eb;
+    color: #4b5563;
 }
 
 .button,
@@ -4626,6 +4696,67 @@ select.is-validation-shaking {
     gap: 14px;
 }
 
+.admin-schedule-editor {
+    display: grid;
+    gap: 10px;
+}
+
+.admin-schedule-label {
+    margin: 0;
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.admin-schedule-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) 0.8fr 0.8fr minmax(0, 1.4fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+}
+
+.admin-schedule-row .admin-field {
+    min-width: 0;
+}
+
+.admin-accent-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.admin-accent-picker input[type="color"] {
+    width: 48px;
+    height: 42px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    cursor: pointer;
+}
+
+.admin-accent-picker input[type="text"] {
+    flex: 1;
+    min-width: 0;
+}
+
+@media (max-width: 900px) {
+    .admin-schedule-row {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .admin-schedule-row [data-schedule-remove] {
+        grid-column: 1 / -1;
+        justify-self: start;
+    }
+}
+
 .admin-field {
     display: grid;
     gap: 7px;
@@ -4639,7 +4770,7 @@ select.is-validation-shaking {
     color: var(--muted);
 }
 
-.admin-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+.admin-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not([type="color"]),
 .admin-field select {
     width: 100%;
     padding: 12px 14px;
@@ -4651,10 +4782,15 @@ select.is-validation-shaking {
     outline: none;
 }
 
-.admin-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):focus,
+.admin-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not([type="color"]):focus,
 .admin-field select:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 3px rgba(166, 23, 43, 0.08);
+}
+
+.admin-field input[readonly] {
+    cursor: default;
+    opacity: 0.92;
 }
 
 .admin-password-wrap {
@@ -5630,6 +5766,11 @@ select.is-validation-shaking {
     color: #227345;
 }
 
+.admin-course-status--closed {
+    background: #fff4e5;
+    color: #8a4b00;
+}
+
 .admin-course-status--draft {
     background: #f1ecff;
     color: #6d56a8;
@@ -6518,6 +6659,12 @@ body.admin-profile-open {
     border-color: #b8dfbe;
 }
 
+.admin-badge--closed {
+    background: #fff4e5;
+    color: #8a4b00;
+    border-color: #f0d2a0;
+}
+
 .admin-badge--draft {
     background: #f4f0ff;
     color: #4f3f8f;
@@ -6525,9 +6672,9 @@ body.admin-profile-open {
 }
 
 .admin-badge--archived {
-    background: #f3f4f6;
+    background: #eceff3;
     color: #4b5563;
-    border-color: #d1d5db;
+    border-color: #c5cad3;
 }
 
 .admin-badge--warning {
@@ -6597,6 +6744,51 @@ body.admin-profile-open {
 
 .admin-table tbody tr:hover {
     background: #fafbfd;
+}
+
+.admin-status-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 11rem;
+}
+
+.admin-courses-tr--open {
+    box-shadow: inset 4px 0 0 #227345;
+    background: #f6fbf7;
+}
+
+.admin-courses-tr--closed {
+    box-shadow: inset 4px 0 0 #c47a00;
+    background: #fffaf0;
+}
+
+.admin-courses-tr--draft {
+    box-shadow: inset 4px 0 0 #6d56a8;
+    background: #f8f5ff;
+}
+
+.admin-courses-tr--archived {
+    box-shadow: inset 4px 0 0 #8a9199;
+    background: #f3f4f6;
+    color: #5b6168;
+}
+
+.admin-table tbody tr.admin-courses-tr--open:hover {
+    background: #eef8f1;
+}
+
+.admin-table tbody tr.admin-courses-tr--closed:hover {
+    background: #fff4e0;
+}
+
+.admin-table tbody tr.admin-courses-tr--draft:hover {
+    background: #f1ecff;
+}
+
+.admin-table tbody tr.admin-courses-tr--archived:hover {
+    background: #eceef1;
 }
 
 .admin-table-user {
@@ -9257,6 +9449,27 @@ body > .folder-item.is-dragging {
     color: #92400e;
 }
 
+.sub-slot-status--held {
+    background: #e0e7ff;
+    color: #3730a3;
+}
+
+.gb-release-form {
+    margin: 0;
+}
+
+.gb-release-form.is-hidden {
+    display: none;
+}
+
+.rvw-release-form {
+    margin-top: 10px;
+}
+
+.rvw-release-form.is-hidden {
+    display: none;
+}
+
 .sub-slot-status--closed {
     background: #fee2e2;
     color: #991b1b;
@@ -9686,6 +9899,11 @@ body.sub-slot-body-lock {
 .sub-modal-grade--marked {
     background: #d1fae5;
     color: #065f46;
+}
+
+.sub-modal-grade--held {
+    background: #e0e7ff;
+    color: #3730a3;
 }
 
 .sub-modal-grade--pending {
@@ -15610,6 +15828,8 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .gb-slot-grid {
@@ -15906,6 +16126,12 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     border-color: #f0d2a0;
 }
 
+.grades-status--held {
+    background: #f3f0ff;
+    color: #4c3d99;
+    border-color: #c9bff0;
+}
+
 .grades-status--marked {
     background: #edf8ef;
     color: #245a2c;
@@ -16049,6 +16275,8 @@ a.grades-simple-row:hover {
     padding: 6px 8px;
     border-radius: 999px;
     font-weight: 800;
+    font-size: 0.72rem;
+    white-space: nowrap;
     background: #fff6e8;
     color: #8a4b00;
     border: 1px solid #f0d2a0;

@@ -317,48 +317,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'create_course') {
         $title       = trim((string) ($_POST['title'] ?? ''));
-        $fullTitle   = trim((string) ($_POST['full_title'] ?? ''));
-        $code        = trim((string) ($_POST['code'] ?? ''));
         $slug        = strtolower(trim((string) ($_POST['slug'] ?? '')));
         $summary     = trim((string) ($_POST['summary'] ?? ''));
-        $yearGroup   = trim((string) ($_POST['year_group'] ?? '25/26'));
+        $yearGroup   = trim((string) ($_POST['year_group'] ?? ''));
         $term        = trim((string) ($_POST['term'] ?? 'Full year'));
-        $status      = (string) ($_POST['status'] ?? 'draft');
-        $statusLabel = trim((string) ($_POST['status_label'] ?? ''));
+        $status      = portal_course_normalize_status((string) ($_POST['status'] ?? 'draft'));
+        $statusLabel = portal_course_status_label($status);
+        $opensAt     = $status === 'closed'
+            ? portal_course_normalize_opens_at((string) ($_POST['opens_at'] ?? ''))
+            : '';
+        $archivesAt  = $status === 'open'
+            ? portal_course_normalize_opens_at((string) ($_POST['archives_at'] ?? ''))
+            : '';
         $accent      = trim((string) ($_POST['accent'] ?? '#c1202f'));
-        $meeting     = trim((string) ($_POST['meeting'] ?? 'TBA'));
-        $room        = trim((string) ($_POST['room'] ?? 'TBA'));
         $notice      = trim((string) ($_POST['notice'] ?? ''));
 
-        if (!in_array($status, ['open', 'draft', 'archived'], true)) {
-            $status = 'draft';
-        }
-        if ($statusLabel === '') {
-            $statusLabel = portal_course_status_label($status);
-        }
-
-        if ($title === '' || $fullTitle === '' || $code === '') {
-            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
-        } elseif ($slug === '' || !portal_valid_course_slug($slug)) {
-            $_SESSION['admin_flash'] = ['error', 'Slug must use lowercase letters, numbers, and hyphens only.'];
+        if ($title === '') {
+            $_SESSION['admin_flash'] = ['error', 'Course title is required.'];
+        } elseif (!portal_academic_year_allowed($yearGroup)) {
+            $_SESSION['admin_flash'] = ['error', 'Choose the current academic year or an upcoming one.'];
         } elseif (!portal_valid_course_accent($accent)) {
             $_SESSION['admin_flash'] = ['error', 'Accent must be a valid hex colour like #c1202f.'];
-        } elseif (portal_course_slug_taken($slug)) {
-            $_SESSION['admin_flash'] = ['error', 'That slug is already in use.'];
-        } elseif (portal_course_code_taken($code)) {
-            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
         } else {
+            $fullTitle = portal_course_full_title($title, $yearGroup);
+            $code = portal_assign_course_code($title, $yearGroup);
+            $slug = portal_resolve_course_slug($slug, $title, $yearGroup);
             try {
                 $pdo->prepare("
                     INSERT INTO courses
                         (slug, code, title, full_title, summary, year_group, term, status, status_label,
-                         accent, meeting, room, notice, student_count)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                         accent, meeting, room, notice, student_count, opens_at, archives_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
                 ")->execute([
                     $slug, $code, $title, $fullTitle, $summary, $yearGroup, $term,
-                    $status, $statusLabel, $accent, $meeting, $room, $notice,
+                    $status, $statusLabel, $accent, 'No schedule yet', 'Location TBA', $notice, $opensAt, $archivesAt,
                 ]);
+                $newCourseId = (int) $pdo->lastInsertId();
+                if ($newCourseId > 0) {
+                    portal_save_course_schedule_from_post($newCourseId, $_POST);
+                }
                 $_SESSION['admin_flash'] = ['success', "Course “{$title}” created."];
+                portal_course_apply_scheduled_opens();
             } catch (\PDOException) {
                 $_SESSION['admin_flash'] = ['error', 'Could not create course. Check slug and code are unique.'];
             }
@@ -370,42 +369,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $courseId    = (int) ($_POST['course_id'] ?? 0);
         $course      = portal_find_course_by_id($courseId);
         $title       = trim((string) ($_POST['title'] ?? ''));
-        $fullTitle   = trim((string) ($_POST['full_title'] ?? ''));
-        $code        = trim((string) ($_POST['code'] ?? ''));
         $summary     = trim((string) ($_POST['summary'] ?? ''));
         $yearGroup   = trim((string) ($_POST['year_group'] ?? ''));
         $term        = trim((string) ($_POST['term'] ?? ''));
-        $status      = (string) ($_POST['status'] ?? 'draft');
-        $statusLabel = trim((string) ($_POST['status_label'] ?? ''));
+        $status      = portal_course_normalize_status((string) ($_POST['status'] ?? 'draft'));
+        $statusLabel = portal_course_status_label($status);
+        $opensAt     = $status === 'closed'
+            ? portal_course_normalize_opens_at((string) ($_POST['opens_at'] ?? ''))
+            : (is_array($course) ? trim((string) ($course['opens_at'] ?? '')) : '');
+        $archivesAt  = $status === 'open'
+            ? portal_course_normalize_opens_at((string) ($_POST['archives_at'] ?? ''))
+            : (is_array($course) ? trim((string) ($course['archives_at'] ?? '')) : '');
         $accent      = trim((string) ($_POST['accent'] ?? '#c1202f'));
-        $meeting     = trim((string) ($_POST['meeting'] ?? ''));
-        $room        = trim((string) ($_POST['room'] ?? ''));
         $notice      = trim((string) ($_POST['notice'] ?? ''));
 
         if (!$course) {
             $_SESSION['admin_flash'] = ['error', 'Course not found.'];
-        } elseif ($title === '' || $fullTitle === '' || $code === '') {
-            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
-        } elseif (!in_array($status, ['open', 'draft', 'archived'], true)) {
-            $_SESSION['admin_flash'] = ['error', 'Invalid status.'];
+        } elseif ($title === '') {
+            $_SESSION['admin_flash'] = ['error', 'Course title is required.'];
+        } elseif (!portal_academic_year_allowed($yearGroup, (string) ($course['year_group'] ?? ''))) {
+            $_SESSION['admin_flash'] = ['error', 'Choose the current academic year or an upcoming one.'];
         } elseif (!portal_valid_course_accent($accent)) {
             $_SESSION['admin_flash'] = ['error', 'Accent must be a valid hex colour like #c1202f.'];
-        } elseif (portal_course_code_taken($code, $courseId)) {
-            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
         } else {
-            if ($statusLabel === '') {
-                $statusLabel = portal_course_status_label($status);
-            }
+            $fullTitle = portal_course_full_title($title, $yearGroup);
+            $code = portal_assign_course_code($title, $yearGroup, (string) ($course['code'] ?? ''), $courseId);
             $pdo->prepare("
                 UPDATE courses SET
                     title = ?, full_title = ?, code = ?, summary = ?, year_group = ?, term = ?,
-                    status = ?, status_label = ?, accent = ?, meeting = ?, room = ?, notice = ?
+                    status = ?, status_label = ?, accent = ?, notice = ?, opens_at = ?, archives_at = ?
                 WHERE id = ?
             ")->execute([
                 $title, $fullTitle, $code, $summary, $yearGroup, $term,
-                $status, $statusLabel, $accent, $meeting, $room, $notice, $courseId,
+                $status, $statusLabel, $accent, $notice, $opensAt, $archivesAt, $courseId,
             ]);
+            portal_save_course_schedule_from_post($courseId, $_POST);
             $_SESSION['admin_flash'] = ['success', "Course “{$title}” updated."];
+            portal_course_apply_scheduled_opens();
         }
         $redirectSection('courses');
     }
@@ -452,21 +452,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sourceId  = (int) ($_POST['source_course_id'] ?? 0);
         $source    = portal_find_course_by_id($sourceId);
         $title     = trim((string) ($_POST['title'] ?? ''));
-        $fullTitle = trim((string) ($_POST['full_title'] ?? ''));
-        $code      = trim((string) ($_POST['code'] ?? ''));
-        $slug      = strtolower(trim((string) ($_POST['slug'] ?? '')));
+        $postedSlug = strtolower(trim((string) ($_POST['slug'] ?? '')));
 
         if (!$source) {
             $_SESSION['admin_flash'] = ['error', 'Source course not found.'];
-        } elseif ($title === '' || $fullTitle === '' || $code === '') {
-            $_SESSION['admin_flash'] = ['error', 'Title, full title, and course code are required.'];
-        } elseif ($slug === '' || !portal_valid_course_slug($slug)) {
-            $_SESSION['admin_flash'] = ['error', 'Slug must use lowercase letters, numbers, and hyphens only.'];
-        } elseif (portal_course_slug_taken($slug)) {
-            $_SESSION['admin_flash'] = ['error', 'That slug is already in use.'];
-        } elseif (portal_course_code_taken($code)) {
-            $_SESSION['admin_flash'] = ['error', 'That course code is already in use.'];
+        } elseif ($title === '') {
+            $_SESSION['admin_flash'] = ['error', 'Course title is required.'];
         } else {
+            $yearGroup = portal_academic_year_allowed((string) ($source['year_group'] ?? ''))
+                ? (string) $source['year_group']
+                : portal_academic_year_current();
+            $fullTitle = portal_course_full_title($title, $yearGroup);
+            $code = portal_assign_course_code($title, $yearGroup);
+            $slug = portal_resolve_course_slug($postedSlug, $title, $yearGroup);
             try {
                 $pdo->prepare("
                     INSERT INTO courses
@@ -479,7 +477,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $title,
                     $fullTitle,
                     (string) $source['summary'],
-                    (string) $source['year_group'],
+                    $yearGroup,
                     (string) $source['term'],
                     'draft',
                     'Draft',
@@ -818,6 +816,18 @@ $enrollTarget       = $enrollTargetId > 0 ? portal_find_user_by_id($enrollTarget
 $enrolledIds        = $enrollTarget ? portal_user_course_access_ids($enrollTargetId) : [];
 $enrollTargetIsTeacher = $enrollTarget && ((string) ($enrollTarget['role'] ?? '')) === 'teacher';
 $editCourse         = $editCourseId > 0 ? portal_find_course_by_id($editCourseId) : null;
+$editCourseSchedule = [];
+if ($editCourse) {
+    $schedStmt = $pdo->prepare(
+        'SELECT id, day_of_week, start_time, end_time, room, notes
+         FROM course_schedule
+         WHERE course_id = ?
+         ORDER BY sort_order ASC, id ASC'
+    );
+    $schedStmt->execute([(int) $editCourse['id']]);
+    $editCourseSchedule = $schedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+$courseWeekdays = portal_course_weekday_names();
 $duplicateCourse    = $duplicateCourseId > 0 ? portal_find_course_by_id($duplicateCourseId) : null;
 $editUser           = $editUserId > 0 ? portal_find_user_by_id($editUserId) : null;
 $yearGroupOptions   = portal_year_group_options();
@@ -869,6 +879,8 @@ $filteredAdminCourses = array_values(array_filter(
 ));
 
 $courseYearOptions = portal_course_year_options($adminCourses);
+$academicYearOptions = portal_academic_year_options();
+$currentAcademicYear = portal_academic_year_current();
 
 $stats = [
     'total_users'       => count($users),
@@ -881,6 +893,7 @@ $stats = [
     'students'          => count(array_filter($users, fn($u) => $u['role'] === 'student')),
     'total_courses'     => count($adminCourses),
     'open_courses'      => count(array_filter($adminCourses, fn($c) => $c['status'] === 'open')),
+    'closed_courses'    => count(array_filter($adminCourses, fn($c) => $c['status'] === 'closed')),
     'archived_courses'  => count(array_filter($adminCourses, fn($c) => $c['status'] === 'archived')),
     'draft_courses'     => count(array_filter($adminCourses, fn($c) => $c['status'] === 'draft')),
     'total_enrollments' => (int) $pdo->query('SELECT COUNT(*) FROM enrollments')->fetchColumn(),
@@ -1162,6 +1175,10 @@ ob_start();
                     <article class="admin-stat-card">
                         <p class="admin-stat-label">Open courses</p>
                         <strong class="admin-stat-value"><?= $stats['open_courses'] ?></strong>
+                    </article>
+                    <article class="admin-stat-card">
+                        <p class="admin-stat-label">Closed</p>
+                        <strong class="admin-stat-value"><?= $stats['closed_courses'] ?></strong>
                     </article>
                     <article class="admin-stat-card">
                         <p class="admin-stat-label">Archived</p>
@@ -1486,7 +1503,7 @@ ob_start();
                         <div>
                             <p class="eyebrow">Modules</p>
                             <h3>Course management</h3>
-                            <p class="admin-card-lead">Create, edit, archive, and duplicate course spaces without editing the database manually.</p>
+                            <p class="admin-card-lead">Create, edit, archive, and duplicate course spaces. Closed courses stay locked for students until you open them or the scheduled open time.</p>
                         </div>
                         <button type="button" class="admin-btn admin-btn--primary" data-admin-open="create-course-panel">
                             <?= portal_icon('plus', 'icon-sm') ?> Add course
@@ -1504,6 +1521,7 @@ ob_start();
                             <select name="course_status">
                                 <option value="all"<?= $courseStatus === 'all' ? ' selected' : '' ?>>All</option>
                                 <option value="open"<?= $courseStatus === 'open' ? ' selected' : '' ?>>Open</option>
+                                <option value="closed"<?= $courseStatus === 'closed' ? ' selected' : '' ?>>Closed</option>
                                 <option value="draft"<?= $courseStatus === 'draft' ? ' selected' : '' ?>>Draft</option>
                                 <option value="archived"<?= $courseStatus === 'archived' ? ' selected' : '' ?>>Archived</option>
                             </select>
@@ -1539,10 +1557,18 @@ ob_start();
                                 <?php foreach ($filteredAdminCourses as $c): ?>
                                 <?php
                                     $statusKey = (string) $c['status'];
-                                    $badgeClass = in_array($statusKey, ['open', 'draft', 'archived'], true)
-                                        ? 'admin-badge--' . $statusKey : 'admin-badge--draft';
+                                    $badgeClass = portal_course_status_badge_class($statusKey);
+                                    $opensLabel = portal_course_opens_label((string) ($c['opens_at'] ?? ''));
+                                    $archivesLabel = portal_course_opens_label((string) ($c['archives_at'] ?? ''));
+                                    $statusHint = match ($statusKey) {
+                                        'draft' => 'Staff only — students cannot see this course',
+                                        'closed' => $opensLabel !== '' ? 'Locked until ' . $opensLabel : 'Locked — students cannot enter yet',
+                                        'open' => $archivesLabel !== '' ? 'Open until ' . $archivesLabel : 'Students can enter',
+                                        'archived' => 'Finished — kept for records',
+                                        default => '',
+                                    };
                                 ?>
-                                <tr>
+                                <tr class="admin-courses-tr admin-courses-tr--<?= portal_escape($statusKey) ?>" data-course-status="<?= portal_escape($statusKey) ?>">
                                     <td data-label="Course">
                                         <div class="admin-course-cell">
                                             <span class="admin-course-accent" style="background:<?= portal_escape((string) $c['accent']) ?>"></span>
@@ -1555,7 +1581,14 @@ ob_start();
                                     <td data-label="Code"><?= portal_escape((string) $c['code']) ?></td>
                                     <td data-label="Year"><?= portal_escape((string) $c['year_group']) ?></td>
                                     <td data-label="Term"><?= portal_escape((string) $c['term']) ?></td>
-                                    <td data-label="Status"><span class="admin-badge <?= portal_escape($badgeClass) ?>"><?= portal_escape((string) $c['status_label']) ?></span></td>
+                                    <td data-label="Status">
+                                        <div class="admin-status-cell">
+                                            <span class="admin-badge <?= portal_escape($badgeClass) ?>"><?= portal_escape((string) $c['status_label']) ?></span>
+                                            <?php if ($statusHint !== ''): ?>
+                                                <span class="admin-table-meta"><?= portal_escape($statusHint) ?></span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
                                     <td data-label="Schedule">
                                         <span><?= portal_escape((string) $c['meeting']) ?></span>
                                         <span class="admin-table-meta"><?= portal_escape((string) $c['room']) ?></span>
@@ -1787,7 +1820,7 @@ ob_start();
                             <?php
                                 $checked = in_array((int) $course['id'], $enrolledIds, true);
                                 $cStatus = (string) $course['status'];
-                                $cBadge = in_array($cStatus, ['open', 'draft', 'archived'], true) ? 'admin-badge--' . $cStatus : 'admin-badge--draft';
+                                $cBadge = portal_course_status_badge_class($cStatus);
                             ?>
                             <label class="admin-enroll-item<?= $checked ? ' enrolled' : '' ?>"
                                    data-enroll-search="<?= portal_escape(strtolower($course['title'] . ' ' . $course['code'])) ?>">
@@ -1917,9 +1950,7 @@ ob_start();
                                         <?php foreach ($inviteCourses as $ic): ?>
                                         <?php
                                             $cStatus = (string) ($ic['status'] ?? '');
-                                            $cBadge = in_array($cStatus, ['open', 'draft', 'archived'], true)
-                                                ? 'admin-badge--' . $cStatus
-                                                : 'admin-badge--draft';
+                                            $cBadge = portal_course_status_badge_class($cStatus);
                                         ?>
                                         <label class="admin-enroll-item"
                                                data-invite-course
@@ -2759,6 +2790,47 @@ $canEditOpenedUser = $editUser !== null
 </dialog>
 <?php endif; ?>
 
+<?php
+$adminRenderScheduleRow = static function (?array $slot = null) use ($courseWeekdays): void {
+    $slotId = (int) ($slot['id'] ?? 0);
+    $day = (string) ($slot['day_of_week'] ?? 'Monday');
+    $start = (string) ($slot['start_time'] ?? '');
+    $end = (string) ($slot['end_time'] ?? '');
+    $room = (string) ($slot['room'] ?? '');
+    $notes = (string) ($slot['notes'] ?? '');
+    ?>
+    <div class="admin-schedule-row">
+        <input type="hidden" name="schedule_id[]" value="<?= $slotId > 0 ? $slotId : '' ?>">
+        <label class="admin-field">
+            <span>Day</span>
+            <select name="schedule_day[]">
+                <?php foreach ($courseWeekdays as $weekday): ?>
+                    <option value="<?= portal_escape($weekday) ?>"<?= $day === $weekday ? ' selected' : '' ?>><?= portal_escape($weekday) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </label>
+        <label class="admin-field">
+            <span>Start</span>
+            <input type="time" name="schedule_start[]" value="<?= portal_escape($start) ?>">
+        </label>
+        <label class="admin-field">
+            <span>End</span>
+            <input type="time" name="schedule_end[]" value="<?= portal_escape($end) ?>">
+        </label>
+        <label class="admin-field">
+            <span>Room / link</span>
+            <input type="text" name="schedule_room[]" maxlength="500" value="<?= portal_escape($room) ?>" placeholder="Room 12 or https://zoom.us/j/...">
+        </label>
+        <label class="admin-field">
+            <span>Notes</span>
+            <input type="text" name="schedule_notes[]" maxlength="300" value="<?= portal_escape($notes) ?>">
+        </label>
+        <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-schedule-remove>Remove</button>
+    </div>
+    <?php
+};
+?>
+
 <!-- Create course panel -->
 <dialog class="admin-panel" id="create-course-panel">
     <form method="post" action="<?= portal_escape($adminUrl('courses')) ?>" class="admin-panel-form">
@@ -2768,25 +2840,66 @@ $canEditOpenedUser = $editUser !== null
             <h3>Add course / module</h3>
             <button type="button" class="admin-panel-close" data-admin-close aria-label="Close">&times;</button>
         </header>
-        <div class="admin-form-grid">
-            <label class="admin-field"><span>Course title</span><input type="text" name="title" required></label>
-            <label class="admin-field"><span>Full title</span><input type="text" name="full_title" required></label>
-            <label class="admin-field"><span>Course code</span><input type="text" name="code" required placeholder="BIO-2526-01"></label>
-            <label class="admin-field"><span>Slug</span><input type="text" name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="biology-2526"></label>
-            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"></textarea></label>
-            <label class="admin-field"><span>Year group</span><input type="text" name="year_group" value="25/26"></label>
+        <div class="admin-form-grid" data-course-identity>
+            <label class="admin-field"><span>Course title</span><input type="text" name="title" required data-course-title></label>
+            <label class="admin-field"><span>Academic year</span>
+                <select name="year_group" required data-course-year>
+                    <?php foreach ($academicYearOptions as $yr): ?>
+                    <option value="<?= portal_escape($yr) ?>"<?= $yr === $currentAcademicYear ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
             <label class="admin-field"><span>Term</span><input type="text" name="term" value="Full year"></label>
+            <label class="admin-field">
+                <span>Full title</span>
+                <input type="text" data-course-full-title-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
+            <label class="admin-field">
+                <span>Course code</span>
+                <input type="text" data-course-code-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
+            <label class="admin-field">
+                <span>URL slug</span>
+                <input type="text" data-course-slug-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
+            <p class="admin-field-hint admin-field-hint--panel admin-field--full">The course code is built from the subject, academic year, and the next available number (for example BIO-2526-01). Teachers cannot type their own code or year.</p>
+            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"></textarea></label>
             <label class="admin-field"><span>Status</span>
-                <select name="status">
-                    <option value="draft" selected>Draft</option>
-                    <option value="open">Open</option>
+                <select name="status" data-course-status>
+                    <option value="draft" selected>Draft — staff only</option>
+                    <option value="closed">Closed — locked for students</option>
+                    <option value="open">Open — students can enter</option>
                     <option value="archived">Archived</option>
                 </select>
             </label>
-            <label class="admin-field"><span>Status label</span><input type="text" name="status_label" placeholder="Auto from status"></label>
-            <label class="admin-field"><span>Accent colour</span><input type="text" name="accent" value="#c1202f" pattern="#[0-9a-fA-F]{6}"></label>
-            <label class="admin-field"><span>Meeting time</span><input type="text" name="meeting" value="TBA"></label>
-            <label class="admin-field"><span>Room</span><input type="text" name="room" value="TBA"></label>
+            <div class="admin-opens-at admin-field--full" data-opens-at hidden>
+                <label class="admin-field">
+                    <span>Open from</span>
+                    <input type="datetime-local" name="opens_at">
+                </label>
+                <p class="admin-field-hint admin-field-hint--panel">Students cannot enter until this date and time. Leave empty to keep the course locked until you switch it to Open.</p>
+            </div>
+            <div class="admin-opens-at admin-field--full" data-archives-at hidden>
+                <label class="admin-field">
+                    <span>Archive after</span>
+                    <input type="datetime-local" name="archives_at">
+                </label>
+                <p class="admin-field-hint admin-field-hint--panel">The course stays open until this date and time, then moves to Archived. Leave empty to keep it open until you archive it yourself.</p>
+            </div>
+            <label class="admin-field"><span>Accent colour</span>
+                <div class="admin-accent-picker" data-accent-picker>
+                    <input type="color" value="#c1202f" aria-label="Pick accent colour">
+                    <input type="text" name="accent" value="#c1202f" pattern="#[0-9a-fA-F]{6}" maxlength="7" spellcheck="false">
+                </div>
+            </label>
+            <div class="admin-schedule-editor admin-field--full" data-schedule-editor>
+                <p class="admin-schedule-label">Weekly timetable</p>
+                <p class="admin-field-hint admin-field-hint--panel">These slots are the same as the course calendar. Add one row per class meeting.</p>
+                <div data-schedule-rows>
+                    <?php $adminRenderScheduleRow(null); ?>
+                </div>
+                <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-schedule-add>Add another slot</button>
+            </div>
             <label class="admin-field admin-field--full"><span>Notice</span><textarea name="notice" rows="2"></textarea></label>
         </div>
         <footer class="admin-panel-footer">
@@ -2806,25 +2919,80 @@ $canEditOpenedUser = $editUser !== null
             <h3>Edit course</h3>
             <a class="admin-panel-close" href="<?= portal_escape($adminUrl('courses')) ?>" aria-label="Close">&times;</a>
         </header>
+        <?php
+        $editYear = portal_valid_academic_year((string) ($editCourse['year_group'] ?? ''))
+            ? (string) $editCourse['year_group']
+            : $currentAcademicYear;
+        $editYearOptions = $academicYearOptions;
+        if (!in_array($editYear, $editYearOptions, true)) {
+            array_unshift($editYearOptions, $editYear);
+        }
+        ?>
         <p class="admin-field-hint admin-field-hint--panel">Slug: <code><?= portal_escape((string) $editCourse['slug']) ?></code> (not editable — preserves links and uploads)</p>
-        <div class="admin-form-grid">
-            <label class="admin-field"><span>Course title</span><input type="text" name="title" required value="<?= portal_escape((string) $editCourse['title']) ?>"></label>
-            <label class="admin-field"><span>Full title</span><input type="text" name="full_title" required value="<?= portal_escape((string) $editCourse['full_title']) ?>"></label>
-            <label class="admin-field"><span>Course code</span><input type="text" name="code" required value="<?= portal_escape((string) $editCourse['code']) ?>"></label>
-            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"><?= portal_escape((string) $editCourse['summary']) ?></textarea></label>
-            <label class="admin-field"><span>Year group</span><input type="text" name="year_group" value="<?= portal_escape((string) $editCourse['year_group']) ?>"></label>
+        <div class="admin-form-grid" data-course-identity>
+            <label class="admin-field"><span>Course title</span><input type="text" name="title" required data-course-title value="<?= portal_escape((string) $editCourse['title']) ?>"></label>
+            <label class="admin-field"><span>Academic year</span>
+                <select name="year_group" required data-course-year>
+                    <?php foreach ($editYearOptions as $yr): ?>
+                    <option value="<?= portal_escape($yr) ?>"<?= $yr === $editYear ? ' selected' : '' ?>><?= portal_escape($yr) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
             <label class="admin-field"><span>Term</span><input type="text" name="term" value="<?= portal_escape((string) $editCourse['term']) ?>"></label>
+            <label class="admin-field">
+                <span>Full title</span>
+                <input type="text" data-course-full-title-preview readonly tabindex="-1" value="<?= portal_escape(portal_course_full_title((string) $editCourse['title'], $editYear)) ?>">
+            </label>
+            <label class="admin-field">
+                <span>Course code</span>
+                <input type="text" data-course-code-preview readonly tabindex="-1" value="<?= portal_escape((string) $editCourse['code']) ?>">
+            </label>
+            <p class="admin-field-hint admin-field-hint--panel admin-field--full">Full title and code update automatically if the title or academic year changes.</p>
+            <label class="admin-field admin-field--full"><span>Summary</span><textarea name="summary" rows="3"><?= portal_escape((string) $editCourse['summary']) ?></textarea></label>
             <label class="admin-field"><span>Status</span>
-                <select name="status">
-                    <option value="open"<?= $editCourse['status'] === 'open' ? ' selected' : '' ?>>Open</option>
-                    <option value="draft"<?= $editCourse['status'] === 'draft' ? ' selected' : '' ?>>Draft</option>
+                <select name="status" data-course-status>
+                    <option value="draft"<?= $editCourse['status'] === 'draft' ? ' selected' : '' ?>>Draft — staff only</option>
+                    <option value="closed"<?= $editCourse['status'] === 'closed' ? ' selected' : '' ?>>Closed — locked for students</option>
+                    <option value="open"<?= $editCourse['status'] === 'open' ? ' selected' : '' ?>>Open — students can enter</option>
                     <option value="archived"<?= $editCourse['status'] === 'archived' ? ' selected' : '' ?>>Archived</option>
                 </select>
             </label>
-            <label class="admin-field"><span>Status label</span><input type="text" name="status_label" value="<?= portal_escape((string) $editCourse['status_label']) ?>"></label>
-            <label class="admin-field"><span>Accent colour</span><input type="text" name="accent" value="<?= portal_escape((string) $editCourse['accent']) ?>" pattern="#[0-9a-fA-F]{6}"></label>
-            <label class="admin-field"><span>Meeting time</span><input type="text" name="meeting" value="<?= portal_escape((string) $editCourse['meeting']) ?>"></label>
-            <label class="admin-field"><span>Room</span><input type="text" name="room" value="<?= portal_escape((string) $editCourse['room']) ?>"></label>
+            <div class="admin-opens-at admin-field--full" data-opens-at<?= $editCourse['status'] === 'closed' ? '' : ' hidden' ?>>
+                <label class="admin-field">
+                    <span>Open from</span>
+                    <input type="datetime-local" name="opens_at" value="<?= portal_escape(portal_course_opens_at_input_value((string) ($editCourse['opens_at'] ?? ''))) ?>">
+                </label>
+                <p class="admin-field-hint admin-field-hint--panel">Students cannot enter until this date and time. Leave empty to keep the course locked until you switch it to Open.</p>
+            </div>
+            <div class="admin-opens-at admin-field--full" data-archives-at<?= $editCourse['status'] === 'open' ? '' : ' hidden' ?>>
+                <label class="admin-field">
+                    <span>Archive after</span>
+                    <input type="datetime-local" name="archives_at" value="<?= portal_escape(portal_course_opens_at_input_value((string) ($editCourse['archives_at'] ?? ''))) ?>">
+                </label>
+                <p class="admin-field-hint admin-field-hint--panel">The course stays open until this date and time, then moves to Archived. Leave empty to keep it open until you archive it yourself.</p>
+            </div>
+            <label class="admin-field"><span>Accent colour</span>
+                <div class="admin-accent-picker" data-accent-picker>
+                    <input type="color" value="<?= portal_escape(portal_valid_course_accent((string) $editCourse['accent']) ? (string) $editCourse['accent'] : '#c1202f') ?>" aria-label="Pick accent colour">
+                    <input type="text" name="accent" value="<?= portal_escape(portal_valid_course_accent((string) $editCourse['accent']) ? (string) $editCourse['accent'] : '#c1202f') ?>" pattern="#[0-9a-fA-F]{6}" maxlength="7" spellcheck="false">
+                </div>
+            </label>
+            <div class="admin-schedule-editor admin-field--full" data-schedule-editor>
+                <p class="admin-schedule-label">Weekly timetable</p>
+                <p class="admin-field-hint admin-field-hint--panel">These slots are the same as the course calendar. Add one row per class meeting.</p>
+                <div data-schedule-rows>
+                    <?php
+                    if ($editCourseSchedule === []) {
+                        $adminRenderScheduleRow(null);
+                    } else {
+                        foreach ($editCourseSchedule as $slot) {
+                            $adminRenderScheduleRow($slot);
+                        }
+                    }
+                    ?>
+                </div>
+                <button type="button" class="admin-btn admin-btn--secondary admin-btn--sm" data-schedule-add>Add another slot</button>
+            </div>
             <label class="admin-field admin-field--full"><span>Notice</span><textarea name="notice" rows="2"><?= portal_escape((string) $editCourse['notice']) ?></textarea></label>
         </div>
         <footer class="admin-panel-footer">
@@ -2845,12 +3013,29 @@ $canEditOpenedUser = $editUser !== null
             <h3>Duplicate course</h3>
             <a class="admin-panel-close" href="<?= portal_escape($adminUrl('courses')) ?>" aria-label="Close">&times;</a>
         </header>
-        <p class="admin-field-hint admin-field-hint--panel">Copying metadata from <strong><?= portal_escape((string) $duplicateCourse['title']) ?></strong>. Enrolments, submissions, and materials are not copied.</p>
-        <div class="admin-form-grid">
-            <label class="admin-field"><span>New course title</span><input type="text" name="title" required value="<?= portal_escape((string) $duplicateCourse['title'] . ' (copy)') ?>"></label>
-            <label class="admin-field"><span>New full title</span><input type="text" name="full_title" required value="<?= portal_escape((string) $duplicateCourse['full_title'] . ' (copy)') ?>"></label>
-            <label class="admin-field"><span>New course code</span><input type="text" name="code" required placeholder="NEW-CODE-01"></label>
-            <label class="admin-field"><span>New slug</span><input type="text" name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="new-slug-2526"></label>
+        <?php
+        $dupYear = portal_academic_year_allowed((string) ($duplicateCourse['year_group'] ?? ''))
+            ? (string) $duplicateCourse['year_group']
+            : $currentAcademicYear;
+        ?>
+        <p class="admin-field-hint admin-field-hint--panel">Copying metadata from <strong><?= portal_escape((string) $duplicateCourse['title']) ?></strong>. Enrolments, submissions, and materials are not copied. The new code and slug are generated from the title and academic year.</p>
+        <div class="admin-form-grid" data-course-identity data-course-year-fixed="<?= portal_escape($dupYear) ?>">
+            <label class="admin-field"><span>New course title</span><input type="text" name="title" required data-course-title value="<?= portal_escape((string) $duplicateCourse['title'] . ' (copy)') ?>"></label>
+            <label class="admin-field"><span>Academic year</span>
+                <input type="text" value="<?= portal_escape($dupYear) ?>" readonly tabindex="-1">
+            </label>
+            <label class="admin-field">
+                <span>Full title</span>
+                <input type="text" data-course-full-title-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
+            <label class="admin-field">
+                <span>Course code</span>
+                <input type="text" data-course-code-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
+            <label class="admin-field">
+                <span>URL slug</span>
+                <input type="text" data-course-slug-preview readonly tabindex="-1" placeholder="Generated from title and year">
+            </label>
         </div>
         <footer class="admin-panel-footer">
             <a href="<?= portal_escape($adminUrl('courses')) ?>" class="admin-btn admin-btn--secondary">Cancel</a>
@@ -2891,11 +3076,176 @@ $canEditOpenedUser = $editUser !== null
         });
     });
 
+    document.querySelectorAll('[data-accent-picker]').forEach(function (wrap) {
+        var picker = wrap.querySelector('input[type="color"]');
+        var text = wrap.querySelector('input[name="accent"]');
+        if (!picker || !text) return;
+
+        function normaliseHex(value) {
+            var raw = String(value || '').trim();
+            if (/^#[0-9a-fA-F]{6}$/.test(raw)) return '#' + raw.slice(1).toLowerCase();
+            if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+                return '#' + raw.charAt(1) + raw.charAt(1) + raw.charAt(2) + raw.charAt(2) + raw.charAt(3) + raw.charAt(3);
+            }
+            return '';
+        }
+
+        picker.addEventListener('input', function () {
+            text.value = picker.value;
+        });
+        text.addEventListener('input', function () {
+            var hex = normaliseHex(text.value);
+            if (hex) picker.value = hex;
+        });
+        text.addEventListener('blur', function () {
+            var hex = normaliseHex(text.value);
+            if (hex) {
+                text.value = hex;
+                picker.value = hex;
+            }
+        });
+    });
+
     document.querySelectorAll('[data-admin-close]').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var dlg = btn.closest('dialog');
             if (dlg) dlg.close();
         });
+    });
+
+    function syncOpensAt(form) {
+        if (!form) return;
+        var status = form.querySelector('[data-course-status]');
+        if (!status) return;
+        var opensWrap = form.querySelector('[data-opens-at]');
+        var archivesWrap = form.querySelector('[data-archives-at]');
+        if (opensWrap) opensWrap.hidden = status.value !== 'closed';
+        if (archivesWrap) archivesWrap.hidden = status.value !== 'open';
+    }
+
+    document.querySelectorAll('.admin-panel-form [data-course-status]').forEach(function (select) {
+        var form = select.closest('form');
+        syncOpensAt(form);
+        select.addEventListener('change', function () { syncOpensAt(form); });
+    });
+
+    var prefixMap = <?= json_encode(portal_course_code_prefix_map(), JSON_UNESCAPED_UNICODE) ?>;
+    var stopWords = { a: 1, an: 1, the: 1, of: 1, and: 1, as: 1, for: 1, to: 1, in: 1, with: 1 };
+
+    function courseTitlePrefix(title) {
+        var n = String(title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!n) return '';
+        var keys = Object.keys(prefixMap).sort(function (a, b) { return b.length - a.length; });
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (n === key || n.indexOf(key + ' ') === 0) return prefixMap[key];
+        }
+        var words = n.split(' ').map(function (word) {
+            return word.replace(/[^a-z0-9]/g, '');
+        }).filter(function (word) {
+            return word && !stopWords[word];
+        });
+        if (!words.length) return 'CRS';
+        if (words.length >= 2) {
+            return words.slice(0, 4).map(function (word) { return word.charAt(0).toUpperCase(); }).join('');
+        }
+        var single = words[0];
+        return single.length <= 4 ? single.toUpperCase() : single.slice(0, 3).toUpperCase();
+    }
+
+    function compactYear(year) {
+        return String(year || '').replace('/', '');
+    }
+
+    function slugifyTitle(title) {
+        var slug = String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        return slug || 'course';
+    }
+
+    function syncCourseIdentity(root) {
+        var title = root.querySelector('[data-course-title]');
+        var yearField = root.querySelector('[data-course-year]');
+        var year = root.getAttribute('data-course-year-fixed') || (yearField ? yearField.value : '');
+        var prefix = courseTitlePrefix(title ? title.value : '');
+        var compact = compactYear(year);
+        var codeEl = root.querySelector('[data-course-code-preview]');
+        var slugEl = root.querySelector('[data-course-slug-preview]');
+        var fullTitleEl = root.querySelector('[data-course-full-title-preview]');
+        var originalTitle = root.getAttribute('data-original-title');
+        var originalYear = root.getAttribute('data-original-year');
+        var originalCode = root.getAttribute('data-original-code');
+        var unchanged = originalCode && title && title.value === originalTitle && year === originalYear;
+        if (codeEl) {
+            if (unchanged) codeEl.value = originalCode;
+            else if (prefix && compact) codeEl.value = prefix + '-' + compact + '-…';
+            else codeEl.value = '';
+        }
+        if (slugEl && compact) slugEl.value = slugifyTitle(title ? title.value : '') + '-' + compact;
+        if (fullTitleEl) {
+            var courseTitle = title ? String(title.value || '').trim() : '';
+            fullTitleEl.value = courseTitle && year ? year + ' — ' + courseTitle : '';
+        }
+    }
+
+    document.querySelectorAll('[data-course-identity]').forEach(function (root) {
+        var title = root.querySelector('[data-course-title]');
+        var yearField = root.querySelector('[data-course-year]');
+        var codeEl = root.querySelector('[data-course-code-preview]');
+        if (title && yearField && codeEl && codeEl.value) {
+            root.setAttribute('data-original-title', title.value);
+            root.setAttribute('data-original-year', yearField.value);
+            root.setAttribute('data-original-code', codeEl.value);
+        }
+        syncCourseIdentity(root);
+        if (title) title.addEventListener('input', function () { syncCourseIdentity(root); });
+        if (yearField) yearField.addEventListener('change', function () { syncCourseIdentity(root); });
+    });
+
+    document.querySelectorAll('[data-schedule-editor]').forEach(function (editor) {
+        var rows = editor.querySelector('[data-schedule-rows]');
+        var addBtn = editor.querySelector('[data-schedule-add]');
+        if (!rows) return;
+
+        function bindRemove(row) {
+            var btn = row.querySelector('[data-schedule-remove]');
+            if (!btn) return;
+            btn.addEventListener('click', function () {
+                if (rows.querySelectorAll('.admin-schedule-row').length <= 1) {
+                    row.querySelectorAll('input:not([type="hidden"]), select').forEach(function (field) {
+                        field.value = '';
+                    });
+                    var idField = row.querySelector('input[name="schedule_id[]"]');
+                    if (idField) idField.value = '';
+                    var dayField = row.querySelector('select[name="schedule_day[]"]');
+                    if (dayField && dayField.options.length) dayField.selectedIndex = 0;
+                    return;
+                }
+                row.remove();
+            });
+        }
+
+        rows.querySelectorAll('.admin-schedule-row').forEach(bindRemove);
+
+        if (addBtn) {
+            addBtn.addEventListener('click', function () {
+                var source = rows.querySelector('.admin-schedule-row');
+                if (!source) return;
+                var clone = source.cloneNode(true);
+                clone.querySelectorAll('input, select').forEach(function (field) {
+                    if (field.name === 'schedule_id[]') {
+                        field.value = '';
+                        return;
+                    }
+                    if (field.tagName === 'SELECT') {
+                        field.selectedIndex = 0;
+                        return;
+                    }
+                    field.value = '';
+                });
+                rows.appendChild(clone);
+                bindRemove(clone);
+            });
+        }
     });
 
     // Backdrop click + ensure no stuck modal top-layer on admin.
