@@ -119,6 +119,13 @@ test('teacher sensitive actions without CSRF do not write', async ({ page }) => 
       feedback: 'Forged mark',
     },
   });
+
+  await page.context().request.post(courseUrl, {
+    form: {
+      action: 'release_submission_grades',
+      item_id: '1',
+    },
+  });
 });
 
 test('admin bulk_security_action without CSRF is rejected', async ({ page }) => {

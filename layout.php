@@ -335,6 +335,13 @@ if ($publicPos !== false) {
                 if (window.matchMedia('(min-width: 901px)').matches) setNavOpen(false);
             });
         }
+
+        document.addEventListener('click', function (event) {
+            var locked = event.target.closest && event.target.closest('[data-course-locked]');
+            if (!locked) return;
+            event.preventDefault();
+            restartShake(locked);
+        }, true);
     })();
     </script>
 </body>

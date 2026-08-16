@@ -134,6 +134,27 @@ test('assignment submit before deadline, block after, grade/feedback peer-isolat
   });
   expect(countFixtureRecord('submission-score', `${itemId}|${fixtures.users.student}|88`)).toBe(1);
 
+  await signOut(page);
+  await signInAs(page, fixtures, 'student');
+  await page.goto(`${courseUrl}&section=gradebook`);
+  await expect(page.locator('.sub-slot-status--graded').filter({ hasText: '88%' })).toHaveCount(0);
+  await expect(page.getByText(/awaiting release/i).first()).toBeVisible();
+  await page.goto('/grades.php');
+  await expect(page.getByText(/88%/).first()).toHaveCount(0);
+  await signOut(page);
+
+  await signInAs(page, fixtures, 'teacher');
+  await page.goto(`${courseUrl}&section=gradebook`);
+  token = await csrfTokenFromPage(page);
+  await page.context().request.post(courseUrl, {
+    form: {
+      _token: token,
+      action: 'release_submission_grades',
+      item_id: String(itemId),
+    },
+    maxRedirects: 0,
+  });
+
   token = await csrfTokenFromPage(page);
   const annResp = await page.context().request.post(courseUrl, {
     form: {

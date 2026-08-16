@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../course_catalog.php';
+require_once __DIR__ . '/../customization.php';
 
 portal_require_login();
 
@@ -230,6 +231,7 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
          WHERE cs.user_id = ?
            AND cs.course_id IN ($placeholders)
            AND cs.marked_at != ''
+           AND cs.grades_released_at != ''
            AND (cs.grade_seen_at = '' OR cs.grade_seen_at IS NULL)
          ORDER BY cs.marked_at DESC
          LIMIT 6"
@@ -1146,13 +1148,38 @@ ob_start();
                     <a class="inline-action" href="courses.php">All</a>
                 </div>
 
-                <?php if (empty($catalog)): ?>
+                <?php
+                    $favIds = [];
+                    if (function_exists('portal_customization_preferences')) {
+                        $dashPrefs = portal_customization_preferences($uid);
+                        $favIds = is_array($dashPrefs['favorite_course_ids'] ?? null)
+                            ? $dashPrefs['favorite_course_ids']
+                            : [];
+                    }
+                    $quickFavorites = [];
+                    $quickRest = [];
+                    foreach ($catalog as $course) {
+                        $cid = (int) ($course['id'] ?? 0);
+                        if (in_array($cid, $favIds, true)) {
+                            $quickFavorites[] = $course;
+                        } elseif ((string) ($course['status'] ?? '') !== 'archived') {
+                            $quickRest[] = $course;
+                        }
+                    }
+                    $quickCatalog = array_slice(array_merge($quickFavorites, $quickRest), 0, 6);
+                ?>
+                <?php if ($catalog === []): ?>
                     <p class="dash-empty">No modules assigned yet.</p>
+                <?php elseif ($quickCatalog === []): ?>
+                    <p class="dash-empty">No current modules. <a href="courses.php?status=archived">View archived</a></p>
                 <?php else: ?>
                     <ul class="dash-course-list">
-                        <?php foreach (array_slice($catalog, 0, 6) as $course): ?>
+                        <?php foreach (array_slice($quickCatalog, 0, 6) as $course): ?>
+                            <?php $courseLocked = !portal_course_student_may_enter($course); ?>
                             <li>
-                                <a class="dash-course-link" href="course.php?course=<?= urlencode((string) $course['slug']) ?>">
+                                <a class="dash-course-link<?= $courseLocked ? ' is-course-locked' : '' ?>"
+                                   href="course.php?course=<?= urlencode((string) $course['slug']) ?>"
+                                   <?php if ($courseLocked): ?>data-course-locked="1" aria-disabled="true"<?php endif; ?>>
                                     <span class="dash-accent" style="background:<?= portal_escape((string) $course['accent']) ?>"></span>
                                     <span>
                                         <strong><?= portal_escape((string) $course['title']) ?></strong>

@@ -19,6 +19,7 @@ $db->prepare(
 )->execute([$uid]);
 
 $toMark = [];
+$heldGrades = [];
 $gradedByMe = [];
 $moduleStats = [];
 $staffMarked = [];
@@ -73,7 +74,49 @@ if ($isStaff) {
         );
 
         $stmt = $db->prepare(
-            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.user_id,
+            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.user_id, cs.grades_released_at,
+                    cfi.title AS slot_title, cfi.submission_weight, cs.item_id,
+                    c.slug, c.title AS course_title, c.code, c.accent,
+                    u.name AS student_name, u.initials AS student_initials
+             FROM course_submissions cs
+             JOIN course_folder_items cfi ON cfi.id = cs.item_id
+             JOIN courses c ON c.id = cs.course_id
+             JOIN users u ON u.id = cs.user_id
+             WHERE cs.course_id IN ($placeholders)
+               AND cs.marked_at != ''
+               AND cs.score IS NOT NULL
+               AND (cs.grades_released_at IS NULL OR trim(cs.grades_released_at) = '')
+             ORDER BY cs.marked_at DESC
+             LIMIT 40"
+        );
+        $stmt->execute($assignedIds);
+        $heldGrades = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $activityHeldStmt = $db->prepare(
+            "SELECT t.id, t.percentage AS score, t.updated_at AS marked_at, t.submitted_at, t.user_id,
+                    a.title AS slot_title, a.grade_weight AS submission_weight, a.id AS activity_id,
+                    c.slug, c.title AS course_title, c.code, c.accent,
+                    u.name AS student_name, u.initials AS student_initials,
+                    'activity' AS grade_source
+             FROM activity_attempts t
+             JOIN course_activities a ON a.id = t.activity_id
+             JOIN courses c ON c.id = t.course_id
+             JOIN users u ON u.id = t.user_id
+             WHERE t.course_id IN ($placeholders)
+               AND t.status = 'marked'
+               AND t.percentage IS NOT NULL
+             ORDER BY t.updated_at DESC
+             LIMIT 40"
+        );
+        $activityHeldStmt->execute($assignedIds);
+        $heldGrades = array_merge($heldGrades, $activityHeldStmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+        usort($heldGrades, static fn(array $left, array $right): int =>
+            strcmp((string) ($right['marked_at'] ?? ''), (string) ($left['marked_at'] ?? ''))
+        );
+        $heldGrades = array_slice($heldGrades, 0, 40);
+
+        $stmt = $db->prepare(
+            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.user_id, cs.grades_released_at,
                     cfi.title AS slot_title, cfi.submission_weight,
                     c.slug, c.title AS course_title, c.code, c.accent,
                     u.name AS student_name, u.initials AS student_initials
@@ -84,6 +127,7 @@ if ($isStaff) {
              WHERE cs.course_id IN ($placeholders)
                AND cs.marked_at != ''
                AND cs.score IS NOT NULL
+               AND cs.grades_released_at != ''
              ORDER BY cs.marked_at DESC
              LIMIT 40"
         );
@@ -122,6 +166,12 @@ if ($isStaff) {
                     SUM(CASE WHEN cs.id IS NOT NULL
                               AND cs.marked_at != ''
                               AND cs.score IS NOT NULL
+                              AND (cs.grades_released_at IS NULL OR trim(cs.grades_released_at) = '')
+                             THEN 1 ELSE 0 END) AS held_count,
+                    SUM(CASE WHEN cs.id IS NOT NULL
+                              AND cs.marked_at != ''
+                              AND cs.score IS NOT NULL
+                              AND cs.grades_released_at != ''
                              THEN 1 ELSE 0 END) AS marked_count
              FROM courses c
              LEFT JOIN course_submissions cs ON cs.course_id = c.id
@@ -136,6 +186,7 @@ if ($isStaff) {
             "SELECT t.course_id,
                     COUNT(*) AS total_submissions,
                     SUM(CASE WHEN t.status = 'awaiting_manual_marking' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN t.status = 'marked' THEN 1 ELSE 0 END) AS held_count,
                     SUM(CASE WHEN t.status = 'released' THEN 1 ELSE 0 END) AS marked_count
              FROM activity_attempts t
              JOIN course_activities a ON a.id = t.activity_id
@@ -154,6 +205,7 @@ if ($isStaff) {
             if ($activityStat !== null) {
                 $module['total_submissions'] = (int) $module['total_submissions'] + (int) $activityStat['total_submissions'];
                 $module['pending_count'] = (int) $module['pending_count'] + (int) $activityStat['pending_count'];
+                $module['held_count'] = (int) ($module['held_count'] ?? 0) + (int) ($activityStat['held_count'] ?? 0);
                 $module['marked_count'] = (int) $module['marked_count'] + (int) $activityStat['marked_count'];
             }
         }
@@ -165,7 +217,8 @@ if ($isStaff) {
              JOIN course_folder_items cfi ON cfi.id = cs.item_id
              WHERE cs.course_id IN ($placeholders)
                AND cs.marked_at != ''
-               AND cs.score IS NOT NULL"
+               AND cs.score IS NOT NULL
+               AND cs.grades_released_at != ''"
         );
         $stmt->execute($assignedIds);
         $markedByCourse = [];
@@ -185,7 +238,7 @@ if ($isStaff) {
                  WHERE a.course_id = ?
                    AND (a.include_in_gradebook = 1 OR t.status = 'released')
                    AND a.status = 'published'
-                   AND t.status IN ('marked','released')
+                   AND t.status = 'released'
                    AND t.percentage IS NOT NULL"
             );
             $actStmt->execute([$cid]);
@@ -209,14 +262,14 @@ if ($isStaff) {
 
     $page_title = 'Grades | ' . portal_school_name();
     $page_eyebrow = 'Teaching';
-    $page_heading = 'Grades and marking';
-    $page_description = 'Review marking queues, returned work, and module grade health.';
+    $page_heading = 'Marking';
+    $page_description = 'Mark work, hold scores until you release them, and check what students can already see.';
 } else {
     $courseIds = portal_enrolled_course_ids($uid);
     if (!empty($courseIds)) {
         $placeholders = implode(',', array_fill(0, count($courseIds), '?'));
         $stmt = $db->prepare(
-            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at,
+            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.grades_released_at,
                     cfi.title AS slot_title, cfi.submission_weight,
                     c.slug, c.title AS course_title, c.code, c.accent,
                     c.id AS course_id, 'submission' AS grade_source
@@ -297,7 +350,15 @@ $active_page = 'grades';
 
 $studentMarked = array_values(array_filter(
     $studentGrades,
-    static fn(array $g): bool => $g['score'] !== null && trim((string) ($g['marked_at'] ?? '')) !== ''
+    static function (array $g): bool {
+        if ($g['score'] === null || trim((string) ($g['marked_at'] ?? '')) === '') {
+            return false;
+        }
+        if (($g['grade_source'] ?? '') === 'activity') {
+            return true;
+        }
+        return portal_submission_grades_released($g);
+    }
 ));
 $studentPending = count($studentGrades) - count($studentMarked);
 $studentAverage = !empty($studentMarked) ? portal_weighted_grade_average($studentMarked) : null;
@@ -313,6 +374,11 @@ ob_start();
             <span>To mark</span>
             <strong><?= count($toMark) ?></strong>
             <small>Oldest submissions first</small>
+        </article>
+        <article class="grades-summary-card<?= count($heldGrades) > 0 ? ' grades-summary-card--accent' : '' ?>">
+            <span>Held</span>
+            <strong><?= count($heldGrades) ?></strong>
+            <small>Saved, not released to students</small>
         </article>
         <article class="grades-summary-card">
             <span>Returned</span>
@@ -399,11 +465,12 @@ ob_start();
                 <?php foreach ($moduleStats as $module): ?>
                     <?php
                         $pendingCount = (int) ($module['pending_count'] ?? 0);
+                        $heldCount = (int) ($module['held_count'] ?? 0);
                         $markedCount = (int) ($module['marked_count'] ?? 0);
                         $totalCount = (int) ($module['total_submissions'] ?? 0);
                         $moduleAverage = $module['average'] ?? null;
                     ?>
-                    <a class="grades-health-card<?= $pendingCount > 0 ? ' has-pending' : '' ?>"
+                    <a class="grades-health-card<?= ($pendingCount > 0 || $heldCount > 0) ? ' has-pending' : '' ?>"
                        href="course.php?course=<?= urlencode((string) $module['slug']) ?>&section=gradebook">
                         <span class="grades-module-accent" style="background:<?= portal_escape((string) $module['accent']) ?>"></span>
                         <span class="grades-health-main">
@@ -412,6 +479,9 @@ ob_start();
                         </span>
                         <span class="grades-health-metrics">
                             <span><?= $pendingCount ?> pending</span>
+                            <?php if ($heldCount > 0): ?>
+                                <span><?= $heldCount ?> held</span>
+                            <?php endif; ?>
                             <span><?= $markedCount ?> returned</span>
                             <strong><?= $moduleAverage !== null ? (int) $moduleAverage . '%' : '—' ?></strong>
                         </span>
@@ -421,6 +491,53 @@ ob_start();
         <?php endif; ?>
     </article>
     </div>
+
+    <article class="card-shell grades-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Hold</p>
+                <h3 class="card-title">Saved, not released</h3>
+            </div>
+            <span class="chip"><?= count($heldGrades) ?></span>
+        </div>
+
+        <?php if (empty($heldGrades)): ?>
+            <div class="grades-empty-state grades-empty-state--compact">
+                <h4>Nothing held</h4>
+                <p>Marks you save without releasing will appear here until you publish them to students.</p>
+            </div>
+        <?php else: ?>
+            <div class="grades-work-list">
+                <div class="grades-simple-row grades-simple-row--head grades-simple-row--staff grades-row-head--hidden" role="row">
+                    <span role="columnheader">Student</span>
+                    <span role="columnheader">Work</span>
+                    <span role="columnheader">Mark</span>
+                </div>
+                <?php foreach ($heldGrades as $row): ?>
+                    <?php
+                        $heldHref = (($row['grade_source'] ?? '') === 'activity')
+                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
+                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
+                    ?>
+                    <a class="grades-work-row is-pending"
+                       href="<?= portal_escape($heldHref) ?>">
+                        <span class="grades-person">
+                            <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
+                            <span>
+                                <strong><?= portal_escape((string) $row['student_name']) ?></strong>
+                                <small><?= portal_escape((string) $row['code']) ?> · <?= portal_escape((string) $row['course_title']) ?></small>
+                            </span>
+                        </span>
+                        <span class="grades-work-main">
+                            <strong><?= portal_escape((string) $row['slot_title']) ?></strong>
+                            <small>Saved <?= portal_escape(portal_relative_time((string) ($row['marked_at'] ?? ''))) ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
+                        </span>
+                        <span class="grades-status grades-status--held"><?= (int) $row['score'] ?>% held</span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </article>
 
     <article class="card-shell grades-panel">
         <div class="section-head">
@@ -505,7 +622,15 @@ ob_start();
                 <?php
                     $moduleMarked = array_values(array_filter(
                         $module['rows'],
-                        static fn(array $g): bool => $g['score'] !== null && trim((string) ($g['marked_at'] ?? '')) !== ''
+                        static function (array $g): bool {
+                            if ($g['score'] === null || trim((string) ($g['marked_at'] ?? '')) === '') {
+                                return false;
+                            }
+                            if (($g['grade_source'] ?? '') === 'activity') {
+                                return true;
+                            }
+                            return portal_submission_grades_released($g);
+                        }
                     ));
                     $modulePending = count($module['rows']) - count($moduleMarked);
                     $moduleAvg = !empty($moduleMarked) ? portal_weighted_grade_average($moduleMarked) : null;
@@ -536,16 +661,22 @@ ob_start();
                         </div>
                         <?php foreach ($module['rows'] as $row): ?>
                             <?php
-                                $isMarked = $row['score'] !== null && trim((string) ($row['marked_at'] ?? '')) !== '';
-                                $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? ''));
                                 $isActivityGrade = (($row['grade_source'] ?? '') === 'activity');
+                                $isMarked = $isActivityGrade
+                                    ? ($row['score'] !== null && trim((string) ($row['marked_at'] ?? '')) !== '')
+                                    : (portal_submission_is_marked($row) && portal_submission_grades_released($row));
+                                $isHeld = !$isActivityGrade && portal_submission_is_marked($row) && !portal_submission_grades_released($row);
+                                $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? ''));
                                 $awaitingTeacher = $isActivityGrade && (($row['activity_status'] ?? '') === 'awaiting_manual_marking');
                                 $rowHref = $isActivityGrade
                                     ? 'activity.php?id=' . (int) ($row['activity_id'] ?? 0)
                                     : 'course.php?course=' . urlencode($module['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
                                 $statusNote = $isMarked && $markedTs
                                     ? 'Marked ' . date('j M Y', $markedTs)
-                                    : ($awaitingTeacher ? 'Needs teacher marking' : 'Awaiting mark');
+                                    : ($isHeld || $awaitingTeacher ? 'Submitted' : 'Awaiting mark');
+                                $scoreTag = $isMarked
+                                    ? (int) $row['score'] . '%'
+                                    : ($isHeld ? 'Awaiting release' : 'Not graded');
                             ?>
                             <a class="grades-simple-row<?= $isMarked ? ' is-marked' : ' is-pending' ?>"
                                role="row"
@@ -559,8 +690,8 @@ ob_start();
                                     </strong>
                                     <small><?= portal_escape($statusNote) ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
                                 </span>
-                                <span class="grades-simple-score<?= $isMarked ? ' is-marked' : '' ?><?= $awaitingTeacher ? ' is-awaiting' : '' ?>" role="cell">
-                                    <?= $isMarked ? (int) $row['score'] . '%' : ($awaitingTeacher ? 'Pending' : '—') ?>
+                                <span class="grades-simple-score<?= $isMarked ? ' is-marked' : '' ?><?= ($awaitingTeacher || $isHeld) ? ' is-awaiting' : '' ?>" role="cell">
+                                    <?= portal_escape($scoreTag) ?>
                                 </span>
                             </a>
                         <?php endforeach; ?>

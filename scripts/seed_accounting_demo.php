@@ -506,14 +506,14 @@ if ((int) ($existingSub->fetchColumn() ?: 0) === 0) {
         "INSERT INTO course_submissions
             (item_id, course_id, user_id, filename, filepath, filesize, submitted_at,
              score, feedback, marked_at, marked_by, receipt_number, submission_text, text_word_count,
-             eula_accepted_at, process_edit_seconds)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             eula_accepted_at, process_edit_seconds, grades_released_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )->execute([
         $slotId, $courseId, $student1Id,
         '', '', 0, $now,
         88,
         'Clear structure and totals match. Watch drawings vs capital next time.',
-        $now, $teacherId, $receipt, $essay, $wordCount, $now, 90,
+        $now, $teacherId, $receipt, $essay, $wordCount, $now, 90, $now,
     ]);
     portal_notify_user(
         $student1Id,

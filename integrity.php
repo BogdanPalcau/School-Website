@@ -4178,6 +4178,11 @@ if (!function_exists('portal_render_submission_review')) {
         $text        = (string) ($submission['submission_text'] ?? '');
         $score       = $submission['score'] ?? null;
         $feedback    = (string) ($submission['feedback'] ?? '');
+        $gradeReleased = $isTeacher || portal_submission_grades_released($submission);
+        $studentScore = $gradeReleased ? $score : null;
+        $studentFeedback = $gradeReleased ? $feedback : '';
+        $gradeHeld = $isTeacher && portal_submission_is_marked($submission) && !portal_submission_grades_released($submission);
+        $visibleAnnotations = ($isTeacher || $gradeReleased) ? $annotations : [];
 
         // Preview strategy (browser-side loaders in course.php). DOCX/TXT render
         // in-page so teachers can select text and leave annotations. PDF/legacy
@@ -4224,8 +4229,8 @@ if (!function_exists('portal_render_submission_review')) {
                 <button type="button" class="rvw-mobile-tab" role="tab" aria-selected="false" data-rvw-mobile-panel="doc">Document</button>
                 <button type="button" class="rvw-mobile-tab is-active" role="tab" aria-selected="true" data-rvw-mobile-panel="results">
                     Grade &amp; feedback
-                    <?php if ($score !== null): ?>
-                        <span class="rvw-mobile-tab-badge"><?= (int) $score ?></span>
+                    <?php if ($studentScore !== null): ?>
+                        <span class="rvw-mobile-tab-badge"><?= (int) $studentScore ?></span>
                     <?php endif; ?>
                 </button>
             </div>
@@ -4324,7 +4329,7 @@ if (!function_exists('portal_render_submission_review')) {
                                     <div class="rvw-grade-posted-head">
                                         <span class="rvw-grade-saved-icon" aria-hidden="true">✓</span>
                                         <div class="rvw-grade-posted-score">
-                                            <p class="rvw-grade-saved-label">Grade posted</p>
+                                            <p class="rvw-grade-saved-label" data-grade-saved-label><?= $gradeHeld ? 'Grade saved — not released' : 'Grade released' ?></p>
                                             <span class="rvw-grade-big" data-grade-score-display><?= $score !== null ? (int) $score : '' ?><small>/100</small></span>
                                         </div>
                                     </div>
@@ -4351,19 +4356,27 @@ if (!function_exists('portal_render_submission_review')) {
                                     <button type="button" class="button button--sm button--ghost rvw-grade-cancel<?= $score !== null ? ' is-visible' : '' ?>">Cancel</button>
                                 </div>
                             </form>
+                            <form method="POST" class="rvw-release-form<?= $gradeHeld ? '' : ' is-hidden' ?>" data-grade-release-form>
+                                <input type="hidden" name="_token" value="<?= portal_escape($csrfToken) ?>">
+                                <input type="hidden" name="action" value="release_submission_grades">
+                                <input type="hidden" name="submission_id" value="<?= $subId ?>">
+                                <button type="submit" class="button button--sm">Release this grade</button>
+                            </form>
                         </div>
                     <?php else: ?>
                         <div class="rvw-grade-display">
-                            <?php if ($score !== null): ?>
-                                <span class="rvw-grade-big"><?= (int) $score ?><small>/100</small></span>
+                            <?php if ($studentScore !== null): ?>
+                                <span class="rvw-grade-big"><?= (int) $studentScore ?><small>/100</small></span>
+                            <?php elseif (portal_submission_is_marked($submission)): ?>
+                                <span class="rvw-grade-pending">Awaiting release</span>
                             <?php else: ?>
                                 <span class="rvw-grade-pending">Not graded yet</span>
                             <?php endif; ?>
                         </div>
-                        <?php if ($feedback !== ''): ?>
+                        <?php if ($studentFeedback !== ''): ?>
                             <div class="rvw-feedback-box is-visible">
                                 <p class="rvw-feedback-box-label">Feedback</p>
-                                <p class="rvw-feedback-box-text"><?= portal_escape($feedback) ?></p>
+                                <p class="rvw-feedback-box-text"><?= portal_escape($studentFeedback) ?></p>
                             </div>
                         <?php endif; ?>
                     <?php endif; ?>
@@ -4397,7 +4410,7 @@ if (!function_exists('portal_render_submission_review')) {
                     'comment'     => (string) $a['comment'],
                     'author'      => (string) ($a['author_name'] ?? ''),
                 ];
-            }, $annotations), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?></script>
+            }, $visibleAnnotations), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?></script>
         </div>
         <?php
         return trim((string) ob_get_clean());
