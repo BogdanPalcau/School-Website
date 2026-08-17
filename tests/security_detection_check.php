@@ -191,6 +191,111 @@ expect_true(
     'select_all_matching is checked as exact string "1" (not empty("0") quirk)'
 );
 
+// ── Trusted-proxy client IP chain ─────────────────────────────────────────────
+$trustedSettingStmt = $db->prepare(
+    "SELECT setting_value FROM portal_site_settings WHERE setting_key = 'trusted_proxies'"
+);
+$trustedSettingStmt->execute();
+$trustedSettingValue = $trustedSettingStmt->fetchColumn();
+$trustedSettingExisted = $trustedSettingValue !== false;
+$serverKeys = ['REMOTE_ADDR', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'];
+$savedServer = [];
+foreach ($serverKeys as $serverKey) {
+    $savedServer[$serverKey] = [
+        'exists' => array_key_exists($serverKey, $_SERVER),
+        'value' => $_SERVER[$serverKey] ?? null,
+    ];
+}
+try {
+    portal_site_setting_set('trusted_proxies', '10.0.0.0/8');
+    $_SERVER['REMOTE_ADDR'] = '10.0.0.10';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77, 203.0.113.24';
+    unset($_SERVER['HTTP_X_REAL_IP']);
+
+    expect_true(
+        portal_client_ip() === '203.0.113.24',
+        'trusted proxy ignores spoofed leftmost forwarded address'
+    );
+
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77, 203.0.113.24, 10.0.0.11';
+    expect_true(
+        portal_client_ip() === '203.0.113.24',
+        'trusted proxy chain skips trusted internal hops from the right'
+    );
+
+    portal_site_setting_set('trusted_proxies', '0.0.0.0/0');
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.24';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '2001:db8::77';
+    expect_true(
+        !portal_ip_in_cidr('203.0.113.24', '0.0.0.0/0')
+            && portal_client_ip() === '203.0.113.24',
+        'universal CIDR cannot make direct clients trusted or enable IPv6 spoofing'
+    );
+} finally {
+    if ($trustedSettingExisted) {
+        portal_site_setting_set('trusted_proxies', (string) $trustedSettingValue);
+    } else {
+        $db->exec("DELETE FROM portal_site_settings WHERE setting_key = 'trusted_proxies'");
+        portal_site_settings_reload();
+    }
+    foreach ($savedServer as $serverKey => $saved) {
+        if ($saved['exists']) {
+            $_SERVER[$serverKey] = $saved['value'];
+        } else {
+            unset($_SERVER[$serverKey]);
+        }
+    }
+}
+
+// ── Account-action role hierarchy ────────────────────────────────────────────
+$statusSuffix = substr($tag, -8);
+$statusActorUsername = 'sec_status_actor_' . $statusSuffix;
+$statusTargetUsername = 'sec_status_target_' . $statusSuffix;
+$statusUserIds = [];
+try {
+    $insertUser = $db->prepare(
+        'INSERT INTO users (username, email, password_hash, name, year, programme, initials, role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $insertUser->execute([
+        $statusActorUsername,
+        $statusActorUsername . '@example.test',
+        password_hash('SecurityPass123!', PASSWORD_DEFAULT),
+        'Status Actor',
+        'Year 11',
+        'Security Test',
+        'SA',
+        'admin',
+    ]);
+    $statusActorId = (int) $db->lastInsertId();
+    $statusUserIds[] = $statusActorId;
+
+    $insertUser->execute([
+        $statusTargetUsername,
+        $statusTargetUsername . '@example.test',
+        password_hash('SecurityPass123!', PASSWORD_DEFAULT),
+        'Status Target',
+        'Year 11',
+        'Security Test',
+        'ST',
+        'admin',
+    ]);
+    $statusTargetId = (int) $db->lastInsertId();
+    $statusUserIds[] = $statusTargetId;
+
+    $statusResult = portal_set_user_account_status($statusTargetId, 'banned', $statusActorId, 'role hierarchy check');
+    expect_true(empty($statusResult['ok']), 'non-owner admin cannot ban another admin');
+
+    $statusCheck = $db->prepare('SELECT account_status FROM users WHERE id = ?');
+    $statusCheck->execute([$statusTargetId]);
+    expect_true($statusCheck->fetchColumn() === 'active', 'denied peer-admin ban leaves account active');
+} finally {
+    $deleteStatusUser = $db->prepare('DELETE FROM users WHERE id = ?');
+    foreach (array_reverse($statusUserIds) as $statusUserId) {
+        $deleteStatusUser->execute([$statusUserId]);
+    }
+}
+
 $cleanup();
 
 if ($failures > 0) {

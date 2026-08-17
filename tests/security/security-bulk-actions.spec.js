@@ -64,6 +64,21 @@ test('security activity shows IP column, bulk bar, and IP filter links', async (
   }
 });
 
+test('failed-login victims cannot be disciplined from attacker events', async ({ page }) => {
+  await signIn(page, fixtures.users.admin, fixtures.password);
+  await page.goto(`/admin.php?section=security&sec_period=24h&sec_ip=${encodeURIComponent(seeded.ip)}`);
+
+  const victimRow = page.locator('#security-events-table tbody tr').filter({
+    has: page.locator(`.security-event-check[value="${seeded.victimEventId}"]`),
+  });
+  await expect(victimRow).toContainText(fixtures.users.student);
+  await expect(victimRow.getByRole('button', { name: /take action/i })).toHaveCount(0);
+
+  await victimRow.getByRole('button', { name: /view profile/i }).click();
+  await expect(page.locator('#security-profile-overlay')).toBeVisible();
+  await expect(page.locator('#security-profile-action-grid button')).toHaveCount(0);
+});
+
 test('bulk checkboxes support select-all on page and select-all matching', async ({ page }) => {
   await signIn(page, fixtures.users.admin, fixtures.password);
   await page.goto(`/admin.php?section=security&sec_period=24h&sec_ip=${encodeURIComponent(seeded.ip)}`);

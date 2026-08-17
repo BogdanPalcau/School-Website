@@ -4032,6 +4032,9 @@ if (!function_exists('portal_activity_start_attempt')) {
         if ($activity === null) {
             return ['ok' => false, 'error' => 'Activity not found.'];
         }
+        if (portal_user_is_restricted(portal_find_user_by_id($userId))) {
+            return ['ok' => false, 'error' => 'Your account is restricted and cannot submit coursework.'];
+        }
 
         $can = portal_activity_can_start($activity, $userId);
         if (empty($can['ok'])) {
@@ -4928,6 +4931,9 @@ if (!function_exists('portal_activity_submit_attempt')) {
                 return ['ok' => true, 'attempt' => $attempt, 'already_submitted' => true];
             }
             return ['ok' => false, 'error' => 'This attempt cannot be submitted.'];
+        }
+        if (portal_user_is_restricted(portal_find_user_by_id($userId))) {
+            return ['ok' => false, 'error' => 'Your account is restricted and cannot submit coursework.'];
         }
 
         $db->prepare(

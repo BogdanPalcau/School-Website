@@ -48,6 +48,27 @@ expect_true(
     'a successful AJAX ask_question responds with JSON (html of the new card) instead of redirecting'
 );
 
+$muteGuardPositions = [];
+$offset = 0;
+while (($mutePos = strpos($src, 'portal_user_is_muted($me)', $offset)) !== false) {
+    $muteGuardPositions[] = $mutePos;
+    $offset = $mutePos + 1;
+}
+$questionInsertPositions = [];
+$offset = 0;
+while (($insertPos = strpos($src, 'INSERT INTO course_video_questions', $offset)) !== false) {
+    $questionInsertPositions[] = $insertPos;
+    $offset = $insertPos + 1;
+}
+expect_true(
+    count($muteGuardPositions) >= 2
+        && count($questionInsertPositions) >= 2
+        && $muteGuardPositions[0] < $questionInsertPositions[0]
+        && $muteGuardPositions[1] > $questionInsertPositions[0]
+        && $muteGuardPositions[1] < $questionInsertPositions[1],
+    'muted accounts are blocked before both AJAX and fallback question inserts'
+);
+
 // The composer's submit handler must intercept the native form submission.
 $jsSubmitPos = strpos($src, "composer.addEventListener('submit'");
 expect_true($jsSubmitPos !== false, 'composer submit listener is present');
