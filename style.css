@@ -16065,6 +16065,12 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     align-items: start;
 }
 
+.grades-staff-queues {
+    display: grid;
+    gap: 18px;
+    min-width: 0;
+}
+
 .grades-panel {
     display: grid;
     gap: 14px;
@@ -16134,6 +16140,16 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     background: #fffaf5;
 }
 
+.grades-work-row.is-release {
+    background: #f7f6fb;
+}
+
+.grades-work-row.is-release:hover {
+    background: #f3f0ff;
+    border-color: rgba(76, 61, 153, 0.22);
+    box-shadow: inset 3px 0 0 #6b5bb5;
+}
+
 .grades-person {
     display: flex;
     align-items: center;
@@ -16197,7 +16213,8 @@ details.rvw-card[open]:not([data-static="1"]) .rvw-card-head::after { transform:
     border-color: #f0d2a0;
 }
 
-.grades-status--held {
+.grades-status--held,
+.grades-status--release {
     background: #f3f0ff;
     color: #4c3d99;
     border-color: #c9bff0;

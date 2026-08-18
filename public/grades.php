@@ -20,7 +20,6 @@ $db->prepare(
 
 $toMark = [];
 $heldGrades = [];
-$gradedByMe = [];
 $moduleStats = [];
 $staffMarked = [];
 $staffAverage = null;
@@ -103,6 +102,7 @@ if ($isStaff) {
              JOIN courses c ON c.id = t.course_id
              JOIN users u ON u.id = t.user_id
              WHERE t.course_id IN ($placeholders)
+               AND a.include_in_gradebook = 1
                AND t.status = 'marked'
                AND t.percentage IS NOT NULL
              ORDER BY t.updated_at DESC
@@ -114,48 +114,6 @@ if ($isStaff) {
             strcmp((string) ($right['marked_at'] ?? ''), (string) ($left['marked_at'] ?? ''))
         );
         $heldGrades = array_slice($heldGrades, 0, 40);
-
-        $stmt = $db->prepare(
-            "SELECT cs.id, cs.score, cs.marked_at, cs.submitted_at, cs.user_id, cs.grades_released_at,
-                    cfi.title AS slot_title, cfi.submission_weight,
-                    c.slug, c.title AS course_title, c.code, c.accent,
-                    u.name AS student_name, u.initials AS student_initials
-             FROM course_submissions cs
-             JOIN course_folder_items cfi ON cfi.id = cs.item_id
-             JOIN courses c ON c.id = cs.course_id
-             JOIN users u ON u.id = cs.user_id
-             WHERE cs.course_id IN ($placeholders)
-               AND cs.marked_at != ''
-               AND cs.score IS NOT NULL
-               AND cs.grades_released_at != ''
-             ORDER BY cs.marked_at DESC
-             LIMIT 40"
-        );
-        $stmt->execute($assignedIds);
-        $gradedByMe = $stmt->fetchAll();
-
-        $activityReturnedStmt = $db->prepare(
-            "SELECT t.id, t.percentage AS score, t.updated_at AS marked_at, t.submitted_at, t.user_id,
-                    a.title AS slot_title, a.grade_weight AS submission_weight, a.id AS activity_id,
-                    c.slug, c.title AS course_title, c.code, c.accent,
-                    u.name AS student_name, u.initials AS student_initials,
-                    'activity' AS grade_source
-             FROM activity_attempts t
-             JOIN course_activities a ON a.id = t.activity_id
-             JOIN courses c ON c.id = t.course_id
-             JOIN users u ON u.id = t.user_id
-             WHERE t.course_id IN ($placeholders)
-               AND t.status = 'released'
-               AND t.percentage IS NOT NULL
-             ORDER BY t.updated_at DESC
-             LIMIT 40"
-        );
-        $activityReturnedStmt->execute($assignedIds);
-        $gradedByMe = array_merge($gradedByMe, $activityReturnedStmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
-        usort($gradedByMe, static fn(array $left, array $right): int =>
-            strcmp((string) ($right['marked_at'] ?? ''), (string) ($left['marked_at'] ?? ''))
-        );
-        $gradedByMe = array_slice($gradedByMe, 0, 40);
 
         $stmt = $db->prepare(
             "SELECT c.id, c.slug, c.title, c.code, c.accent,
@@ -263,7 +221,7 @@ if ($isStaff) {
     $page_title = 'Grades | ' . portal_school_name();
     $page_eyebrow = 'Teaching';
     $page_heading = 'Marking';
-    $page_description = 'Mark work, hold scores until you release them, and check what students can already see.';
+    $page_description = 'Mark work that needs a score, then release it when students should see it.';
 } else {
     $courseIds = portal_enrolled_course_ids($uid);
     if (!empty($courseIds)) {
@@ -373,17 +331,12 @@ ob_start();
         <article class="grades-summary-card grades-summary-card--queue<?= count($toMark) > 0 ? ' grades-summary-card--accent' : '' ?>">
             <span>To mark</span>
             <strong><?= count($toMark) ?></strong>
-            <small>Oldest submissions first</small>
+            <small>Needs a teacher score</small>
         </article>
         <article class="grades-summary-card<?= count($heldGrades) > 0 ? ' grades-summary-card--accent' : '' ?>">
-            <span>Held</span>
+            <span>To release</span>
             <strong><?= count($heldGrades) ?></strong>
-            <small>Saved, not released to students</small>
-        </article>
-        <article class="grades-summary-card">
-            <span>Returned</span>
-            <strong><?= count($gradedByMe) ?></strong>
-            <small>Latest 40 shown</small>
+            <small>Scored, not visible to students</small>
         </article>
         <article class="grades-summary-card">
             <span>Weighted avg</span>
@@ -398,21 +351,29 @@ ob_start();
     </div>
 
     <div class="grades-staff-layout">
+    <div class="grades-staff-queues">
+    <?php if (empty($toMark) && empty($heldGrades)): ?>
+        <article class="card-shell grades-panel">
+            <div class="grades-empty-state">
+                <h4>Caught up</h4>
+                <p>Nothing to mark or release right now.</p>
+            </div>
+        </article>
+    <?php else: ?>
     <article class="card-shell grades-panel grades-panel--queue">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Queue</p>
-                <h3 class="card-title">Left to grade</h3>
+                <p class="eyebrow">Mark</p>
+                <h3 class="card-title">To mark</h3>
             </div>
             <span class="chip"><?= count($toMark) ?></span>
         </div>
 
         <?php if (empty($toMark)): ?>
-            <div class="grades-empty-state">
-                <h4>All clear</h4>
-                <p>There are no submitted assignments waiting for a mark.</p>
+            <div class="grades-empty-state grades-empty-state--compact">
+                <h4>Nothing to mark</h4>
+                <p>Submitted work that still needs a score will appear here.</p>
             </div>
-            <p class="grades-empty-line">You’re caught up — nothing waiting to be marked.</p>
         <?php else: ?>
             <div class="grades-work-list">
                 <div class="grades-simple-row grades-simple-row--head grades-simple-row--staff grades-row-head--hidden" role="row">
@@ -446,6 +407,55 @@ ob_start();
         <?php endif; ?>
     </article>
 
+    <article class="card-shell grades-panel grades-panel--release">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Release</p>
+                <h3 class="card-title">To release</h3>
+            </div>
+            <span class="chip"><?= count($heldGrades) ?></span>
+        </div>
+
+        <?php if (empty($heldGrades)): ?>
+            <div class="grades-empty-state grades-empty-state--compact">
+                <h4>Nothing to release</h4>
+                <p>Saved and auto-marked scores stay here until you publish them.</p>
+            </div>
+        <?php else: ?>
+            <div class="grades-work-list">
+                <div class="grades-simple-row grades-simple-row--head grades-simple-row--staff grades-row-head--hidden" role="row">
+                    <span role="columnheader">Student</span>
+                    <span role="columnheader">Work</span>
+                    <span role="columnheader">Action</span>
+                </div>
+                <?php foreach ($heldGrades as $row): ?>
+                    <?php
+                        $heldHref = (($row['grade_source'] ?? '') === 'activity')
+                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
+                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
+                    ?>
+                    <a class="grades-work-row is-release"
+                       href="<?= portal_escape($heldHref) ?>">
+                        <span class="grades-person">
+                            <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
+                            <span>
+                                <strong><?= portal_escape((string) $row['student_name']) ?></strong>
+                                <small><?= portal_escape((string) $row['code']) ?> · <?= portal_escape((string) $row['course_title']) ?></small>
+                            </span>
+                        </span>
+                        <span class="grades-work-main">
+                            <strong><?= portal_escape((string) $row['slot_title']) ?></strong>
+                            <small><?= (int) $row['score'] ?>% · Not visible to students yet</small>
+                        </span>
+                        <span class="grades-status grades-status--release">Release</span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </article>
+    <?php endif; ?>
+    </div>
+
     <article class="card-shell grades-panel">
         <div class="section-head">
             <div>
@@ -478,11 +488,11 @@ ob_start();
                             <small><?= portal_escape((string) $module['code']) ?> · <?= $totalCount ?> submission<?= $totalCount === 1 ? '' : 's' ?></small>
                         </span>
                         <span class="grades-health-metrics">
-                            <span><?= $pendingCount ?> pending</span>
+                            <span><?= $pendingCount ?> to mark</span>
                             <?php if ($heldCount > 0): ?>
-                                <span><?= $heldCount ?> held</span>
+                                <span><?= $heldCount ?> to release</span>
                             <?php endif; ?>
-                            <span><?= $markedCount ?> returned</span>
+                            <span><?= $markedCount ?> released</span>
                             <strong><?= $moduleAverage !== null ? (int) $moduleAverage . '%' : '—' ?></strong>
                         </span>
                     </a>
@@ -491,101 +501,6 @@ ob_start();
         <?php endif; ?>
     </article>
     </div>
-
-    <article class="card-shell grades-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">Hold</p>
-                <h3 class="card-title">Saved, not released</h3>
-            </div>
-            <span class="chip"><?= count($heldGrades) ?></span>
-        </div>
-
-        <?php if (empty($heldGrades)): ?>
-            <div class="grades-empty-state grades-empty-state--compact">
-                <h4>Nothing held</h4>
-                <p>Marks you save without releasing will appear here until you publish them to students.</p>
-            </div>
-        <?php else: ?>
-            <div class="grades-work-list">
-                <div class="grades-simple-row grades-simple-row--head grades-simple-row--staff grades-row-head--hidden" role="row">
-                    <span role="columnheader">Student</span>
-                    <span role="columnheader">Work</span>
-                    <span role="columnheader">Mark</span>
-                </div>
-                <?php foreach ($heldGrades as $row): ?>
-                    <?php
-                        $heldHref = (($row['grade_source'] ?? '') === 'activity')
-                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
-                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
-                    ?>
-                    <a class="grades-work-row is-pending"
-                       href="<?= portal_escape($heldHref) ?>">
-                        <span class="grades-person">
-                            <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
-                            <span>
-                                <strong><?= portal_escape((string) $row['student_name']) ?></strong>
-                                <small><?= portal_escape((string) $row['code']) ?> · <?= portal_escape((string) $row['course_title']) ?></small>
-                            </span>
-                        </span>
-                        <span class="grades-work-main">
-                            <strong><?= portal_escape((string) $row['slot_title']) ?></strong>
-                            <small>Saved <?= portal_escape(portal_relative_time((string) ($row['marked_at'] ?? ''))) ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
-                        </span>
-                        <span class="grades-status grades-status--held"><?= (int) $row['score'] ?>% held</span>
-                    </a>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
-    </article>
-
-    <article class="card-shell grades-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">Done</p>
-                <h3 class="card-title">Already graded</h3>
-            </div>
-            <span class="chip"><?= count($gradedByMe) ?></span>
-        </div>
-
-        <?php if (empty($gradedByMe)): ?>
-            <div class="grades-empty-state grades-empty-state--compact">
-                <h4>No returned marks yet</h4>
-                <p>Returned submissions will be listed here after marking.</p>
-            </div>
-        <?php else: ?>
-            <div class="grades-work-list grades-work-list--returned">
-                <div class="grades-simple-row grades-simple-row--head grades-simple-row--staff grades-row-head--hidden" role="row">
-                    <span role="columnheader">Student</span>
-                    <span role="columnheader">Work</span>
-                    <span role="columnheader">Mark</span>
-                </div>
-                <?php foreach ($gradedByMe as $row): ?>
-                    <?php
-                        $markedTs = portal_db_timestamp((string) ($row['marked_at'] ?? ''));
-                        $returnedHref = (($row['grade_source'] ?? '') === 'activity')
-                            ? 'activity-results.php?id=' . (int) ($row['activity_id'] ?? 0) . '&attempt=' . (int) $row['id']
-                            : 'course.php?course=' . urlencode((string) $row['slug']) . '&section=content&open_review=rvw-' . (int) $row['id'];
-                    ?>
-                    <a class="grades-work-row is-marked"
-                       href="<?= portal_escape($returnedHref) ?>">
-                        <span class="grades-person">
-                            <span class="grades-avatar"><?= portal_escape((string) ($row['student_initials'] ?: '?')) ?></span>
-                            <span>
-                                <strong><?= portal_escape((string) $row['student_name']) ?></strong>
-                                <small><?= portal_escape((string) $row['code']) ?> · <?= portal_escape((string) $row['course_title']) ?></small>
-                            </span>
-                        </span>
-                        <span class="grades-work-main">
-                            <strong><?= portal_escape((string) $row['slot_title']) ?></strong>
-                            <small><?= $markedTs ? 'Marked ' . portal_escape(date('j M Y', $markedTs)) : 'Marked' ?> · Weight <?= portal_escape(portal_format_submission_weight($row['submission_weight'] ?? 100)) ?></small>
-                        </span>
-                        <span class="grades-status grades-status--marked"><?= (int) $row['score'] ?>%</span>
-                    </a>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
-    </article>
 
 <?php else: ?>
 
