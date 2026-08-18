@@ -653,6 +653,10 @@ input[type="radio"]:not(.visually-hidden):disabled {
     gap: 18px;
 }
 
+.course-browser [hidden] {
+    display: none !important;
+}
+
 .course-filter-form {
     display: grid;
     grid-template-columns: minmax(0, 1.8fr) minmax(180px, 1fr) minmax(180px, 1fr) auto;
