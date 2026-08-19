@@ -62,7 +62,7 @@ $page_title = 'Notifications | ' . portal_school_name();
 $active_page = 'notifications';
 $page_eyebrow = 'Inbox';
 $page_heading = 'Notifications';
-$page_description = 'Updates others sent you — not your work queue. Marking and deadlines stay on the Dashboard under To do / Your priorities.';
+$page_description = 'Updates others sent you — not your work queue. Marking, deadlines, and today’s classes sit on the Dashboard in Today / To do.';
 
 ob_start();
 ?>

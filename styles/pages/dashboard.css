@@ -101,19 +101,62 @@
     flex-direction: column;
 }
 
-/* Priorities are the primary task; schedule remains available as context. */
-.dash-main > .dash-work:first-child {
-    order: 2;
-}
-
-.dash-main > #to-do,
-.dash-main > #priorities {
+/* Priorities / to-do is the main column; sidebar is module shortcuts. */
+.dash-main > #to-do {
     order: 1;
 }
 
-.dash-main > #to-do + .dash-work,
-.dash-main > #priorities + .dash-work {
-    order: 3;
+.dash-feed-head-actions {
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.dash-feed-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 4px 0 12px;
+}
+
+.dash-feed-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+}
+
+.dash-feed-chip span {
+    font-variant-numeric: tabular-nums;
+    color: inherit;
+    opacity: 0.75;
+}
+
+.dash-feed-chip:hover,
+.dash-feed-chip:focus-visible {
+    border-color: rgba(193, 32, 47, 0.28);
+    color: var(--primary-strong);
+}
+
+.dash-feed-chip.is-active {
+    background: var(--primary-soft);
+    border-color: rgba(193, 32, 47, 0.28);
+    color: var(--primary-strong);
+}
+
+.dash-feed-list .dash-feed-item[hidden] {
+    display: none;
 }
 
 .dash-side {

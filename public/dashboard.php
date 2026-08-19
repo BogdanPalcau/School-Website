@@ -454,7 +454,7 @@ $notifStmt = $db->prepare(
 $notifStmt->execute([$uid]);
 $unreadNotifCount = (int) $notifStmt->fetchColumn();
 
-$dashUpcomingEvents = portal_events_for_dashboard(3);
+$dashUpcomingEvents = portal_events_for_dashboard(8);
 
 $dueSoonCount = count(array_filter(
     $upcomingDeadlines,
@@ -598,13 +598,365 @@ $studentOpenDeadlineCount = count(array_filter(
 $studentPriorityTotal = $studentOpenDeadlineCount + count($returnedGrades);
 $studentHasPriorities = !empty($studentDeadlineQueue) || !empty($returnedGrades) || $unreadAnnouncementCount > 0;
 
+$dashPrefs = portal_customization_preferences($uid);
+$showContinue = !empty($dashPrefs['show_continue']);
+$showBulletin = !empty($dashPrefs['show_bulletin']);
+$feedDefaultFilter = (($dashPrefs['dashboard_focus'] ?? 'priorities') === 'schedule') ? 'class' : 'all';
+
+$startOfToday = (int) strtotime('today midnight');
+$endOfToday = $startOfToday + 86400;
+$nowTs = time();
+
+$dashFeed = [];
+$pushFeed = static function (
+    array $item
+) use (&$dashFeed, $startOfToday, $endOfToday): void {
+    $when = (int) ($item['when'] ?? 0);
+    if ($when <= 0) {
+        $when = time();
+    }
+    $item['when'] = $when;
+    if ($when < $startOfToday) {
+        $item['bucket'] = 0;
+    } elseif ($when < $endOfToday) {
+        $item['bucket'] = 1;
+    } else {
+        $item['bucket'] = 2;
+    }
+    $dashFeed[] = $item;
+};
+
+foreach ($todayClasses as $slot) {
+    $joinUrl = trim((string) ($slot['room'] ?? ''));
+    $hasJoin = $isJoinUrl($slot);
+    $phase = $slotPhase($slot);
+    $start = trim((string) ($slot['start_time'] ?? ''));
+    $when = (int) strtotime(date('Y-m-d') . ' ' . ($start !== '' ? $start : '08:00'));
+    $statusLabel = match ($phase) {
+        'past' => 'Done',
+        'current' => 'Now',
+        default => 'Today',
+    };
+    $pushFeed([
+        'filter' => 'class',
+        'source' => 'class',
+        'when' => $when,
+        'title' => (string) $slot['title'],
+        'meta' => $formatTime($slot) . ' · ' . (string) $slot['code'],
+        'href' => 'course.php?course=' . urlencode((string) $slot['slug']) . '&section=calendar',
+        'action' => $hasJoin && $phase !== 'past' ? 'Join' : 'Open',
+        'action_href' => $hasJoin && $phase !== 'past' ? $joinUrl : '',
+        'action_external' => $hasJoin && $phase !== 'past',
+        'secondary' => $hasJoin && $phase !== 'past' ? 'Open' : '',
+        'status' => $statusLabel,
+        'status_class' => $phase === 'current' ? 'current' : ($phase === 'past' ? 'past' : 'open'),
+        'stale' => false,
+        'phase' => $phase,
+        'accent' => (string) ($slot['accent'] ?? ''),
+    ]);
+}
+if (empty($todayClasses) && is_array($nextClass)) {
+    $joinUrl = trim((string) ($nextClass['room'] ?? ''));
+    $hasJoin = $isJoinUrl($nextClass);
+    $start = trim((string) ($nextClass['start_time'] ?? ''));
+    $day = (string) ($nextClass['day_of_week'] ?? '');
+    $when = (int) strtotime($day . ' ' . ($start !== '' ? $start : '08:00'));
+    if ($when > 0 && $when < $nowTs) {
+        $when = (int) strtotime('next ' . $day . ' ' . ($start !== '' ? $start : '08:00'));
+    }
+    $pushFeed([
+        'filter' => 'class',
+        'source' => 'class',
+        'when' => $when > 0 ? $when : $nowTs + 86400,
+        'title' => (string) $nextClass['title'],
+        'meta' => $day . ' · ' . $formatTime($nextClass) . ' · ' . (string) $nextClass['code'],
+        'href' => 'course.php?course=' . urlencode((string) $nextClass['slug']) . '&section=calendar',
+        'action' => $hasJoin ? 'Join' : 'Open',
+        'action_href' => $hasJoin ? $joinUrl : '',
+        'action_external' => $hasJoin,
+        'secondary' => $hasJoin ? 'Open' : '',
+        'status' => 'Next class',
+        'status_class' => 'open',
+        'stale' => false,
+        'phase' => 'upcoming',
+        'accent' => (string) ($nextClass['accent'] ?? ''),
+    ]);
+}
+
+if ($isStaff || $isAdmin) {
+    foreach ($staffMarkQueue as $item) {
+        $pushFeed([
+            'filter' => 'work',
+            'source' => 'mark',
+            'when' => $nowTs - (int) ($item['age'] ?? 0),
+            'title' => (string) $item['title'],
+            'meta' => (string) $item['meta'] . (trim((string) ($item['time'] ?? '')) !== '' ? ' · ' . $item['time'] : ''),
+            'href' => (string) $item['href'],
+            'action' => 'Mark',
+            'status' => !empty($item['stale']) ? 'Waiting' : 'To mark',
+            'status_class' => !empty($item['stale']) ? 'closed' : 'soon',
+            'stale' => !empty($item['stale']),
+            'accent' => (string) ($item['accent'] ?? ''),
+        ]);
+    }
+    foreach ($staffQuestionQueue as $item) {
+        $pushFeed([
+            'filter' => 'work',
+            'source' => 'question',
+            'when' => $nowTs - (int) ($item['age'] ?? 0),
+            'title' => (string) $item['title'],
+            'meta' => (string) $item['meta'] . (trim((string) ($item['time'] ?? '')) !== '' ? ' · ' . $item['time'] : ''),
+            'href' => (string) $item['href'],
+            'action' => 'Answer',
+            'status' => 'Q&A',
+            'status_class' => !empty($item['stale']) ? 'closed' : 'soon',
+            'stale' => !empty($item['stale']),
+            'accent' => (string) ($item['accent'] ?? ''),
+        ]);
+    }
+    foreach ($staffDeadlineQueue as $item) {
+        $state = (string) ($item['state'] ?? 'open');
+        $pushFeed([
+            'filter' => 'work',
+            'source' => 'deadline',
+            'when' => (int) ($item['ts'] ?? $nowTs),
+            'title' => (string) $item['title'],
+            'meta' => (string) $item['meta'] . ' · ' . (string) $item['time'],
+            'href' => (string) $item['href'],
+            'action' => 'Open',
+            'status' => $state === 'closed' ? 'Past due' : ($state === 'soon' ? 'Due soon' : 'Upcoming'),
+            'status_class' => $state === 'closed' ? 'closed' : ($state === 'soon' ? 'soon' : 'open'),
+            'stale' => $state === 'closed',
+            'accent' => (string) ($item['accent'] ?? ''),
+        ]);
+    }
+} else {
+    foreach ($studentDeadlineQueue as $item) {
+        $state = (string) $item['deadline_info']['state'];
+        $submitted = !empty($item['submitted']);
+        if ($submitted) {
+            $statusLabel = 'Submitted';
+            $statusClass = 'submitted';
+        } elseif ($state === 'closed') {
+            $statusLabel = 'Overdue';
+            $statusClass = 'closed';
+        } elseif ($state === 'soon') {
+            $statusLabel = 'Due soon';
+            $statusClass = 'soon';
+        } else {
+            $statusLabel = 'Upcoming';
+            $statusClass = 'open';
+        }
+        $pushFeed([
+            'filter' => 'work',
+            'source' => 'deadline',
+            'when' => (int) ($item['deadline_info']['timestamp'] ?? $nowTs),
+            'title' => (string) $item['title'],
+            'meta' => (string) $item['course_title'] . ' · Due ' . (string) $item['deadline_info']['text'],
+            'href' => 'course.php?course=' . urlencode((string) $item['slug']) . '&section=content',
+            'action' => $submitted ? 'View' : 'Open',
+            'status' => $statusLabel,
+            'status_class' => $statusClass,
+            'stale' => !$submitted && $state === 'closed',
+            'accent' => (string) ($item['accent'] ?? ''),
+        ]);
+    }
+    foreach ($returnedGrades as $row) {
+        $scoreBit = ($row['score'] !== null && $row['score'] !== '') ? ' · ' . (int) $row['score'] . '%' : '';
+        $pushFeed([
+            'filter' => 'grade',
+            'source' => 'grade',
+            'when' => portal_db_timestamp((string) $row['marked_at']) ?? $nowTs,
+            'title' => (string) $row['item_title'],
+            'meta' => (string) $row['course_title'] . ' · Marked ' . $relativeWhen((string) $row['marked_at']) . $scoreBit,
+            'href' => 'course.php?course=' . urlencode((string) $row['slug']) . '&section=gradebook&open_review=rvw-' . (int) $row['id'],
+            'action' => 'View',
+            'status' => 'Returned',
+            'status_class' => 'marked',
+            'stale' => false,
+            'accent' => (string) ($row['accent'] ?? ''),
+        ]);
+    }
+    if ($showContinue) {
+        foreach ($continueWatching as $row) {
+            $stamp = $formatVideoStamp((int) $row['position_seconds']);
+            $pushFeed([
+                'filter' => 'lesson',
+                'source' => 'lesson',
+                'when' => portal_db_timestamp((string) $row['updated_at']) ?? $nowTs,
+                'title' => (string) $row['lesson_title'],
+                'meta' => (string) $row['course_title']
+                    . ($stamp !== '' ? ' · Resume at ' . $stamp : '')
+                    . ' · ' . $relativeWhen((string) $row['updated_at']),
+                'href' => 'lesson-viewer.php?item=' . (int) $row['item_id'],
+                'action' => 'Resume',
+                'status' => 'Lesson',
+                'status_class' => 'open',
+                'stale' => false,
+                'accent' => (string) ($row['accent'] ?? ''),
+            ]);
+        }
+    }
+}
+
+foreach ($unreadCourseAnnouncements as $ann) {
+    $pushFeed([
+        'filter' => 'message',
+        'source' => 'unread-announcement',
+        'when' => portal_db_timestamp((string) $ann['created_at']) ?? $nowTs,
+        'title' => (string) $ann['title'],
+        'meta' => (string) $ann['course_title'] . ' · ' . $relativeWhen((string) $ann['created_at']),
+        'href' => 'course.php?course=' . urlencode((string) $ann['course_slug']) . '&section=announcements',
+        'action' => 'Read',
+        'status' => 'Unread',
+        'status_class' => 'soon',
+        'stale' => false,
+        'accent' => (string) ($ann['course_accent'] ?? ''),
+    ]);
+}
+
+if ($showBulletin) {
+    foreach ($majorAnnouncements as $ann) {
+        $pushFeed([
+            'filter' => 'message',
+            'source' => 'bulletin',
+            'when' => portal_db_timestamp((string) $ann['created_at']) ?? $nowTs,
+            'title' => (string) $ann['title'],
+            'meta' => 'School · ' . $relativeWhen((string) $ann['created_at']),
+            'href' => 'communication.php#major-announcements',
+            'action' => 'Open',
+            'status' => 'School',
+            'status_class' => 'submitted',
+            'stale' => false,
+            'accent' => '',
+        ]);
+    }
+    foreach ($bulletinModuleAnnouncements as $ann) {
+        $pushFeed([
+            'filter' => 'message',
+            'source' => 'bulletin',
+            'when' => portal_db_timestamp((string) $ann['created_at']) ?? $nowTs,
+            'title' => (string) $ann['title'],
+            'meta' => (string) $ann['course_title'] . ' · ' . $relativeWhen((string) $ann['created_at']),
+            'href' => 'course.php?course=' . urlencode((string) $ann['course_slug']) . '&section=announcements',
+            'action' => 'Open',
+            'status' => 'Module',
+            'status_class' => 'submitted',
+            'stale' => false,
+            'accent' => (string) ($ann['course_accent'] ?? ''),
+        ]);
+    }
+}
+
+$seenNotifLinks = [];
+foreach ($recentInboxNotifications as $n) {
+    $created = portal_db_timestamp((string) ($n['created_at'] ?? '')) ?? 0;
+    $unread = trim((string) ($n['read_at'] ?? '')) === '';
+    if (!$unread && ($created < $nowTs - (3 * 86400))) {
+        continue;
+    }
+    $type = (string) ($n['type'] ?? '');
+    if (in_array($type, ['announcement', 'announcements'], true)) {
+        continue;
+    }
+    $link = trim((string) ($n['link'] ?? ''));
+    $href = $link !== '' ? $link : 'notifications.php';
+    $dupKey = $type . '|' . $href;
+    if (isset($seenNotifLinks[$dupKey])) {
+        continue;
+    }
+    $seenNotifLinks[$dupKey] = true;
+    $typeTag = match ($type) {
+        'discussion_reply', 'discussion' => 'Discussion',
+        'lesson_answer', 'qa' => 'Q&A',
+        'grade', 'grades' => 'Grade',
+        'event' => 'Event',
+        default => 'Inbox',
+    };
+    $body = trim((string) ($n['body'] ?? ''));
+    $pushFeed([
+        'filter' => 'message',
+        'source' => 'notification',
+        'when' => $created > 0 ? $created : $nowTs,
+        'title' => (string) $n['title'],
+        'meta' => ($body !== '' ? substr($body, 0, 100) . ' · ' : '') . $relativeWhen((string) $n['created_at']),
+        'href' => $href,
+        'action' => 'Open',
+        'status' => $unread ? 'New' : $typeTag,
+        'status_class' => $unread ? 'soon' : 'open',
+        'stale' => false,
+        'accent' => '',
+    ]);
+}
+
+foreach ($dashUpcomingEvents as $dashEvent) {
+    $when = portal_db_timestamp((string) ($dashEvent['starts_at'] ?? '')) ?? $nowTs;
+    $dashCid = isset($dashEvent['course_id']) && $dashEvent['course_id'] !== null && $dashEvent['course_id'] !== ''
+        ? (int) $dashEvent['course_id']
+        : 0;
+    $dashTag = $dashCid > 0 ? (string) ($dashEvent['course_title'] ?? 'Course') : 'School';
+    $pushFeed([
+        'filter' => 'event',
+        'source' => 'event',
+        'when' => $when,
+        'title' => (string) $dashEvent['title'],
+        'meta' => $dashTag . ' · ' . portal_event_format_full((string) $dashEvent['starts_at']),
+        'href' => 'events.php?event=' . (int) $dashEvent['id'],
+        'action' => 'Open',
+        'status' => 'Event',
+        'status_class' => 'open',
+        'stale' => false,
+        'accent' => (string) ($dashEvent['course_accent'] ?? ''),
+    ]);
+}
+
+usort($dashFeed, static function (array $a, array $b): int {
+    $byBucket = ((int) $a['bucket']) <=> ((int) $b['bucket']);
+    if ($byBucket !== 0) {
+        return $byBucket;
+    }
+    if ((int) $a['bucket'] === 0) {
+        return ((int) $b['when']) <=> ((int) $a['when']);
+    }
+    return ((int) $a['when']) <=> ((int) $b['when']);
+});
+$dashFeed = array_slice($dashFeed, 0, 32);
+
+$feedFilters = [
+    'all' => 'All',
+    'class' => 'Classes',
+    'work' => 'Work',
+    'grade' => 'Grades',
+    'message' => 'Messages',
+    'event' => 'Events',
+    'lesson' => 'Lessons',
+];
+$feedFilterCounts = ['all' => count($dashFeed)];
+foreach ($dashFeed as $item) {
+    $key = (string) ($item['filter'] ?? '');
+    if ($key === '') {
+        continue;
+    }
+    $feedFilterCounts[$key] = ($feedFilterCounts[$key] ?? 0) + 1;
+}
+$visibleFeedFilters = ['all' => 'All'];
+foreach ($feedFilters as $key => $label) {
+    if ($key === 'all') {
+        continue;
+    }
+    if (($feedFilterCounts[$key] ?? 0) > 0) {
+        $visibleFeedFilters[$key] = $label;
+    }
+}
+if (!isset($visibleFeedFilters[$feedDefaultFilter])) {
+    $feedDefaultFilter = 'all';
+}
+
 $page_title = 'Dashboard | ' . portal_school_name();
 $active_page = 'dashboard';
 $page_eyebrow = 'Overview';
 $page_heading = $greeting . ', ' . $firstName;
-$page_description = $isStaff || $isAdmin
-    ? 'Work waiting on you sits in To do. Updates others sent you live in Notifications.'
-    : 'Deadlines and returned work are in Your priorities. Updates others sent you live in Notifications.';
+$page_description = 'One list for today’s classes, work waiting on you, and new updates. Filter it if you only want one type.';
 
 ob_start();
 ?>
@@ -621,464 +973,152 @@ ob_start();
         <article class="dash-stat<?= $dueSoonCount > 0 ? ' dash-stat--alert' : '' ?>">
             <span class="dash-stat-label">Due soon</span>
             <strong class="dash-stat-value"><?= $dueSoonCount ?></strong>
-            <a class="dash-stat-link" href="#priorities">View deadlines</a>
+            <a class="dash-stat-link" href="#to-do" data-feed-open="work">View work</a>
         </article>
         <?php endif; ?>
         <article class="dash-stat">
             <span class="dash-stat-label">Today</span>
             <strong class="dash-stat-value"><?= count($todayClasses) ?></strong>
-            <a class="dash-stat-link" href="#dash-schedule">View schedule</a>
+            <a class="dash-stat-link" href="#to-do" data-feed-open="class">View schedule</a>
         </article>
         <article class="dash-stat<?= $unreadNotifCount > 0 ? ' dash-stat--alert' : '' ?>">
             <span class="dash-stat-label">Inbox</span>
             <strong class="dash-stat-value"><?= $unreadNotifCount ?></strong>
-            <a class="dash-stat-link" href="notifications.php">Open notifications</a>
+            <a class="dash-stat-link" href="#to-do" data-feed-open="message">Open inbox</a>
         </article>
     </div>
 
     <div class="dash-columns">
         <div class="dash-main stack">
 
-            <article class="card-shell dash-work" id="dash-schedule">
+            <article class="card-shell dash-work dash-feed" id="to-do" data-feed-default="<?= portal_escape($feedDefaultFilter) ?>">
                 <div class="section-head">
                     <div>
-                        <p class="eyebrow">Schedule</p>
-                        <h3 class="card-title">
-                            <?php if (!empty($todayClasses)): ?>
-                                Today · <?= portal_escape($todayName) ?>
-                            <?php else: ?>
-                                Next class
-                            <?php endif; ?>
-                        </h3>
+                        <p class="eyebrow">Today / To do</p>
+                        <h3 class="card-title">Your day</h3>
+                        <p class="dash-section-rule">Classes, work, grades, messages, and events in one list. Filter to one type when you need to.</p>
                     </div>
-                    <a class="inline-action" href="timetable.php">Full timetable</a>
+                    <div class="button-row dash-feed-head-actions">
+                        <?php if (!$isStaff && !$isAdmin): ?>
+                            <a class="button-secondary button--sm" href="calendar-export.php?types=deadlines" title="Import into Google or Apple Calendar">Deadlines .ics</a>
+                        <?php endif; ?>
+                        <a class="inline-action" href="timetable.php">Timetable</a>
+                    </div>
                 </div>
 
-                <?php if (!empty($todayClasses)): ?>
-                    <ul class="dash-work-list">
-                        <?php foreach ($todayClasses as $slot): ?>
+                <?php if (count($visibleFeedFilters) > 2): ?>
+                <div class="dash-feed-filters" role="toolbar" aria-label="Filter today’s list">
+                    <?php foreach ($visibleFeedFilters as $filterKey => $filterLabel): ?>
+                        <button type="button"
+                                class="dash-feed-chip<?= $filterKey === $feedDefaultFilter ? ' is-active' : '' ?>"
+                                data-feed-filter="<?= portal_escape($filterKey) ?>"
+                                aria-pressed="<?= $filterKey === $feedDefaultFilter ? 'true' : 'false' ?>">
+                            <?= portal_escape($filterLabel) ?>
+                            <span><?= (int) ($feedFilterCounts[$filterKey] ?? 0) ?></span>
+                        </button>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($dashFeed === []): ?>
+                    <div id="dashboard-upcoming-events">
+                        <p class="dash-empty">You’re all caught up. <a href="courses.php">Open a module</a> or check the <a href="timetable.php">timetable</a>.</p>
+                    </div>
+                <?php else: ?>
+                    <ul class="dash-work-list dash-feed-list" id="dashboard-upcoming-events">
+                        <?php foreach ($dashFeed as $item): ?>
                             <?php
-                                $joinUrl = trim((string) ($slot['room'] ?? ''));
-                                $hasJoin = $isJoinUrl($slot);
-                                $phase = $slotPhase($slot);
-                                $phaseLabel = match ($phase) {
-                                    'past' => 'Done',
-                                    'current' => 'Now',
-                                    default => '',
-                                };
+                                $filter = (string) ($item['filter'] ?? 'work');
+                                $phase = (string) ($item['phase'] ?? '');
+                                $actionHref = trim((string) ($item['action_href'] ?? ''));
+                                $primaryHref = $actionHref !== '' ? $actionHref : (string) $item['href'];
+                                $secondary = trim((string) ($item['secondary'] ?? ''));
+                                $source = (string) ($item['source'] ?? '');
+                                $statusClass = (string) ($item['status_class'] ?? 'open');
+                                $btnClass = 'button-secondary';
+                                if (in_array($source, ['mark', 'question'], true) || $statusClass === 'closed' || $statusClass === 'soon') {
+                                    $btnClass = 'button';
+                                }
+                                if ($statusClass === 'submitted' || $source === 'grade' || $source === 'event' || $source === 'bulletin') {
+                                    $btnClass = 'button-secondary';
+                                }
                             ?>
-                            <li class="dash-work-row dash-work-row--<?= portal_escape($phase) ?><?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
+                            <li class="dash-work-row dash-feed-item<?= $phase !== '' ? ' dash-work-row--' . portal_escape($phase) : '' ?><?= !empty($item['stale']) ? ' is-stale' : '' ?><?= $secondary !== '' ? ' dash-work-row--actions' : '' ?>"
+                                data-feed-kind="<?= portal_escape($filter) ?>"
+                                data-feed-source="<?= portal_escape($source) ?>">
                                 <div class="dash-work-row-main">
-                                    <strong><?= portal_escape((string) $slot['title']) ?></strong>
+                                    <strong><?= portal_escape((string) $item['title']) ?></strong>
                                     <span>
-                                        <?= portal_escape($formatTime($slot)) ?> · <?= portal_escape((string) $slot['code']) ?>
-                                        <?php if ($phaseLabel !== ''): ?>
-                                            · <span class="dash-status dash-status--<?= $phase === 'current' ? 'current' : 'past' ?>"><?= portal_escape($phaseLabel) ?></span>
+                                        <?= portal_escape((string) $item['meta']) ?>
+                                        <?php if (trim((string) ($item['status'] ?? '')) !== ''): ?>
+                                            · <span class="dash-status dash-status--<?= portal_escape($statusClass) ?>"><?= portal_escape((string) $item['status']) ?></span>
                                         <?php endif; ?>
                                     </span>
                                 </div>
                                 <div class="dash-work-row-actions">
-                                    <?php if ($hasJoin && $phase !== 'past'): ?>
-                                        <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
+                                    <a class="<?= $btnClass ?> button--sm"
+                                       href="<?= portal_escape($primaryHref) ?>"
+                                       <?php if (!empty($item['action_external'])): ?>target="_blank" rel="noopener noreferrer"<?php endif; ?>>
+                                        <?= portal_escape((string) ($item['action'] ?? 'Open')) ?>
+                                    </a>
+                                    <?php if ($secondary !== ''): ?>
+                                        <a class="button-secondary button--sm" href="<?= portal_escape((string) $item['href']) ?>"><?= portal_escape($secondary) ?></a>
                                     <?php endif; ?>
-                                    <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $slot['slug']) ?>&section=calendar">Open</a>
                                 </div>
                             </li>
                         <?php endforeach; ?>
                     </ul>
-                <?php elseif ($nextClass !== null): ?>
-                    <?php
-                        $joinUrl = trim((string) ($nextClass['room'] ?? ''));
-                        $hasJoin = $isJoinUrl($nextClass);
-                    ?>
-                    <p class="dash-empty">No classes scheduled for today. Here’s your next one:</p>
-                    <ul class="dash-work-list">
-                        <li class="dash-work-row<?= $hasJoin ? ' dash-work-row--actions' : '' ?>">
-                            <div class="dash-work-row-main">
-                                <strong><?= portal_escape((string) $nextClass['title']) ?></strong>
-                                <span><?= portal_escape((string) $nextClass['day_of_week']) ?> · <?= portal_escape($formatTime($nextClass)) ?> · <?= portal_escape((string) $nextClass['code']) ?></span>
-                            </div>
-                            <div class="dash-work-row-actions">
-                                <?php if ($hasJoin): ?>
-                                    <a class="button button--sm" href="<?= portal_escape($joinUrl) ?>" target="_blank" rel="noopener noreferrer">Join</a>
-                                <?php endif; ?>
-                                <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $nextClass['slug']) ?>&section=calendar">Open</a>
-                            </div>
-                        </li>
-                    </ul>
-                <?php else: ?>
-                    <p class="dash-empty">No classes on your timetable yet. <a href="courses.php">Browse your modules</a>.</p>
+                    <p class="dash-empty" data-feed-empty hidden>Nothing in this filter. Choose All to see the full list.</p>
+                    <p class="dash-queue-more">
+                        <a href="notifications.php">All notifications</a>
+                        ·
+                        <a href="events.php">All events</a>
+                        ·
+                        <a href="communication.php">Announcements</a>
+                    </p>
                 <?php endif; ?>
             </article>
-
-            <?php if ($isStaff || $isAdmin): ?>
-
-            <article class="card-shell dash-work" id="to-do">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Queue</p>
-                        <h3 class="card-title">To do</h3>
-                        <p class="dash-section-rule">Work waiting on you — mark, answer, deadlines.</p>
-                    </div>
-                    <?php if ($staffTodoTotal > 0): ?>
-                        <span class="chip chip--muted"><?= $staffTodoTotal ?></span>
-                    <?php endif; ?>
-                </div>
-
-                <?php if ($staffTodoTotal === 0): ?>
-                    <p class="dash-empty">You’re all caught up — nothing to mark and no open questions right now.</p>
-                <?php else: ?>
-                    <div class="dash-work-panels">
-
-                        <?php if (!empty($staffMarkQueue)): ?>
-                        <?php
-                            $markShown = array_slice($staffMarkQueue, 0, 4);
-                            $markHasMore = $unmarkedTotal > count($markShown);
-                        ?>
-                        <section class="dash-work-panel dash-work-panel--urgent">
-                            <header class="dash-work-panel-head">
-                                <h4>To mark</h4>
-                                <span><?= count($markShown) ?><?= $markHasMore ? ' / ' . $unmarkedTotal : '' ?></span>
-                            </header>
-                            <ul class="dash-work-list">
-                                <?php foreach ($markShown as $item): ?>
-                                    <?php
-                                        $meta = trim((string) ($item['meta'] ?? ''));
-                                        if (strlen($meta) > 100) {
-                                            $meta = substr($meta, 0, 97) . '…';
-                                        }
-                                    ?>
-                                    <li class="dash-work-row<?= !empty($item['stale']) ? ' is-stale' : '' ?>">
-                                        <div class="dash-work-row-main">
-                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
-                                            <span>
-                                                <?= portal_escape($meta) ?>
-                                                <?php if (trim((string) ($item['time'] ?? '')) !== ''): ?>
-                                                    · <em class="dash-work-age<?= !empty($item['stale']) ? ' is-stale' : '' ?>"><?= portal_escape((string) $item['time']) ?></em>
-                                                <?php endif; ?>
-                                            </span>
-                                        </div>
-                                        <a class="button button--sm" href="<?= portal_escape((string) $item['href']) ?>">Mark</a>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                            <?php if ($markHasMore): ?>
-                                <p class="dash-queue-more"><a href="grades.php">See all unmarked</a></p>
-                            <?php endif; ?>
-                        </section>
-                        <?php endif; ?>
-
-                        <?php if (!empty($staffQuestionQueue)): ?>
-                        <?php
-                            $qShown = array_slice($staffQuestionQueue, 0, 4);
-                            $qHasMore = $openQuestionTotal > count($qShown);
-                        ?>
-                        <section class="dash-work-panel">
-                            <header class="dash-work-panel-head">
-                                <h4>Questions waiting</h4>
-                                <span><?= count($qShown) ?><?= $qHasMore ? ' / ' . $openQuestionTotal : '' ?></span>
-                            </header>
-                            <ul class="dash-work-list">
-                                <?php foreach ($qShown as $item): ?>
-                                    <?php
-                                        $meta = trim((string) ($item['meta'] ?? ''));
-                                        if (strlen($meta) > 100) {
-                                            $meta = substr($meta, 0, 97) . '…';
-                                        }
-                                    ?>
-                                    <li class="dash-work-row<?= !empty($item['stale']) ? ' is-stale' : '' ?>">
-                                        <div class="dash-work-row-main">
-                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
-                                            <span>
-                                                <?= portal_escape($meta) ?>
-                                                <?php if (trim((string) ($item['time'] ?? '')) !== ''): ?>
-                                                    · <em class="dash-work-age<?= !empty($item['stale']) ? ' is-stale' : '' ?>"><?= portal_escape((string) $item['time']) ?></em>
-                                                <?php endif; ?>
-                                            </span>
-                                        </div>
-                                        <a class="button button--sm" href="<?= portal_escape((string) $item['href']) ?>">Answer</a>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                            <?php if ($qHasMore): ?>
-                                <p class="dash-queue-more"><a href="courses.php">See all modules</a></p>
-                            <?php endif; ?>
-                        </section>
-                        <?php endif; ?>
-
-                        <?php if (!empty($staffDeadlineQueue)): ?>
-                        <?php
-                            $deadlineShown = array_slice($staffDeadlineQueue, 0, 4);
-                            $deadlineHasMore = count($staffDeadlineQueue) > count($deadlineShown);
-                        ?>
-                        <section class="dash-work-panel dash-work-panel--soft">
-                            <header class="dash-work-panel-head">
-                                <h4>Upcoming deadlines</h4>
-                                <span><?= count($deadlineShown) ?><?= $deadlineHasMore ? '+' : '' ?></span>
-                            </header>
-                            <ul class="dash-work-list">
-                                <?php foreach ($deadlineShown as $item): ?>
-                                    <?php
-                                        $meta = trim((string) ($item['meta'] ?? ''));
-                                        $state = (string) ($item['state'] ?? 'open');
-                                        $statusLabel = $state === 'closed' ? 'Past due' : ($state === 'soon' ? 'Due soon' : 'Upcoming');
-                                    ?>
-                                    <li class="dash-work-row">
-                                        <div class="dash-work-row-main">
-                                            <strong><?= portal_escape((string) $item['title']) ?></strong>
-                                            <span>
-                                                <?= $meta !== '' ? portal_escape($meta) . ' · ' : '' ?>
-                                                <?= portal_escape((string) $item['time']) ?>
-                                                · <span class="dash-status dash-status--<?= portal_escape($state) ?>"><?= portal_escape($statusLabel) ?></span>
-                                            </span>
-                                        </div>
-                                        <a class="button-secondary button--sm" href="<?= portal_escape((string) $item['href']) ?>">Open</a>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                        </section>
-                        <?php endif; ?>
-
-                    </div>
-                <?php endif; ?>
-            </article>
-
-            <?php else: ?>
-
-            <article class="card-shell dash-work" id="priorities">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Queue</p>
-                        <h3 class="card-title">Your priorities</h3>
-                        <p class="dash-section-rule">Work waiting on you — deadlines and returned grades.</p>
-                    </div>
-                    <div class="button-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
-                        <?php if ($studentPriorityTotal > 0): ?>
-                            <span class="chip chip--muted"><?= $studentPriorityTotal ?></span>
-                        <?php endif; ?>
-                        <a class="button-secondary button--sm" href="calendar-export.php?types=deadlines" title="Import into Google or Apple Calendar">Deadlines .ics</a>
-                    </div>
-                </div>
-
-                <?php if (!$studentHasPriorities): ?>
-                    <p class="dash-empty">Nothing urgent right now — check your courses for new work, or pick up a lesson below.</p>
-                <?php else: ?>
-                    <div class="dash-work-panels">
-
-                        <?php if (!empty($studentDeadlineQueue)): ?>
-                        <?php
-                            $studentDeadlineShown = array_slice($studentDeadlineQueue, 0, 4);
-                            $studentDeadlineMore = count($studentDeadlineQueue) > count($studentDeadlineShown);
-                        ?>
-                        <section class="dash-work-panel dash-work-panel--urgent">
-                            <header class="dash-work-panel-head">
-                                <h4>Deadlines</h4>
-                                <span><?= count($studentDeadlineShown) ?><?= $studentDeadlineMore ? '+' : '' ?></span>
-                            </header>
-                            <ul class="dash-work-list">
-                                <?php foreach ($studentDeadlineShown as $item): ?>
-                                    <?php
-                                        $state = (string) $item['deadline_info']['state'];
-                                        $submitted = !empty($item['submitted']);
-                                        if ($submitted) {
-                                            $statusLabel = 'Submitted';
-                                            $statusClass = 'submitted';
-                                        } elseif ($state === 'closed') {
-                                            $statusLabel = 'Overdue';
-                                            $statusClass = 'closed';
-                                        } elseif ($state === 'soon') {
-                                            $statusLabel = 'Due soon';
-                                            $statusClass = 'soon';
-                                        } else {
-                                            $statusLabel = 'Upcoming';
-                                            $statusClass = 'open';
-                                        }
-                                    ?>
-                                    <li class="dash-work-row<?= !$submitted && $state === 'closed' ? ' is-stale' : '' ?>">
-                                        <div class="dash-work-row-main">
-                                            <strong><?= portal_escape($item['title']) ?></strong>
-                                            <span>
-                                                <?= portal_escape($item['course_title']) ?>
-                                                · Due <?= portal_escape($item['deadline_info']['text']) ?>
-                                                · <span class="dash-status dash-status--<?= $statusClass ?>"><?= portal_escape($statusLabel) ?></span>
-                                            </span>
-                                        </div>
-                                        <a class="<?= $submitted ? 'button-secondary' : 'button' ?> button--sm" href="course.php?course=<?= urlencode($item['slug']) ?>&section=content"><?= $submitted ? 'View' : 'Open' ?></a>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                            <?php if ($studentDeadlineMore): ?>
-                                <p class="dash-queue-more"><a href="courses.php">See all modules</a></p>
-                            <?php endif; ?>
-                        </section>
-                        <?php endif; ?>
-
-                        <?php if (!empty($returnedGrades)): ?>
-                        <?php
-                            $returnedShown = array_slice($returnedGrades, 0, 4);
-                            $returnedMore = count($returnedGrades) > count($returnedShown);
-                        ?>
-                        <section class="dash-work-panel<?= empty($studentDeadlineQueue) ? ' dash-work-panel--urgent' : '' ?>">
-                            <header class="dash-work-panel-head">
-                                <h4>Returned grades</h4>
-                                <span><?= count($returnedShown) ?><?= $returnedMore ? '+' : '' ?></span>
-                            </header>
-                            <ul class="dash-work-list">
-                                <?php foreach ($returnedShown as $row): ?>
-                                    <li class="dash-work-row">
-                                        <div class="dash-work-row-main">
-                                            <strong><?= portal_escape((string) $row['item_title']) ?></strong>
-                                            <span>
-                                                <?= portal_escape((string) $row['course_title']) ?>
-                                                · Marked <?= portal_escape($relativeWhen((string) $row['marked_at'])) ?>
-                                                <?php if ($row['score'] !== null && $row['score'] !== ''): ?>
-                                                    · <span class="dash-status dash-status--marked"><?= portal_escape((string) $row['score']) ?>%</span>
-                                                <?php endif; ?>
-                                            </span>
-                                        </div>
-                                        <a class="button-secondary button--sm" href="course.php?course=<?= urlencode((string) $row['slug']) ?>&section=gradebook&open_review=rvw-<?= (int) $row['id'] ?>">View</a>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                        </section>
-                        <?php endif; ?>
-
-                        <?php if ($unreadAnnouncementCount > 0): ?>
-                        <section class="dash-work-panel dash-work-panel--soft">
-                            <header class="dash-work-panel-head">
-                                <h4>Unread announcements</h4>
-                                <span><?= $unreadAnnouncementCount ?></span>
-                            </header>
-                            <p class="dash-queue-teaser">
-                                <?= $unreadAnnouncementCount === 1
-                                    ? 'You have 1 unread module announcement.'
-                                    : 'You have ' . $unreadAnnouncementCount . ' unread module announcements.' ?>
-                                <a href="communication.php#module-announcements">Read now</a>
-                            </p>
-                        </section>
-                        <?php endif; ?>
-
-                    </div>
-                <?php endif; ?>
-            </article>
-
-            <?php if (!empty($continueWatching)): ?>
-            <article class="card-shell dash-work" id="dashboard-continue-watching">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Lessons</p>
-                        <h3 class="card-title">Continue watching</h3>
-                    </div>
-                    <span class="chip chip--muted"><?= count($continueWatching) ?></span>
-                </div>
-                <ul class="dash-work-list">
-                    <?php foreach (array_slice($continueWatching, 0, 4) as $row): ?>
-                        <?php $stamp = $formatVideoStamp((int) $row['position_seconds']); ?>
-                        <li class="dash-work-row">
-                            <div class="dash-work-row-main">
-                                <strong><?= portal_escape((string) $row['lesson_title']) ?></strong>
-                                <span><?= portal_escape((string) $row['course_title']) ?><?= $stamp !== '' ? ' · Resume at ' . portal_escape($stamp) : '' ?> · <?= portal_escape($relativeWhen((string) $row['updated_at'])) ?></span>
-                            </div>
-                            <a class="button-secondary button--sm" href="lesson-viewer.php?item=<?= (int) $row['item_id'] ?>">Resume</a>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-            </article>
-            <?php endif; ?>
-
-            <?php endif; ?>
+            <script>
+            (function () {
+                const root = document.getElementById('to-do');
+                if (!root) return;
+                const buttons = Array.from(root.querySelectorAll('[data-feed-filter]'));
+                const items = Array.from(root.querySelectorAll('[data-feed-kind]'));
+                const empty = root.querySelector('[data-feed-empty]');
+                const allowed = buttons.map((btn) => btn.getAttribute('data-feed-filter'));
+                function apply(filter) {
+                    if (allowed.length && filter !== 'all' && !allowed.includes(filter)) {
+                        filter = root.getAttribute('data-feed-default') || 'all';
+                    }
+                    let shown = 0;
+                    items.forEach((el) => {
+                        const on = filter === 'all' || el.getAttribute('data-feed-kind') === filter;
+                        el.hidden = !on;
+                        if (on) shown += 1;
+                    });
+                    if (empty) empty.hidden = shown > 0;
+                    buttons.forEach((btn) => {
+                        const active = btn.getAttribute('data-feed-filter') === filter;
+                        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                        btn.classList.toggle('is-active', active);
+                    });
+                }
+                buttons.forEach((btn) => {
+                    btn.addEventListener('click', () => apply(btn.getAttribute('data-feed-filter') || 'all'));
+                });
+                document.querySelectorAll('[data-feed-open]').forEach((link) => {
+                    link.addEventListener('click', () => {
+                        const filter = link.getAttribute('data-feed-open') || 'all';
+                        window.setTimeout(() => apply(filter), 0);
+                    });
+                });
+                apply(root.getAttribute('data-feed-default') || 'all');
+            })();
+            </script>
 
         </div>
 
         <aside class="dash-side stack">
-
-            <article class="card-shell" id="recent-alerts">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Inbox</p>
-                        <h3 class="card-title">Notifications</h3>
-                        <p class="dash-section-rule">Updates others sent you — not your work queue.</p>
-                    </div>
-                    <a class="inline-action" href="notifications.php">Open all</a>
-                </div>
-
-                <?php if (empty($recentInboxNotifications)): ?>
-                    <p class="dash-empty">
-                        <?= $isStaff || $isAdmin
-                            ? 'No notifications yet. Student replies and system updates will show here.'
-                            : 'No notifications yet. Replies and new announcements will show here.' ?>
-                    </p>
-                <?php else: ?>
-                <ul class="dash-announce-list">
-                    <?php foreach (array_slice($recentInboxNotifications, 0, 5) as $n): ?>
-                        <?php
-                            $link = trim((string) ($n['link'] ?? ''));
-                            $href = $link !== '' ? $link : 'notifications.php';
-                            $unread = trim((string) ($n['read_at'] ?? '')) === '';
-                            $typeTag = match ((string) ($n['type'] ?? '')) {
-                                'discussion_reply', 'discussion' => 'Discussion',
-                                'lesson_answer', 'qa' => 'Q&A',
-                                'announcement', 'announcements' => 'Announcement',
-                                'grade', 'grades' => 'Grade',
-                                'event' => 'Event',
-                                default => '',
-                            };
-                        ?>
-                        <li>
-                            <a href="<?= portal_escape($href) ?>" class="<?= $unread ? 'is-unread' : '' ?>">
-                                <?php if ($unread): ?>
-                                    <span class="dash-announce-tag">New</span>
-                                <?php endif; ?>
-                                <?php if ($typeTag !== ''): ?>
-                                    <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape($typeTag) ?></span>
-                                <?php endif; ?>
-                                <strong><?= portal_escape((string) $n['title']) ?></strong>
-                                <?php if (trim((string) ($n['body'] ?? '')) !== ''): ?>
-                                    <span><?= portal_escape(substr((string) $n['body'], 0, 100)) ?></span>
-                                <?php endif; ?>
-                                <span><?= portal_escape($relativeWhen((string) $n['created_at'])) ?></span>
-                            </a>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-                <?php endif; ?>
-            </article>
-
-            <article class="card-shell" id="dashboard-upcoming-events">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Calendar</p>
-                        <h3 class="card-title">Upcoming events</h3>
-                    </div>
-                    <a class="inline-action" href="events.php">All events</a>
-                </div>
-                <?php if (empty($dashUpcomingEvents)): ?>
-                    <p class="dash-empty">No upcoming events right now.</p>
-                <?php else: ?>
-                <ul class="dash-announce-list">
-                    <?php foreach ($dashUpcomingEvents as $dashEvent): ?>
-                        <?php
-                            $dashCid = isset($dashEvent['course_id']) && $dashEvent['course_id'] !== null && $dashEvent['course_id'] !== ''
-                                ? (int) $dashEvent['course_id']
-                                : 0;
-                            $dashTag = $dashCid > 0
-                                ? (string) ($dashEvent['course_title'] ?? 'Course')
-                                : 'School';
-                        ?>
-                        <li>
-                            <a href="events.php?event=<?= (int) $dashEvent['id'] ?>">
-                                <?php if ($dashCid > 0 && !empty($dashEvent['course_accent'])): ?>
-                                    <span class="dash-accent" style="background:<?= portal_escape((string) $dashEvent['course_accent']) ?>"></span>
-                                <?php endif; ?>
-                                <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape($dashTag) ?></span>
-                                <strong><?= portal_escape((string) $dashEvent['title']) ?></strong>
-                                <span><?= portal_escape(portal_event_format_full((string) $dashEvent['starts_at'])) ?></span>
-                            </a>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-                <?php endif; ?>
-            </article>
 
             <?php if ($isStaff || $isAdmin): ?>
             <article class="card-shell" id="dashboard-quick-access">
@@ -1192,69 +1232,7 @@ ob_start();
                 <?php endif; ?>
             </article>
 
-            <?php if ($unreadAnnouncementCount > 0): ?>
-            <article class="card-shell">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Unread</p>
-                        <h3 class="card-title">
-                            <?= $unreadAnnouncementCount ?> announcement<?= $unreadAnnouncementCount !== 1 ? 's' : '' ?>
-                        </h3>
-                    </div>
-                    <a class="inline-action" href="communication.php#module-announcements">All</a>
-                </div>
-                <ul class="dash-announce-list">
-                    <?php foreach ($unreadCourseAnnouncements as $ann): ?>
-                        <li>
-                            <a class="is-unread" href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">
-                                <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape((string) $ann['course_title']) ?></span>
-                                <strong><?= portal_escape((string) $ann['title']) ?></strong>
-                                <span><?= portal_escape($relativeWhen((string) $ann['created_at'])) ?></span>
-                            </a>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-            </article>
             <?php endif; ?>
-            <?php endif; ?>
-
-            <?php if (!$isStaff && !$isAdmin): ?>
-            <article class="card-shell" id="dashboard-bulletin">
-                <div class="section-head">
-                    <div>
-                        <p class="eyebrow">Bulletin</p>
-                        <h3 class="card-title">Latest updates</h3>
-                    </div>
-                    <a class="inline-action" href="communication.php">All</a>
-                </div>
-
-                <?php if (empty($majorAnnouncements) && empty($bulletinModuleAnnouncements)): ?>
-                    <p class="dash-empty">No announcements yet.</p>
-                <?php else: ?>
-                    <ul class="dash-announce-list">
-                        <?php foreach ($majorAnnouncements as $ann): ?>
-                            <li>
-                                <a href="communication.php#major-announcements">
-                                    <span class="dash-announce-tag">School</span>
-                                    <strong><?= portal_escape((string) $ann['title']) ?></strong>
-                                    <span><?= portal_escape($relativeWhen((string) $ann['created_at'])) ?></span>
-                                </a>
-                            </li>
-                        <?php endforeach; ?>
-                        <?php foreach ($bulletinModuleAnnouncements as $ann): ?>
-                            <li>
-                                <a href="course.php?course=<?= urlencode((string) $ann['course_slug']) ?>&section=announcements">
-                                    <span class="dash-announce-tag dash-announce-tag--module"><?= portal_escape((string) $ann['course_title']) ?></span>
-                                    <strong><?= portal_escape((string) $ann['title']) ?></strong>
-                                    <span><?= portal_escape($relativeWhen((string) $ann['created_at'])) ?></span>
-                                </a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </article>
-            <?php endif; ?>
-
         </aside>
     </div>
 </section>

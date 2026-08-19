@@ -477,27 +477,10 @@ html[data-contrast="high"] .settings-toggle {
     border-color: var(--border);
 }
 
-html[data-dashboard-focus="schedule"] .dash-main > #dash-schedule {
-    order: 1;
-}
-
-html[data-dashboard-focus="schedule"] .dash-main > #priorities,
-html[data-dashboard-focus="schedule"] .dash-main > #to-do {
-    order: 2;
-}
-
-html[data-dashboard-focus="priorities"] .dash-main > #dash-schedule {
-    order: 2;
-}
-
-html[data-dashboard-focus="priorities"] .dash-main > #priorities,
-html[data-dashboard-focus="priorities"] .dash-main > #to-do {
-    order: 1;
-}
-
-html[data-show-continue="0"] #dashboard-continue-watching,
+html[data-show-continue="0"] .dash-feed-item[data-feed-kind="lesson"],
+html[data-show-continue="0"] [data-feed-filter="lesson"],
 html[data-show-quick-access="0"] #dashboard-quick-access,
-html[data-show-bulletin="0"] #dashboard-bulletin {
+html[data-show-bulletin="0"] .dash-feed-item[data-feed-source="bulletin"] {
     display: none !important;
 }
 

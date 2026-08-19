@@ -415,8 +415,8 @@ ob_start();
 
                             <div class="settings-preview-dashboard">
                                 <div class="settings-preview-card settings-preview-card--priorities" data-preview-order="priorities">
-                                    <span>Priorities</span>
-                                    <strong>2 items due</strong>
+                                    <span>Today / To do</span>
+                                    <strong>Your day in one list</strong>
                                 </div>
                                 <div class="settings-preview-card settings-preview-card--schedule" data-preview-order="schedule">
                                     <span>Schedule</span>
@@ -654,14 +654,14 @@ ob_start();
                     <div class="settings-choice-grid settings-choice-grid--2">
                         <label class="settings-choice">
                             <input type="radio" name="dashboard_focus" value="priorities"<?= $customPrefs['dashboard_focus'] === 'priorities' ? ' checked' : '' ?>>
-                            <strong><?= $isStudent ? 'Priorities first' : 'To do first' ?></strong>
-                            <small><?= $isStudent ? 'Deadlines and returned work before the schedule' : 'Work queues before the schedule' ?></small>
+                            <strong>Work first</strong>
+                            <small>Open Today / To do on the full mixed list</small>
                             <span class="settings-choice-state" aria-hidden="true">✓ Selected</span>
                         </label>
                         <label class="settings-choice">
                             <input type="radio" name="dashboard_focus" value="schedule"<?= $customPrefs['dashboard_focus'] === 'schedule' ? ' checked' : '' ?>>
-                            <strong>Schedule first</strong>
-                            <small>Today’s classes before work queues</small>
+                            <strong>Classes first</strong>
+                            <small>Open Today / To do filtered to today’s classes</small>
                             <span class="settings-choice-state" aria-hidden="true">✓ Selected</span>
                         </label>
                     </div>
@@ -691,7 +691,7 @@ ob_start();
                     </div>
                     <div class="settings-toggles">
                         <label class="settings-toggle">
-                            <span><strong>Continue watching</strong><small>Show your recent video lessons on the dashboard</small></span>
+                            <span><strong>Continue watching</strong><small>Include recent video lessons in Today / To do</small></span>
                             <input type="checkbox" name="show_continue" value="1"<?= !empty($customPrefs['show_continue']) ? ' checked' : '' ?>>
                         </label>
                         <label class="settings-toggle">
@@ -699,7 +699,7 @@ ob_start();
                             <input type="checkbox" name="show_quick_access" value="1"<?= !empty($customPrefs['show_quick_access']) ? ' checked' : '' ?>>
                         </label>
                         <label class="settings-toggle">
-                            <span><strong>Bulletin widget</strong><small>Show the latest school updates on the dashboard</small></span>
+                            <span><strong>Bulletin items</strong><small>Include school and module updates in Today / To do</small></span>
                             <input type="checkbox" name="show_bulletin" value="1"<?= !empty($customPrefs['show_bulletin']) ? ' checked' : '' ?>>
                         </label>
                     </div>

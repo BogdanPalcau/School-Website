@@ -123,7 +123,7 @@ test('student does not see create event panel', async ({ page }) => {
   await expect(page.locator('#create-event')).toHaveCount(0);
 });
 
-test('dashboard shows upcoming events in the side column', async ({ page }) => {
+test('dashboard shows upcoming events in Today / To do', async ({ page }) => {
   await signIn(page, fixtures.users.student, fixtures.password);
   await page.goto('/dashboard.php');
   await expect(page.locator('#dashboard-upcoming-events')).toBeVisible();
