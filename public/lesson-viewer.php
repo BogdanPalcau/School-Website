@@ -44,6 +44,15 @@ if (!portal_can_access_course($courseId)) {
 }
 
 $canManage = portal_can_manage_course($courseId);
+if (!$canManage && portal_course_content_blocked_for_student($courseId, (int) $me['id'])) {
+    portal_log_security_event(
+        'unauthorised_course_access',
+        'medium',
+        'Blocked access to gated lesson video item: ' . $itemId
+    );
+    http_response_code(403);
+    exit('This module is not available yet.');
+}
 if (!$canManage && portal_folder_item_content_locked($item)) {
     portal_log_security_event(
         'unauthorised_course_access',

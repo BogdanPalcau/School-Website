@@ -78,6 +78,16 @@ if ($subId > 0) {
         exit('Access denied.');
     }
 
+    if (!$canManage && portal_course_content_blocked_for_student($courseId, (int) $me['id'])) {
+        portal_log_security_event(
+            'unauthorised_course_access',
+            'medium',
+            'Blocked view of gated course material item ' . $itemId
+        );
+        http_response_code(403);
+        exit('This module is not available yet.');
+    }
+
     if (!$canManage && portal_folder_item_content_locked($item)) {
         portal_log_security_event(
             'forbidden_download',

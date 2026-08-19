@@ -1509,6 +1509,64 @@ if (!function_exists('portal_pre_enroll_blocks_student')) {
     }
 }
 
+if (!function_exists('portal_course_student_content_block_reason')) {
+    /**
+     * Same entry rules as course.php: closed/draft modules stay closed, and an
+     * unfinished pre-enrolment quiz blocks everything except that quiz.
+     *
+     * @param array<string, mixed>|null $activity Current activity, when the request is for one.
+     * @return ''|'closed'|'pre_enroll'
+     */
+    function portal_course_student_content_block_reason(int $courseId, int $userId = 0, ?array $activity = null): string
+    {
+        if ($courseId <= 0) {
+            return 'closed';
+        }
+        if (portal_can_manage_course($courseId)) {
+            return '';
+        }
+        if ($userId <= 0) {
+            $userId = (int) (portal_current_user()['id'] ?? 0);
+        }
+        if ($userId <= 0) {
+            return 'closed';
+        }
+
+        $stmt = portal_db()->prepare('SELECT * FROM courses WHERE id = ?');
+        $stmt->execute([$courseId]);
+        $course = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$course) {
+            return 'closed';
+        }
+
+        $status = (string) ($course['status'] ?? '');
+        $mayEnter = function_exists('portal_course_student_may_enter')
+            ? portal_course_student_may_enter($course)
+            : in_array($status, ['open', 'archived'], true);
+        if (!$mayEnter) {
+            return 'closed';
+        }
+
+        $activityId = (int) ($activity['id'] ?? 0);
+        $accessingPreEnrollQuiz = $activityId > 0
+            && (int) ($activity['is_pre_enroll'] ?? 0) === 1
+            && (int) ($course['pre_enroll_quiz_id'] ?? 0) === $activityId;
+        if ($accessingPreEnrollQuiz) {
+            return '';
+        }
+
+        return portal_pre_enroll_blocks_student($course, $userId) ? 'pre_enroll' : '';
+    }
+}
+
+if (!function_exists('portal_course_content_blocked_for_student')) {
+    /** @param array<string, mixed>|null $activity */
+    function portal_course_content_blocked_for_student(int $courseId, int $userId = 0, ?array $activity = null): bool
+    {
+        return portal_course_student_content_block_reason($courseId, $userId, $activity) !== '';
+    }
+}
+
 if (!function_exists('portal_pre_enroll_create_or_open')) {
     /** @return array{ok:bool, activity_id?:int, error?:string} */
     function portal_pre_enroll_create_or_open(int $courseId, int $userId): array
@@ -3843,6 +3901,14 @@ if (!function_exists('portal_activity_can_start')) {
         if (!portal_can_manage_course($courseId) && function_exists('portal_activity_content_locked')
             && portal_activity_content_locked($activity)) {
             return ['ok' => false, 'error' => 'This activity is locked by your teacher.'];
+        }
+
+        $blockReason = portal_course_student_content_block_reason($courseId, $userId, $activity);
+        if ($blockReason === 'closed') {
+            return ['ok' => false, 'error' => 'This module is not open yet.'];
+        }
+        if ($blockReason === 'pre_enroll') {
+            return ['ok' => false, 'error' => 'Complete the knowledge check before starting this activity.'];
         }
 
         $pub = portal_activity_published_version_id((int) $activity['id']);

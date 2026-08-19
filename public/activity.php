@@ -62,8 +62,23 @@ $course = $courseStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 $isPreEnrollQuiz = (int) ($activity['is_pre_enroll'] ?? 0) === 1
     && (int) ($course['pre_enroll_quiz_id'] ?? 0) === $activityId;
 
-if (!$canManage && portal_pre_enroll_blocks_student($course, $uid) && !$isPreEnrollQuiz) {
-    portal_redirect('course.php?course=' . urlencode((string) ($course['slug'] ?? '')));
+$blockReason = portal_course_student_content_block_reason($courseId, $uid, $activity);
+if ($blockReason !== '') {
+    portal_log_security_event(
+        'unauthorised_course_access',
+        'medium',
+        'Blocked activity ' . $activityId . ' (' . $blockReason . ')'
+    );
+    $message = $blockReason === 'pre_enroll'
+        ? 'Complete the knowledge check before opening this module.'
+        : 'This module is not open yet.';
+    if (portal_is_fetch_request() || strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) === 'POST') {
+        portal_activity_json_error($message, 403);
+    }
+    if ($blockReason === 'pre_enroll' && ($course['slug'] ?? '') !== '') {
+        portal_redirect('course.php?course=' . urlencode((string) $course['slug']));
+    }
+    portal_redirect('courses.php');
 }
 
 /**
