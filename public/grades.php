@@ -11,6 +11,142 @@ $me  = portal_current_user();
 $uid = (int) $me['id'];
 $isStaff = portal_is_course_staff() || portal_is_admin();
 
+if ($isStaff
+    && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
+    && (string) ($_POST['action'] ?? '') === 'release_all_grades') {
+    if (!portal_verify_csrf()) {
+        $_SESSION['grades_flash'] = ['error', 'Your session expired. Please try again.'];
+        portal_redirect('grades.php');
+    }
+
+    $assignedIds = portal_is_admin()
+        ? array_map('intval', $db->query('SELECT id FROM courses')->fetchAll(PDO::FETCH_COLUMN))
+        : portal_assigned_course_ids();
+    $assignedIds = array_values(array_filter(
+        array_map('intval', $assignedIds),
+        static fn(int $id): bool => $id > 0
+    ));
+
+    $released = 0;
+    if ($assignedIds !== []) {
+        $placeholders = implode(',', array_fill(0, count($assignedIds), '?'));
+
+        $subStmt = $db->prepare(
+            "SELECT cs.id, cs.user_id, cs.score, cs.course_id, c.slug, cfi.title AS slot_title
+             FROM course_submissions cs
+             JOIN course_folder_items cfi ON cfi.id = cs.item_id
+             JOIN courses c ON c.id = cs.course_id
+             WHERE cs.course_id IN ($placeholders)
+               AND cs.score IS NOT NULL
+               AND cs.marked_at != ''
+               AND (cs.grades_released_at IS NULL OR trim(cs.grades_released_at) = '')"
+        );
+        $subStmt->execute($assignedIds);
+        $submissions = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if ($submissions !== []) {
+            $ids = array_map(static fn(array $row): int => (int) $row['id'], $submissions);
+            $idPlaceholders = implode(',', array_fill(0, count($ids), '?'));
+            $db->prepare(
+                "UPDATE course_submissions
+                 SET grades_released_at = datetime('now'), grade_seen_at = ''
+                 WHERE id IN ($idPlaceholders)"
+            )->execute($ids);
+            foreach ($submissions as $row) {
+                portal_notify_file_grade_released(
+                    (int) $row['user_id'],
+                    (int) $row['course_id'],
+                    (string) ($row['slug'] ?? ''),
+                    (string) ($row['slot_title'] ?? 'Assignment'),
+                    (int) $row['score'],
+                    (int) $row['id']
+                );
+            }
+            $released += count($submissions);
+        }
+
+        $attemptStmt = $db->prepare(
+            "SELECT t.id, t.user_id, t.percentage, t.activity_id, t.course_id,
+                    a.title AS activity_title, a.mode,
+                    c.slug, c.title AS course_title
+             FROM activity_attempts t
+             JOIN course_activities a ON a.id = t.activity_id
+             JOIN courses c ON c.id = t.course_id
+             WHERE t.course_id IN ($placeholders)
+               AND a.include_in_gradebook = 1
+               AND t.status = 'marked'
+               AND t.percentage IS NOT NULL"
+        );
+        $attemptStmt->execute($assignedIds);
+        $attempts = $attemptStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if ($attempts !== []) {
+            $ids = array_map(static fn(array $row): int => (int) $row['id'], $attempts);
+            $idPlaceholders = implode(',', array_fill(0, count($ids), '?'));
+            $db->prepare(
+                "UPDATE activity_attempts
+                 SET status = 'released', grade_seen_at = '', updated_at = datetime('now')
+                 WHERE id IN ($idPlaceholders)
+                   AND status = 'marked'"
+            )->execute($ids);
+
+            $byActivity = [];
+            foreach ($attempts as $row) {
+                $activityId = (int) ($row['activity_id'] ?? 0);
+                if ($activityId <= 0) {
+                    continue;
+                }
+                if (!isset($byActivity[$activityId])) {
+                    $byActivity[$activityId] = [
+                        'course' => [
+                            'id' => (int) ($row['course_id'] ?? 0),
+                            'slug' => (string) ($row['slug'] ?? ''),
+                            'title' => (string) ($row['course_title'] ?? ''),
+                        ],
+                        'attempts' => [],
+                    ];
+                }
+                $byActivity[$activityId]['attempts'][] = $row;
+            }
+            foreach ($byActivity as $activityId => $pack) {
+                $activity = portal_activity_find((int) $activityId);
+                if ($activity && ($activity['mode'] ?? '') === 'assessment') {
+                    foreach ($pack['attempts'] as $attempt) {
+                        portal_activity_award_badges_after_attempt(
+                            (int) ($attempt['user_id'] ?? 0),
+                            $activity,
+                            (int) ($attempt['id'] ?? 0)
+                        );
+                    }
+                }
+                portal_notify_activity_grades_released(
+                    $activity ?: [
+                        'id' => $activityId,
+                        'course_id' => (int) ($pack['course']['id'] ?? 0),
+                        'title' => (string) (($pack['attempts'][0]['activity_title'] ?? '') ?: 'Activity'),
+                    ],
+                    $pack['course'],
+                    $pack['attempts']
+                );
+            }
+            $released += count($attempts);
+        }
+    }
+
+    if ($released === 0) {
+        $_SESSION['grades_flash'] = ['error', 'No held grades to release.'];
+    } else {
+        $_SESSION['grades_flash'] = [
+            'success',
+            $released === 1
+                ? 'Grade released. The student can now see it.'
+                : $released . ' grades released. Students can now see them.',
+        ];
+    }
+    portal_redirect('grades.php');
+}
+
+$gradesFlash = $_SESSION['grades_flash'] ?? null;
+unset($_SESSION['grades_flash']);
+
 // Opening Grades acknowledges newly released activity results for this user.
 $db->prepare(
     "UPDATE activity_attempts
@@ -325,6 +461,12 @@ ob_start();
 ?>
 <section class="grades-page">
 
+<?php if (is_array($gradesFlash) && isset($gradesFlash[0], $gradesFlash[1])): ?>
+    <div class="admin-flash <?= $gradesFlash[0] === 'success' ? 'success' : 'error' ?>">
+        <span><?= portal_escape((string) $gradesFlash[1]) ?></span>
+    </div>
+<?php endif; ?>
+
 <?php if ($isStaff): ?>
 
     <div class="grades-summary grades-summary--staff">
@@ -413,7 +555,16 @@ ob_start();
                 <p class="eyebrow">Release</p>
                 <h3 class="card-title">To release</h3>
             </div>
-            <span class="chip"><?= count($heldGrades) ?></span>
+            <div class="grades-release-actions">
+                <?php if (!empty($heldGrades)): ?>
+                    <form method="POST" class="grades-release-all-form" onsubmit="return confirm('Release all saved scores students cannot see yet? They will become visible immediately.');">
+                        <?= portal_csrf_field() ?>
+                        <input type="hidden" name="action" value="release_all_grades">
+                        <button type="submit" class="button button--sm">Release all</button>
+                    </form>
+                <?php endif; ?>
+                <span class="chip"><?= count($heldGrades) ?></span>
+            </div>
         </div>
 
         <?php if (empty($heldGrades)): ?>
