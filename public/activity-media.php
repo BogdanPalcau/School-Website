@@ -32,6 +32,7 @@ if (!portal_can_access_course($courseId) && !portal_can_manage_course($courseId)
 
 // Media must belong to an accessible activity when linked, or be course-scoped for managers.
 $activityId = (int) ($media['activity_id'] ?? 0);
+$activity = null;
 if ($activityId > 0) {
     $activity = portal_activity_find($activityId);
     if ($activity === null || (int) $activity['course_id'] !== $courseId) {
@@ -45,6 +46,13 @@ if ($activityId > 0) {
 } elseif (!portal_can_manage_course($courseId)) {
     http_response_code(403);
     exit('Access denied.');
+}
+
+if (!portal_can_manage_course($courseId)
+    && portal_course_content_blocked_for_student($courseId, (int) (portal_current_user()['id'] ?? 0), $activity)) {
+    portal_log_security_event('activity_media_denied', 'medium', 'gated media_id=' . $mediaId);
+    http_response_code(403);
+    exit('This module is not available yet.');
 }
 
 $path = portal_activity_media_path_safe((string) $media['storage_path']);

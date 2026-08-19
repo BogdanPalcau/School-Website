@@ -242,7 +242,7 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
     $stmt = $db->prepare(
         "SELECT p.item_id, p.position_seconds, p.updated_at,
                 cfi.title AS lesson_title,
-                c.slug, c.title AS course_title, c.accent
+                c.id AS course_id, c.slug, c.title AS course_title, c.accent
          FROM course_video_progress p
          JOIN course_folder_items cfi ON cfi.id = p.item_id
          JOIN courses c ON c.id = cfi.course_id
@@ -254,7 +254,12 @@ if (!$isStaff && !$isAdmin && !empty($courseIds)) {
          LIMIT 5"
     );
     $stmt->execute(array_merge([$uid], $courseIds));
-    $continueWatching = $stmt->fetchAll();
+    $continueWatching = array_values(array_filter(
+        $stmt->fetchAll() ?: [],
+        static function (array $row) use ($uid): bool {
+            return !portal_course_content_blocked_for_student((int) ($row['course_id'] ?? 0), $uid);
+        }
+    ));
 
 }
 
