@@ -1,0 +1,189 @@
+/* Timetable (mobile) */
+/* --------------------------------------------------------------------------
+   Timetable: mobile readability
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    .calendar-layout {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+    }
+
+    .calendar-layout > .stack {
+        order: -1;
+        gap: 10px !important;
+    }
+
+    #week-view.card-shell,
+    .calendar-layout .card-shell {
+        padding: 12px !important;
+        border-radius: 12px !important;
+        gap: 12px !important;
+    }
+
+    #week-view .section-head .card-title,
+    .calendar-layout .section-head .card-title {
+        font-size: 1.05rem !important;
+    }
+
+    #week-view .section-head p:not(.eyebrow) {
+        font-size: 0.82rem;
+        color: var(--muted);
+    }
+
+    .calendar-overview {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 6px !important;
+        padding: 8px !important;
+        border-radius: 10px !important;
+    }
+
+    .calendar-overview-item {
+        padding: 8px 10px !important;
+        border-radius: 8px !important;
+    }
+
+    .calendar-overview-item span {
+        font-size: 0.66rem !important;
+        letter-spacing: 0.05em;
+        color: #6a4f52 !important;
+    }
+
+    .calendar-overview-item strong {
+        margin-top: 3px !important;
+        font-size: 1.15rem !important;
+    }
+
+    .calendar-overview-item--strong span,
+    .calendar-overview-item--strong strong {
+        color: #fff7f6 !important;
+    }
+
+    .calendar-grid.calendar-grid--schedule {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+    }
+
+    .calendar-card {
+        min-height: 0 !important;
+        padding: 10px 12px !important;
+        gap: 8px !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+    }
+
+    .calendar-card.featured {
+        box-shadow: 0 8px 18px rgba(130, 15, 26, 0.08) !important;
+    }
+
+    .calendar-date {
+        width: 36px !important;
+        height: 36px !important;
+        border-radius: 10px !important;
+        font-size: 0.72rem !important;
+    }
+
+    .calendar-day-head h3 {
+        font-size: 0.92rem !important;
+    }
+
+    .calendar-meta {
+        margin: 2px 0 0 !important;
+        font-size: 0.76rem !important;
+        color: #5c4548 !important;
+        font-weight: 600;
+    }
+
+    .calendar-card--empty:not(.featured) {
+        display: none !important;
+    }
+
+    .calendar-card--empty.featured {
+        display: grid !important;
+        padding: 10px 12px !important;
+    }
+
+    .calendar-card--empty.featured .calendar-empty-slot {
+        min-height: 0 !important;
+        padding: 8px 10px !important;
+        font-size: 0.8rem !important;
+        font-weight: 650;
+    }
+
+    .calendar-quiet-days {
+        display: block !important;
+        margin: 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: #faf6f5;
+        border: 1px solid rgba(130, 15, 26, 0.08);
+        color: #5c4548;
+        font-size: 0.78rem;
+        font-weight: 600;
+        line-height: 1.35;
+    }
+
+    .calendar-class {
+        border-radius: 10px !important;
+    }
+
+    .calendar-class summary {
+        gap: 8px;
+        padding: 10px !important;
+    }
+
+    .calendar-class summary strong {
+        font-size: 0.9rem !important;
+    }
+
+    .calendar-class summary small {
+        font-size: 0.74rem !important;
+        color: #5c4548 !important;
+    }
+
+    .calendar-class-detail {
+        padding: 0 10px 10px !important;
+    }
+
+    .calendar-join-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 7px 12px;
+        font-size: 0.82rem;
+    }
+
+    .calendar-today-list .deadline-item,
+    .calendar-side-item {
+        padding: 10px 12px !important;
+        gap: 8px !important;
+    }
+
+    .calendar-side-item h3 {
+        font-size: 0.92rem !important;
+        margin: 0 !important;
+    }
+
+    .calendar-side-item .section-copy {
+        margin: 3px 0 0 !important;
+        font-size: 0.78rem !important;
+        color: #5c4548 !important;
+    }
+
+    .calendar-next-class h3 {
+        font-size: 1rem !important;
+    }
+
+    .calendar-next-class p {
+        font-size: 0.82rem !important;
+        color: #5c4548 !important;
+    }
+
+    .schedule-note {
+        gap: 10px !important;
+        padding: 12px !important;
+    }
+}
+

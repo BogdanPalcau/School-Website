@@ -83,7 +83,8 @@ expect_true(
     'theater toggle refocuses the button so T works after leaving the iframe'
 );
 
-$css = file_get_contents(__DIR__ . '/../style.css') ?: '';
+require_once __DIR__ . '/../includes/styles.php';
+$css = portal_concatenated_stylesheet();
 $theaterBlock = '';
 if (preg_match('/\.lesson-viewer\.is-theater \.lesson-player\s*\{([^}]+)\}/s', $css, $m)) {
     $theaterBlock = $m[1];

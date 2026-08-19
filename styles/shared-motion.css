@@ -1,0 +1,524 @@
+/* Calendar refresh, motion, instant navigation */
+/* Calendar schedule refresh */
+.calendar-overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, #fffafa, #fff1f0);
+}
+
+.calendar-overview-item {
+    min-width: 0;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(130, 15, 26, 0.08);
+}
+
+.calendar-overview-item span {
+    display: block;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.calendar-overview-item strong {
+    display: block;
+    margin-top: 5px;
+    color: var(--text);
+    font-size: 1.45rem;
+    line-height: 1;
+}
+
+.calendar-overview-item--strong {
+    background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+}
+
+.calendar-overview-item--strong span,
+.calendar-overview-item--strong strong {
+    color: #fff7f6;
+}
+
+.calendar-quiet-days {
+    display: none;
+}
+
+.calendar-grid.calendar-grid--schedule {
+    grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+    align-items: stretch;
+}
+
+.calendar-card {
+    min-height: 210px;
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    padding: 14px;
+    border-radius: var(--radius-md);
+    border-color: rgba(130, 15, 26, 0.1);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 247, 0.9));
+    box-shadow: 0 10px 24px rgba(130, 15, 26, 0.06);
+}
+
+.calendar-card.featured {
+    border-color: rgba(193, 32, 47, 0.28);
+    background: linear-gradient(180deg, #fff6f5, #ffe8e6);
+    box-shadow: 0 16px 32px rgba(130, 15, 26, 0.1);
+}
+
+.calendar-day-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.calendar-day-head h3 {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.2;
+}
+
+.calendar-date {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+    background: rgba(193, 32, 47, 0.12);
+    color: var(--primary-strong);
+    font-size: 0.78rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+}
+
+.calendar-empty-slot {
+    display: flex;
+    align-items: center;
+    min-height: 64px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed rgba(130, 15, 26, 0.14);
+    background: rgba(255, 255, 255, 0.56);
+    color: var(--muted);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.calendar-class-list {
+    display: grid;
+    gap: 8px;
+}
+
+.calendar-class {
+    border: 1px solid rgba(130, 15, 26, 0.1);
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 8px 18px rgba(130, 15, 26, 0.05);
+    overflow: hidden;
+}
+
+.calendar-class[open] {
+    border-color: rgba(193, 32, 47, 0.22);
+}
+
+.calendar-class summary {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) 18px;
+    gap: 10px;
+    align-items: center;
+    padding: 11px 12px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.calendar-class summary::-webkit-details-marker {
+    display: none;
+}
+
+.calendar-class summary strong,
+.calendar-class summary small {
+    display: block;
+    min-width: 0;
+}
+
+.calendar-class summary strong {
+    color: var(--text);
+    font-size: 0.9rem;
+    line-height: 1.22;
+}
+
+.calendar-class summary small {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 0.76rem;
+    line-height: 1.25;
+}
+
+.calendar-class summary small span {
+    display: inline-flex;
+    width: fit-content;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: var(--surface-muted);
+    font-weight: 700;
+}
+
+.calendar-class-accent {
+    width: 8px;
+    height: 42px;
+    border-radius: 999px;
+}
+
+.calendar-class-chevron {
+    color: var(--muted);
+    font-size: 1.3rem;
+    line-height: 1;
+    transition: transform 140ms ease;
+}
+
+.calendar-class[open] .calendar-class-chevron {
+    transform: rotate(90deg);
+}
+
+.calendar-class-detail {
+    display: grid;
+    gap: 10px;
+    padding: 0 12px 12px 30px;
+}
+
+.calendar-class-detail p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.calendar-class-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.calendar-join-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+    color: #fff7f6 !important;
+    font-size: 0.84rem;
+    font-weight: 900;
+    box-shadow: 0 8px 18px rgba(130, 15, 26, 0.14);
+}
+
+.calendar-join-button:hover,
+.calendar-join-button:focus-visible {
+    filter: brightness(1.04);
+}
+
+.calendar-no-link {
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.calendar-today-list {
+    gap: 10px;
+}
+
+.calendar-side-item {
+    border-radius: 14px;
+    background: var(--surface-muted);
+}
+
+.calendar-next-class {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+}
+
+@media (max-width: 860px) {
+    .calendar-overview {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .calendar-overview {
+        grid-template-columns: 1fr;
+    }
+
+    .calendar-grid.calendar-grid--schedule {
+        grid-template-columns: 1fr;
+    }
+}
+
+.chip--muted {
+    background: var(--surface-muted);
+    color: var(--muted);
+    border: 1px solid var(--border);
+}
+
+/* Smooth motion pass */
+
+:root {
+    --motion-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --motion-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+    --motion-fast: 160ms;
+    --motion-medium: 260ms;
+    --motion-slow: 420ms;
+}
+
+@keyframes cardRise {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 6px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes sidebarSlide {
+    from {
+        opacity: 0;
+        transform: translate3d(-8px, 0, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes panelFade {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 6px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes topbarDrop {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -6px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes heroPop {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 8px, 0) scale(0.995);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+}
+
+.sidebar,
+.main-panel,
+.topbar,
+.login-shell,
+.course-hero-banner,
+.card-shell,
+.metric-card,
+.summary-card,
+.calendar-card,
+.deadline-item,
+.resource-item,
+.timeline-item,
+.schedule-note,
+.course-list-item,
+.course-content-card,
+.course-staff-item,
+.course-update-item,
+.course-side-fact,
+.settings-row,
+.newsletter-card,
+.event-card,
+.logout-card,
+.admin-panel,
+.admin-user-row,
+.admin-course-row,
+.admin-stat {
+    animation-duration: var(--motion-slow);
+    animation-timing-function: var(--motion-ease);
+}
+
+.nav-link {
+    animation-duration: 320ms;
+    animation-timing-function: var(--motion-ease);
+    transition:
+        background-color var(--motion-medium) var(--motion-ease-soft),
+        color var(--motion-medium) var(--motion-ease-soft),
+        box-shadow var(--motion-medium) var(--motion-ease-soft),
+        transform var(--motion-medium) var(--motion-ease-soft);
+}
+
+.nav-link:hover,
+.nav-link:focus-visible {
+    transform: translate3d(1px, 0, 0);
+}
+
+.button,
+.button-secondary,
+.login-button,
+.inline-action,
+.course-list-item,
+.card-shell,
+.metric-card,
+.summary-card,
+.calendar-card,
+.deadline-item,
+.resource-item,
+.timeline-item,
+.schedule-note,
+.course-content-card,
+.course-staff-item,
+.course-update-item,
+.course-side-fact,
+.settings-row,
+.newsletter-card,
+.event-card,
+.logout-card,
+.admin-panel,
+.admin-user-row,
+.admin-course-row,
+.admin-stat {
+    transition:
+        background-color var(--motion-medium) var(--motion-ease-soft),
+        border-color var(--motion-medium) var(--motion-ease-soft),
+        color var(--motion-medium) var(--motion-ease-soft),
+        box-shadow var(--motion-medium) var(--motion-ease-soft),
+        transform var(--motion-medium) var(--motion-ease-soft);
+}
+
+.button:hover,
+.button:focus-visible,
+.button-secondary:hover,
+.button-secondary:focus-visible,
+.login-button:hover,
+.login-button:focus-visible,
+.course-list-item:hover,
+.course-list-item:focus-visible,
+.card-shell:hover,
+.metric-card:hover,
+.summary-card:hover,
+.calendar-card:hover,
+.deadline-item:hover,
+.resource-item:hover,
+.timeline-item:hover,
+.schedule-note:hover,
+.course-content-card:hover,
+.course-staff-item:hover,
+.course-update-item:hover,
+.course-side-fact:hover,
+.settings-row:hover,
+.newsletter-card:hover,
+.event-card:hover,
+.logout-card:hover,
+.admin-panel:hover,
+.admin-user-row:hover,
+.admin-course-row:hover,
+.admin-stat:hover {
+    transform: translate3d(0, -1px, 0);
+}
+
+.login-field input,
+.course-filter-field input,
+.course-filter-field select,
+.settings-input,
+.settings-select {
+    transition:
+        border-color var(--motion-medium) var(--motion-ease-soft),
+        box-shadow var(--motion-medium) var(--motion-ease-soft),
+        background-color var(--motion-medium) var(--motion-ease-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 1ms !important;
+    }
+}
+
+/* Instant navigation pass */
+
+.main-panel,
+.topbar,
+.page-content,
+.sidebar,
+.nav-link,
+.course-list-item,
+.course-hero-banner,
+.course-template-banner,
+.course-content-card,
+.card-shell,
+.summary-card,
+.calendar-card,
+.deadline-item,
+.resource-item,
+.timeline-item,
+.schedule-note,
+.course-staff-item,
+.course-update-item,
+.course-side-fact,
+.metric-card,
+.newsletter-card,
+.event-card,
+.settings-row,
+.logout-card {
+    animation: none !important;
+    animation-delay: 0ms !important;
+}
+
+.nav-link,
+.course-list-item,
+.course-hero-banner,
+.course-template-banner,
+.course-content-card,
+.card-shell {
+    transition-duration: 120ms;
+}
+
+.course-list-item:hover,
+.course-list-item:focus-visible,
+.card-shell:hover,
+.card-shell:focus-visible,
+.course-content-card:hover,
+.course-content-card:focus-visible,
+.course-hero-banner:hover,
+.course-hero-banner:focus-visible {
+    transform: none;
+}
+
+.nav-link:hover,
+.nav-link:focus-visible {
+    transform: none;
+}
+

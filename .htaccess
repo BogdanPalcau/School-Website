@@ -35,6 +35,10 @@ Options -Indexes
 RewriteEngine On
 RewriteRule ^database(?:/|$) - [F,L,NC]
 RewriteRule ^uploads(?:/|$) - [F,L,NC]
+RewriteRule ^includes(?:/|$) - [F,L,NC]
+RewriteRule ^partials(?:/|$) - [F,L,NC]
+RewriteRule ^styles(?:/|$) - [F,L,NC]
+RewriteRule ^style\.css$ public/style.php [L]
 RewriteRule ^public(?:/|$) - [L]
 RewriteCond %{REQUEST_FILENAME} -f [OR]
 RewriteCond %{REQUEST_FILENAME} -d

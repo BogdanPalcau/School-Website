@@ -72,30 +72,22 @@ if (portal_is_logged_in()) {
     }
 }
 
-$asset_version = '20260818markrelease';
+$asset_version = '20260819split';
 $logo_src = 'assets/rieo-crest.svg?v=' . $asset_version;
 $customizationPrefs = portal_is_logged_in()
     ? portal_customization_preferences((int) (portal_current_user()['id'] ?? 0))
     : portal_customization_defaults();
 
-// style.css lives one directory above public/. A plain relative "../style.css"
-// only resolves correctly when the browser's address bar itself shows "/public/"
-// in the path. Because of the root .htaccess rewrite, most pages are reached
-// through URLs that *omit* "/public/" (e.g. "/course.php" instead of
-// "/public/course.php"), so the browser resolves "../" against the wrong
-// directory and the stylesheet 404s — silently breaking every layout rule that
-// depends on it. SCRIPT_NAME always reflects the real, rewritten path to the
-// script inside public/ regardless of what the browser shows, so use that to
-// build a stable, absolute link back to style.css.
+// Page CSS lives in styles/*.css and is concatenated by public/style.php.
+// SCRIPT_NAME always reflects the rewritten path inside public/, so build a
+// stable URL to that endpoint whether or not "/public/" is visible in the bar.
 $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
 $publicPos = strrpos($scriptName, '/public/');
 if ($publicPos !== false) {
     $appBase = substr($scriptName, 0, $publicPos);
-    $style_src = $appBase . '/style.css?v=' . $asset_version;
+    $style_src = $appBase . '/style.php?v=' . $asset_version;
     $customization_src = $appBase . '/public/assets/portal-customization.css?v=' . $asset_version;
 } else {
-    // When public/ itself is the web root the parent stylesheet cannot be
-    // requested directly, so a fixed-path endpoint serves that same file.
     $style_src = 'style.php?v=' . $asset_version;
     $customization_src = 'assets/portal-customization.css?v=' . $asset_version;
 }
