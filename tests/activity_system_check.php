@@ -315,6 +315,34 @@ try {
     $assessmentXp->execute([$attemptId]);
     expect_eq((int) $assessmentXp->fetchColumn(), 0, 'assessment submit does not award XP before review');
 
+    $heldStmt = $db->prepare('SELECT status, percentage FROM activity_attempts WHERE id = ?');
+    $heldStmt->execute([$attemptId]);
+    $heldAttempt = $heldStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    expect_eq((string) ($heldAttempt['status'] ?? ''), 'marked', 'auto-scored assessment is held as marked');
+    expect_true($heldAttempt['percentage'] !== null, 'held assessment stores a percentage');
+    expect_true(
+        portal_activity_student_score_visible(
+            portal_activity_find($assessId) ?: [],
+            $heldAttempt
+        ) === false,
+        'helper hides marked assessment score until release'
+    );
+    expect_true(
+        portal_activity_student_score_visible(
+            ['mode' => 'quiz', 'feedback_policy' => 'after_submission'],
+            ['status' => 'marked', 'percentage' => 90]
+        ) === true,
+        'helper still shows quiz scores after submission'
+    );
+    $heldSummary = portal_activity_student_card_summary(portal_activity_find($assessId) ?: [], $studentUser['id']);
+    expect_true($heldSummary['best_percentage'] === null, 'course-card summary hides held assessment score');
+
+    $db->prepare("UPDATE activity_attempts SET status = 'released' WHERE id = ?")->execute([$attemptId]);
+    $releasedSummary = portal_activity_student_card_summary(portal_activity_find($assessId) ?: [], $studentUser['id']);
+    expect_true($releasedSummary['best_percentage'] !== null, 'course-card summary shows score after release');
+    $db->prepare('UPDATE activity_attempts SET status = ? WHERE id = ?')
+        ->execute([(string) $heldAttempt['status'], $attemptId]);
+
     $second = portal_activity_start_attempt($assessId, $studentUser['id'], 'ack again');
     expect_true(empty($second['ok']), 'max_attempts=1 blocks second start');
 
