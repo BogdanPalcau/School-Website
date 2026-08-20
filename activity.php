@@ -1181,6 +1181,36 @@ if (!function_exists('portal_activity_feedback_visible')) {
     }
 }
 
+if (!function_exists('portal_activity_student_score_visible')) {
+    /**
+     * True when a student may see this attempt's numeric score.
+     * Assessments stay hidden until staff release results, even if a percentage
+     * is already stored on a marked (held) attempt.
+     */
+    function portal_activity_student_score_visible(array $activity, ?array $attempt = null): bool
+    {
+        if ($attempt === null || $attempt['percentage'] === null) {
+            return false;
+        }
+        $status = (string) ($attempt['status'] ?? '');
+        if ($status === 'awaiting_manual_marking' || $status === 'in_progress') {
+            return false;
+        }
+        if (!portal_activity_feedback_visible($activity, $attempt)) {
+            return false;
+        }
+        if (
+            ($activity['mode'] ?? '') === 'assessment'
+            && empty($activity['results_released'])
+            && $status !== 'released'
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+}
+
 if (!function_exists('portal_activity_strip_inline_images')) {
     function portal_activity_strip_inline_images(string $html): string
     {
@@ -3736,7 +3766,10 @@ if (!function_exists('portal_activity_student_card_summary')) {
             if (($a['status'] ?? '') === 'in_progress') {
                 $inProgress = $a;
             }
-            if ($a['percentage'] !== null && ($best === null || (float) $a['percentage'] > (float) $best)) {
+            if (!portal_activity_student_score_visible($activity, $a)) {
+                continue;
+            }
+            if ($best === null || (float) $a['percentage'] > (float) $best) {
                 $best = (float) $a['percentage'];
             }
         }
