@@ -778,7 +778,7 @@ ob_start();
 <?php if (($activity['mode'] ?? '') === 'flashcard'): ?>
 <script src="assets/activity-flashcards.js?v=20260815gallery"></script>
 <?php else: ?>
-<script src="assets/activity-player.js?v=20260816-preenroll"></script>
+<script src="assets/activity-player.js?v=20260821-held-submit"></script>
 <?php endif; ?>
 <?php
 $page_content = ob_get_clean();
