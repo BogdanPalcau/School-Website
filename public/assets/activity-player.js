@@ -760,10 +760,12 @@
     if (!els.result) return;
     els.result.hidden = false;
 
-    const player = data.player || data;
-    const attempt = player.attempt || data.attempt || {};
+    // Prefer the gated player payload. A raw attempt row (timer auto-submit /
+    // already_submitted) can still contain a stored percentage before release.
+    const player = (data && data.player && typeof data.player === 'object') ? data.player : data;
+    const attempt = player.attempt || {};
     const gamification = data.gamification || null;
-    const showScore = attempt.percentage != null;
+    const showScore = Array.isArray(player.questions) && attempt.percentage != null;
     const pct = showScore ? Math.round(Number(attempt.percentage)) : null;
     const celebrateMode = !reduceMotion && ['practice', 'quiz', 'challenge'].includes(state.mode);
     const hasRewards = !!gamification && ((gamification.xp || 0) > 0 || (gamification.badges || []).length > 0);

@@ -3975,6 +3975,26 @@ if (!function_exists('portal_activity_expire_if_needed')) {
     }
 }
 
+if (!function_exists('portal_activity_student_finish_response')) {
+    /**
+     * Student-facing finish JSON for submit / leave / timer expiry.
+     * Scores and answers follow portal_activity_get_attempt_for_player() release rules,
+     * so a held assessment never returns its stored percentage on the top-level attempt.
+     *
+     * @param array<string, mixed> $extra
+     * @return array<string, mixed>
+     */
+    function portal_activity_student_finish_response(int $attemptId, int $userId, array $extra = []): array
+    {
+        $player = portal_activity_get_attempt_for_player($attemptId, $userId);
+        return array_merge([
+            'ok' => !empty($player['ok']),
+            'attempt' => is_array($player['attempt'] ?? null) ? $player['attempt'] : null,
+            'player' => $player,
+        ], $extra);
+    }
+}
+
 if (!function_exists('portal_activity_end_assessment_attempt')) {
     /** End a formal assessment when its one-sitting player is left. */
     function portal_activity_end_assessment_attempt(int $attemptId, int $userId, string $reason = 'page_left'): array
@@ -3992,7 +4012,9 @@ if (!function_exists('portal_activity_end_assessment_attempt')) {
             return ['ok' => false, 'error' => 'Only assessments end when the page is left.'];
         }
         if (($attempt['status'] ?? '') !== 'in_progress') {
-            return ['ok' => true, 'attempt' => $attempt, 'already_ended' => true];
+            return portal_activity_student_finish_response($attemptId, $userId, [
+                'already_ended' => true,
+            ]);
         }
 
         $allowedReasons = ['page_left', 'connection_lost'];
@@ -4015,13 +4037,9 @@ if (!function_exists('portal_activity_end_assessment_attempt')) {
         );
         portal_activity_score_attempt($attemptId);
 
-        $fresh = $db->prepare('SELECT * FROM activity_attempts WHERE id = ?');
-        $fresh->execute([$attemptId]);
-        return [
-            'ok' => true,
-            'attempt' => $fresh->fetch(PDO::FETCH_ASSOC) ?: $attempt,
+        return portal_activity_student_finish_response($attemptId, $userId, [
             'ended_on_leave' => true,
-        ];
+        ]);
     }
 }
 
@@ -4923,9 +4941,12 @@ if (!function_exists('portal_activity_submit_attempt')) {
 
         $attempt = portal_activity_expire_if_needed($attempt);
         if (!in_array((string) $attempt['status'], ['in_progress'], true)) {
-            // Idempotent: already submitted
+            // Idempotent: already submitted (including timer auto-submit).
             if (in_array((string) $attempt['status'], ['submitted', 'auto_submitted', 'awaiting_manual_marking', 'marked', 'released'], true)) {
-                return ['ok' => true, 'attempt' => $attempt, 'already_submitted' => true];
+                return portal_activity_student_finish_response($attemptId, $userId, [
+                    'already_submitted' => true,
+                    'gamification' => ['xp' => 0, 'badges' => [], 'pending_review' => false],
+                ]);
             }
             return ['ok' => false, 'error' => 'This attempt cannot be submitted.'];
         }
@@ -4949,16 +4970,9 @@ if (!function_exists('portal_activity_submit_attempt')) {
             $gamification['pending_review'] = true;
         }
 
-        $fresh = $db->prepare('SELECT * FROM activity_attempts WHERE id = ?');
-        $fresh->execute([$attemptId]);
-        $attempt = $fresh->fetch(PDO::FETCH_ASSOC) ?: $attempt;
-
-        return [
-            'ok' => true,
-            'attempt' => $attempt,
-            'player' => portal_activity_get_attempt_for_player($attemptId, $userId),
+        return portal_activity_student_finish_response($attemptId, $userId, [
             'gamification' => $gamification,
-        ];
+        ]);
     }
 }
 

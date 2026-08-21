@@ -314,6 +314,17 @@ try {
     $assessmentXp = $db->prepare('SELECT COUNT(*) FROM gamification_events WHERE attempt_id = ?');
     $assessmentXp->execute([$attemptId]);
     expect_eq((int) $assessmentXp->fetchColumn(), 0, 'assessment submit does not award XP before review');
+    $storedPctStmt = $db->prepare('SELECT percentage FROM activity_attempts WHERE id = ?');
+    $storedPctStmt->execute([$attemptId]);
+    expect_true($storedPctStmt->fetchColumn() !== null, 'held assessment still stores a percentage internally');
+    expect_true(($submit['attempt']['percentage'] ?? null) === null, 'held assessment submit hides percentage on attempt');
+    expect_true(($submit['player']['attempt']['percentage'] ?? null) === null, 'held assessment submit hides percentage on player');
+
+    $resubmit = portal_activity_submit_attempt($attemptId, $studentUser['id'], $token);
+    expect_true(!empty($resubmit['already_submitted']), 'second submit is idempotent');
+    expect_true(isset($resubmit['player']) && is_array($resubmit['player']), 'idempotent submit includes gated player payload');
+    expect_true(($resubmit['attempt']['percentage'] ?? null) === null, 'idempotent submit still hides held percentage');
+    expect_true(($resubmit['player']['attempt']['percentage'] ?? null) === null, 'idempotent submit player hides held percentage');
 
     $second = portal_activity_start_attempt($assessId, $studentUser['id'], 'ack again');
     expect_true(empty($second['ok']), 'max_attempts=1 blocks second start');
@@ -345,6 +356,66 @@ try {
     );
     expect_true(trim((string) ($expired['submitted_at'] ?? '')) !== '', 'expired attempt has submitted_at set');
     expect_eq((string) ($expired['end_reason'] ?? ''), 'time_expired', 'timer expiry records its end reason');
+
+    // Timed assessment: client submit after expiry used to return the raw scored
+    // row (no player payload), so the result screen showed the held mark.
+    act_login_as($teacherUser);
+    $timedAssess = portal_activity_create($courseId, $folderId, 'Timed Held Assessment', 'assessment', $teacherUser['id']);
+    expect_true(!empty($timedAssess['ok']), 'create timed held assessment');
+    $timedAssessId = (int) $timedAssess['activity_id'];
+    $createdActivityIds[] = $timedAssessId;
+    $timedAssessQ = portal_activity_add_question($timedAssessId, 'true_false', '<p>Held score?</p>', null, [
+        'options' => [
+            ['text' => 'False', 'is_correct' => 0],
+            ['text' => 'True', 'is_correct' => 1],
+        ],
+    ]);
+    expect_true(!empty($timedAssessQ['ok']), 'add question to timed held assessment');
+    $timedAssessRow = portal_activity_find($timedAssessId);
+    portal_activity_save_settings($timedAssessId, [
+        'max_attempts' => 1,
+        'time_limit_seconds' => 60,
+        'feedback_policy' => 'when_released',
+        'results_released' => 0,
+        'integrity_enabled' => 0,
+    ], (int) ($timedAssessRow['version'] ?? 1));
+    expect_true(!empty(portal_activity_publish($timedAssessId)['ok']), 'publish timed held assessment');
+
+    act_login_as($studentUser);
+    $timedAssessStart = portal_activity_start_attempt($timedAssessId, $studentUser['id']);
+    expect_true(!empty($timedAssessStart['ok']), 'start timed held assessment');
+    $timedAssessAttemptId = (int) ($timedAssessStart['attempt']['id'] ?? 0);
+    $timedAssessToken = (string) ($timedAssessStart['token'] ?? '');
+    $timedAssessQid = (int) ($timedAssessStart['questions'][0]['id'] ?? 0);
+    $correctOpt = 0;
+    foreach ($timedAssessStart['questions'][0]['options'] ?? [] as $opt) {
+        // Options in the player payload omit is_correct; pick the second option
+        // (True) by label so scoring stores a non-null percentage.
+        if (trim(strip_tags((string) ($opt['option_text_html'] ?? ''))) === 'True') {
+            $correctOpt = (int) ($opt['id'] ?? 0);
+        }
+    }
+    if ($correctOpt > 0) {
+        portal_activity_save_answer(
+            $timedAssessAttemptId,
+            $studentUser['id'],
+            $timedAssessQid,
+            ['option_id' => $correctOpt],
+            1,
+            $timedAssessToken
+        );
+    }
+    $db->prepare("UPDATE activity_attempts SET expires_at = datetime('now', '-2 minutes') WHERE id = ?")
+        ->execute([$timedAssessAttemptId]);
+    $expiredSubmit = portal_activity_submit_attempt($timedAssessAttemptId, $studentUser['id'], $timedAssessToken);
+    expect_true(!empty($expiredSubmit['ok']), 'submit of expired held assessment succeeds');
+    expect_true(!empty($expiredSubmit['already_submitted']), 'expired assessment submit is treated as already finished');
+    $expiredStored = $db->prepare('SELECT percentage, status FROM activity_attempts WHERE id = ?');
+    $expiredStored->execute([$timedAssessAttemptId]);
+    $expiredStoredRow = $expiredStored->fetch(PDO::FETCH_ASSOC) ?: [];
+    expect_true($expiredStoredRow['percentage'] !== null, 'expired held assessment stores percentage internally');
+    expect_true(($expiredSubmit['attempt']['percentage'] ?? null) === null, 'expired held assessment submit hides percentage');
+    expect_true(($expiredSubmit['player']['attempt']['percentage'] ?? null) === null, 'expired held assessment player hides percentage');
 
     // Revision conflict + forged question + bad token on a fresh practice activity.
     act_login_as($teacherUser);
